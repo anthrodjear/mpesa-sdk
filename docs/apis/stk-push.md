@@ -28,6 +28,8 @@ Auth: Bearer token. All fields required.
 | `AccountReference` | string | **max 12 chars**, shown on the customer's prompt/statement |
 | `TransactionDesc` | string | documented max **13 chars** (gateway tolerates ~182, then fails) |
 
+> ⚠️ The official sample JSON below encodes a **UTC** timestamp (`20210628092408`), contradicting the EAT rule above — SDKs emit EAT (`20210628122408`). Do NOT copy the sample's Timestamp.
+
 Sample request (official):
 
 ```json

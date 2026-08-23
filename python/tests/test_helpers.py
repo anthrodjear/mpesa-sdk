@@ -1,9 +1,9 @@
-"""Tests for mpesa.helpers -- mirrors go/helpers_test.go incl. golden vectors."""
+﻿"""Tests for mpesa.helpers -- mirrors go/helpers_test.go incl. golden vectors."""
 
 import base64
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -121,3 +121,66 @@ def test_new_originator_id_shape():
     pattern = re.compile(r"^[0-9a-f]{16}$")
     ids = {new_originator_id() for _ in range(16)}
     assert all(pattern.fullmatch(i) and len(i) <= 19 for i in ids)
+    assert len(ids) == 16  # uniqueness across the loop
+
+
+def test_generate_password_converts_non_utc_aware_zone():
+    eat5 = timezone(timedelta(hours=5))  # same instant as 09:24:08Z
+    _, ts = generate_password(
+        SHORTCODE, PASSKEY, datetime(2021, 6, 28, 14, 24, 8, tzinfo=eat5)
+    )
+    assert ts == "20210628122408"
+
+
+def test_generate_password_truncates_microseconds():
+    at = datetime(2021, 6, 28, 9, 24, 8, 999999, tzinfo=timezone.utc)
+    _, ts = generate_password(SHORTCODE, PASSKEY, at)
+    assert ts == "20210628122408"  # sub-second precision dropped by format
+    assert len(ts) == 14
+
+
+def test_normalize_phone_rejects_unicode_digits():
+    # Python \d matches Unicode Nd; Go RE2 does not. Must never accept.
+    with pytest.raises(ValueError):
+        normalize_phone("2547\u0663\u0664\u0665\u0666\u0667\u0668\u0669\u0660")
+
+
+def test_normalize_phone_mixed_separators_positive():
+    assert normalize_phone("+254 712-345-678") == "254712345678"
+
+
+def test_security_credential_requires_bytes_input():
+    with pytest.raises(TypeError, match="must be bytes"):
+        security_credential("-----BEGIN CERTIFICATE-----", "pw")
+
+
+def test_security_credential_wraps_oversize_password_error():
+    with pytest.raises(ValueError, match="encrypt security credential"):
+        security_credential(CERT.read_bytes(), "x" * 246)  # >245B PKCS#1 limit
+
+
+def test_security_credential_rejects_ec_key_cert():
+    from datetime import datetime as dt
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "ec-test")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(1)
+        .not_valid_before(dt(2020, 1, 1, tzinfo=timezone.utc))
+        .not_valid_after(dt(2030, 1, 1, tzinfo=timezone.utc))
+        .sign(key, hashes.SHA256())
+    )
+    der = cert.public_bytes(
+        __import__("cryptography.hazmat.primitives.serialization", fromlist=["Encoding"]).Encoding.DER
+    )
+    with pytest.raises(ValueError, match="non-RSA public key"):
+        security_credential(der, "pw")
