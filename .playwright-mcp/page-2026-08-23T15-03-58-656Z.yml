@@ -1,0 +1,201 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - banner [ref=e5]:
+        - generic [ref=e7]:
+          - link "safaricom logo" [ref=e9] [cursor=pointer]:
+            - /url: /
+            - img "safaricom logo" [ref=e10]
+          - generic [ref=e11]:
+            - button "Home" [ref=e12] [cursor=pointer]
+            - button "APIs" [ref=e13] [cursor=pointer]
+            - button "Dashboard" [ref=e14] [cursor=pointer]
+            - button "Marketplace" [ref=e15] [cursor=pointer]
+            - button "FAQs" [ref=e16] [cursor=pointer]
+            - button "MiniApps" [ref=e17] [cursor=pointer]
+          - generic [ref=e18]:
+            - button "Sign Up" [ref=e19] [cursor=pointer]
+            - button "Log In" [ref=e20] [cursor=pointer]
+      - generic [ref=e23]:
+        - navigation [ref=e24]:
+          - list [ref=e25]:
+            - listitem [ref=e26]:
+              - button "Home" [ref=e27] [cursor=pointer]:
+                - img [ref=e28]
+                - generic [ref=e30]: Home
+            - listitem [ref=e31]: /
+            - listitem [ref=e32]:
+              - paragraph [ref=e33]: Discover APIs
+        - generic [ref=e35]:
+          - paragraph [ref=e36]: Discover APIs
+          - paragraph [ref=e37]: Explore our wide range of APIs by category
+          - generic [ref=e42]:
+            - textbox "Search for APIs..." [ref=e43]
+            - button [ref=e45] [cursor=pointer]:
+              - img [ref=e46]
+            - group
+          - generic [ref=e134]:
+            - button "All" [ref=e136] [cursor=pointer]
+            - button "Security" [ref=e138] [cursor=pointer]
+            - button "Payments" [ref=e140] [cursor=pointer]
+            - button "Disbursement" [ref=e142] [cursor=pointer]
+            - button "Experience" [ref=e144] [cursor=pointer]
+          - generic [ref=e145]:
+            - link "Getting Started By Safaricom Learn how to set up and integrate Daraja APIs into your application and start accepting M-Pesa payments today. Experience" [ref=e147] [cursor=pointer]:
+              - /url: /apis/GettingStarted
+              - generic [ref=e148]:
+                - generic [ref=e152]:
+                  - generic [ref=e153]: Getting Started
+                  - generic [ref=e154]: By Safaricom
+                - generic [ref=e155]:
+                  - paragraph [ref=e156]: Learn how to set up and integrate Daraja APIs into your application and start accepting M-Pesa payments today.
+                  - button "Experience" [ref=e157]
+            - link "Authorization By Safaricom Generates an access token used for authorization when calling allowed APIs. Security" [ref=e159] [cursor=pointer]:
+              - /url: /apis/Authorization
+              - generic [ref=e160]:
+                - generic [ref=e164]:
+                  - generic [ref=e165]: Authorization
+                  - generic [ref=e166]: By Safaricom
+                - generic [ref=e167]:
+                  - paragraph [ref=e168]: Generates an access token used for authorization when calling allowed APIs.
+                  - button "Security" [ref=e169]
+            - link "Dynamic QR By Safaricom Generates a dynamic QR code that is scanned by users to initiate specific M-Pesa transactions. Payments" [ref=e171] [cursor=pointer]:
+              - /url: /apis/DynamicQRCode
+              - generic [ref=e172]:
+                - generic [ref=e176]:
+                  - generic [ref=e177]: Dynamic QR
+                  - generic [ref=e178]: By Safaricom
+                - generic [ref=e179]:
+                  - paragraph [ref=e180]: Generates a dynamic QR code that is scanned by users to initiate specific M-Pesa transactions.
+                  - button "Payments" [ref=e181]
+            - generic [ref=e183] [cursor=pointer]:
+              - generic [ref=e187]:
+                - generic [ref=e188]: M-Pesa Express(Prompt)
+                - generic [ref=e189]: By Safaricom
+              - generic [ref=e190]:
+                - paragraph [ref=e191]: Enables a business to initiate a buy goods or pay bill payment to their pay bill or till from the customer’s account.
+                - generic [ref=e192]:
+                  - link "Simulate" [ref=e193]:
+                    - /url: /apis/MpesaExpressSimulate
+                    - button "Simulate" [ref=e194]
+                  - link "Query" [ref=e195]:
+                    - /url: /apis/MpesaExpressQuery
+                    - button "Query" [ref=e196]
+                - button "Payments" [ref=e197]
+            - link "Customer To Business (C2B) By Safaricom Enables businesses to receive real-time API notifications for Lipa na M-Pesa or B2B payments. Payments" [ref=e199] [cursor=pointer]:
+              - /url: /apis/CustomerToBusiness
+              - generic [ref=e200]:
+                - generic [ref=e204]:
+                  - generic [ref=e205]: Customer To Business (C2B)
+                  - generic [ref=e206]: By Safaricom
+                - generic [ref=e207]:
+                  - paragraph [ref=e208]: Enables businesses to receive real-time API notifications for Lipa na M-Pesa or B2B payments.
+                  - button "Payments" [ref=e209]
+            - link "Business To Customer (B2C) By Safaricom Enables a business to send money to a registered mobile money customer. Disbursement" [ref=e211] [cursor=pointer]:
+              - /url: /apis/BusinessToCustomer
+              - generic [ref=e212]:
+                - generic [ref=e216]:
+                  - generic [ref=e217]: Business To Customer (B2C)
+                  - generic [ref=e218]: By Safaricom
+                - generic [ref=e219]:
+                  - paragraph [ref=e220]: Enables a business to send money to a registered mobile money customer.
+                  - button "Disbursement" [ref=e221]
+            - link "Transaction Status By Safaricom Enables a business to check the status of a recent transaction on the business account. Experience" [ref=e223] [cursor=pointer]:
+              - /url: /apis/TransactionStatus
+              - generic [ref=e224]:
+                - generic [ref=e228]:
+                  - generic [ref=e229]: Transaction Status
+                  - generic [ref=e230]: By Safaricom
+                - generic [ref=e231]:
+                  - paragraph [ref=e232]: Enables a business to check the status of a recent transaction on the business account.
+                  - button "Experience" [ref=e233]
+            - link "Account Balance By Safaricom Enables a business to check the current business accounts balance. Experience" [ref=e235] [cursor=pointer]:
+              - /url: /apis/AccountBalance
+              - generic [ref=e236]:
+                - generic [ref=e240]:
+                  - generic [ref=e241]: Account Balance
+                  - generic [ref=e242]: By Safaricom
+                - generic [ref=e243]:
+                  - paragraph [ref=e244]: Enables a business to check the current business accounts balance.
+                  - button "Experience" [ref=e245]
+            - link "Reversals By Safaricom Enables a business to reverse a recent C2B transaction on the business account . Experience" [ref=e247] [cursor=pointer]:
+              - /url: /apis/Reversal
+              - generic [ref=e248]:
+                - generic [ref=e252]:
+                  - generic [ref=e253]: Reversals
+                  - generic [ref=e254]: By Safaricom
+                - generic [ref=e255]:
+                  - paragraph [ref=e256]: Enables a business to reverse a recent C2B transaction on the business account .
+                  - button "Experience" [ref=e257]
+            - link "Tax Remittance By Safaricom Enables a business to submit specific tax payment to KRA in real time. Payments" [ref=e259] [cursor=pointer]:
+              - /url: /apis/TaxRemittance
+              - generic [ref=e260]:
+                - generic [ref=e264]:
+                  - generic [ref=e265]: Tax Remittance
+                  - generic [ref=e266]: By Safaricom
+                - generic [ref=e267]:
+                  - paragraph [ref=e268]: Enables a business to submit specific tax payment to KRA in real time.
+                  - button "Payments" [ref=e269]
+            - link "Business Pay Bill By Safaricom Enables a business to initiate a transaction to a pay bill, for self or for a customer. Payments" [ref=e271] [cursor=pointer]:
+              - /url: /apis/BusinessPayBill
+              - generic [ref=e272]:
+                - generic [ref=e276]:
+                  - generic [ref=e277]: Business Pay Bill
+                  - generic [ref=e278]: By Safaricom
+                - generic [ref=e279]:
+                  - paragraph [ref=e280]: Enables a business to initiate a transaction to a pay bill, for self or for a customer.
+                  - button "Payments" [ref=e281]
+            - link "Business Buy Goods By Safaricom Enables a business to initiate a payment to a merchant, on own behalf or for a customer. Payments" [ref=e283] [cursor=pointer]:
+              - /url: /apis/BusinessBuyGoods
+              - generic [ref=e284]:
+                - generic [ref=e288]:
+                  - generic [ref=e289]: Business Buy Goods
+                  - generic [ref=e290]: By Safaricom
+                - generic [ref=e291]:
+                  - paragraph [ref=e292]: Enables a business to initiate a payment to a merchant, on own behalf or for a customer.
+                  - button "Payments" [ref=e293]
+            - link "Bill Manager By Safaricom Enables businesses to automatically manage bills and bill payments. Experience" [ref=e295] [cursor=pointer]:
+              - /url: /apis/BillManager
+              - generic [ref=e296]:
+                - generic [ref=e300]:
+                  - generic [ref=e301]: Bill Manager
+                  - generic [ref=e302]: By Safaricom
+                - generic [ref=e303]:
+                  - paragraph [ref=e304]: Enables businesses to automatically manage bills and bill payments.
+                  - button "Experience" [ref=e305]
+            - link "B2B Express CheckOut By Safaricom Enables businesses to initiate M-Pesa Prompt to till operators for a payment into own account. Payments" [ref=e307] [cursor=pointer]:
+              - /url: /apis/B2BExpressCheckout
+              - generic [ref=e308]:
+                - generic [ref=e312]:
+                  - generic [ref=e313]: B2B Express CheckOut
+                  - generic [ref=e314]: By Safaricom
+                - generic [ref=e315]:
+                  - paragraph [ref=e316]: Enables businesses to initiate M-Pesa Prompt to till operators for a payment into own account.
+                  - button "Payments" [ref=e317]
+            - link "Pull Transactions By Safaricom It enables a business to retrieve a list of C2B transactions under the account for a recent specified period. Experience" [ref=e319] [cursor=pointer]:
+              - /url: /apis/PullTransaction
+              - generic [ref=e320]:
+                - generic [ref=e324]:
+                  - generic [ref=e325]: Pull Transactions
+                  - generic [ref=e326]: By Safaricom
+                - generic [ref=e327]:
+                  - paragraph [ref=e328]: It enables a business to retrieve a list of C2B transactions under the account for a recent specified period.
+                  - button "Experience" [ref=e329]
+          - navigation "pagination navigation" [ref=e331]:
+            - list [ref=e332]:
+              - listitem [ref=e333]:
+                - button "Go to previous page" [disabled]:
+                  - img
+              - listitem [ref=e334]:
+                - button "page 1" [ref=e335] [cursor=pointer]: "1"
+              - listitem [ref=e336]:
+                - button "Go to page 2" [ref=e337] [cursor=pointer]: "2"
+              - listitem [ref=e338]:
+                - button "Go to next page" [ref=e339] [cursor=pointer]:
+                  - img [ref=e340]
+      - generic [ref=e127]:
+        - paragraph [ref=e128]: Daraja 3.0
+        - paragraph [ref=e129]: Daraja 3.0 is a web platform that offers access to Safaricom and M-PESA APIs that creates a bridge for payment integration to web and mobile apps. By connecting to our APIs, you open a world of possibilities to you and your clients. Together, we can transform lives.
+    - button "chatbot icon" [ref=e131] [cursor=pointer]:
+      - img "chatbot icon" [ref=e132]
+  - alert [ref=e133]

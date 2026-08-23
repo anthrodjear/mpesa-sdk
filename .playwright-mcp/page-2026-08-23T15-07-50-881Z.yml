@@ -1,0 +1,249 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - banner [ref=e5]:
+        - generic [ref=e7]:
+          - link "safaricom logo" [ref=e9] [cursor=pointer]:
+            - /url: /
+            - img "safaricom logo" [ref=e10]
+          - generic [ref=e11]:
+            - button "Home" [ref=e12] [cursor=pointer]
+            - button "APIs" [ref=e13] [cursor=pointer]
+            - button "Dashboard" [ref=e14] [cursor=pointer]
+            - button "Marketplace" [ref=e15] [cursor=pointer]
+            - button "FAQs" [ref=e16] [cursor=pointer]
+            - button "MiniApps" [ref=e17] [cursor=pointer]
+          - generic [ref=e18]:
+            - button "Sign Up" [ref=e19] [cursor=pointer]
+            - button "Log In" [ref=e20] [cursor=pointer]
+      - generic [ref=e298]:
+        - generic [ref=e300]:
+          - navigation [ref=e301]:
+            - list [ref=e302]:
+              - listitem [ref=e303]:
+                - button "Discover APIs" [ref=e304] [cursor=pointer]:
+                  - img [ref=e305]
+                  - generic [ref=e307]: Discover APIs
+              - listitem [ref=e308]: /
+              - listitem [ref=e309]:
+                - paragraph [ref=e310]: Dynamic QR
+          - generic [ref=e314]:
+            - heading "Dynamic QR" [level=6] [ref=e315]
+            - generic [ref=e316]: By Safaricom
+          - paragraph [ref=e317]: Generates a dynamic QR code that is scanned by users to initiate specific M-Pesa transactions.
+          - generic [ref=e318]:
+            - generic [ref=e319]:
+              - button "POST" [ref=e320]
+              - paragraph [ref=e322]: https://sandbox.safaricom.co.ke/mpesa/qrcode/v1/generate
+            - img [ref=e324] [cursor=pointer]
+        - generic [ref=e326]:
+          - tablist "basic tabs example" [ref=e331]:
+            - tab "API Documentation" [selected] [ref=e332] [cursor=pointer]
+            - tab "Error" [ref=e333] [cursor=pointer]
+          - tabpanel "API Documentation" [ref=e336]:
+            - generic [ref=e339]:
+              - paragraph [ref=e340]: Overview
+              - paragraph [ref=e341]:
+                - paragraph [ref=e342]: Use this API to generate a Dynamic QR which enables Safaricom M-PESA customers who have My Safaricom App or M-PESA app, to scan a QR (Quick Response) code, to capture till number and amount then authorize to pay for goods and services at select LIPA NA M-PESA (LNM) merchant outlets.
+              - generic:
+                - paragraph
+                - paragraph
+              - generic [ref=e343]:
+                - paragraph [ref=e344]: Request Body
+                - paragraph [ref=e345]:
+                  - generic [ref=e346]:
+                    - generic [ref=e348]: "{"
+                    - generic [ref=e350]: "\"MerchantName\":\"TEST SUPERMARKET\","
+                    - generic [ref=e351]: "\"RefNo\":\"Invoice Test\","
+                    - generic [ref=e352]: "\"Amount\":1,"
+                    - generic [ref=e353]:
+                      - text: "\"TrxCode\":"
+                      - generic [ref=e354]: "\"BG\","
+                    - generic [ref=e355]: "\"CPI\":\"373132\","
+                    - generic [ref=e356]: "\"Size\":\"300\""
+                    - generic [ref=e357]: "}"
+              - generic [ref=e358]:
+                - paragraph [ref=e359]: Request Parameter Definition
+                - paragraph [ref=e360]:
+                  - table [ref=e361]:
+                    - rowgroup [ref=e362]:
+                      - row "Name Description Type Sample Values" [ref=e363]:
+                        - cell "Name" [ref=e364]:
+                          - paragraph [ref=e365]:
+                            - strong [ref=e366]: Name
+                        - cell "Description" [ref=e367]:
+                          - paragraph [ref=e368]:
+                            - strong [ref=e372]: Description
+                        - cell "Type" [ref=e373]:
+                          - paragraph [ref=e374]:
+                            - strong [ref=e378]: Type
+                        - cell "Sample Values" [ref=e379]:
+                          - paragraph [ref=e380]:
+                            - strong [ref=e384]: Sample Values
+                      - row "MerchantName Name of the Company/M-Pesa Merchant Name String \"TEST-Supermarket\"" [ref=e385]:
+                        - cell "MerchantName" [ref=e386]:
+                          - paragraph [ref=e387]:
+                            - generic [ref=e390]: MerchantName
+                        - cell "Name of the Company/M-Pesa Merchant Name" [ref=e391]:
+                          - paragraph [ref=e392]:
+                            - generic [ref=e395]: Name of the Company/M-Pesa Merchant Name
+                        - cell "String" [ref=e396]:
+                          - paragraph [ref=e397]:
+                            - generic [ref=e400]: String
+                        - cell "\"TEST-Supermarket\"" [ref=e401]:
+                          - paragraph [ref=e402]:
+                            - generic [ref=e405]: "\"TEST-Supermarket\""
+                      - row "RefNo Transaction Reference String \"xewr34fer4t\"" [ref=e406]:
+                        - cell "RefNo" [ref=e407]:
+                          - paragraph [ref=e408]:
+                            - generic [ref=e411]: RefNo
+                        - cell "Transaction Reference" [ref=e412]:
+                          - paragraph [ref=e413]:
+                            - generic [ref=e416]: Transaction Reference
+                        - cell "String" [ref=e417]:
+                          - paragraph [ref=e418]:
+                            - generic [ref=e421]: String
+                        - cell "\"xewr34fer4t\"" [ref=e422]:
+                          - paragraph [ref=e423]:
+                            - generic [ref=e426]: "\"xewr34fer4t\""
+                      - row "Amount The total amount for the sale/transaction. Numeric 2000" [ref=e427]:
+                        - cell "Amount" [ref=e428]:
+                          - paragraph [ref=e429]:
+                            - generic [ref=e432]: Amount
+                        - cell "The total amount for the sale/transaction." [ref=e433]:
+                          - paragraph [ref=e434]:
+                            - generic [ref=e437]: The total amount for the sale/transaction.
+                        - cell "Numeric" [ref=e438]:
+                          - paragraph [ref=e439]:
+                            - generic [ref=e442]: Numeric
+                        - cell "2000" [ref=e443]:
+                          - paragraph [ref=e444]:
+                            - generic [ref=e447]: "2000"
+                      - 'row "TrxCode Transaction Type. The supported types are: BG: Pay Merchant (Buy Goods). WA: Withdraw Cash at Agent Till. PB: Paybill or Business number. SM: Send Money(Mobile number) SB: Sent to Business. Business number CPI in MSISDN format. String - BG - WA - PB - SM - SB" [ref=e448]':
+                        - cell "TrxCode" [ref=e449]:
+                          - paragraph [ref=e450]:
+                            - generic [ref=e453]: TrxCode
+                        - 'cell "Transaction Type. The supported types are: BG: Pay Merchant (Buy Goods). WA: Withdraw Cash at Agent Till. PB: Paybill or Business number. SM: Send Money(Mobile number) SB: Sent to Business. Business number CPI in MSISDN format." [ref=e454]':
+                          - paragraph [ref=e455]: "Transaction Type. The supported types are:"
+                          - paragraph [ref=e456]:
+                            - strong [ref=e457]: BG
+                            - text: ": Pay Merchant (Buy Goods)."
+                          - paragraph [ref=e458]:
+                            - strong [ref=e459]: WA
+                            - text: ": Withdraw Cash at Agent Till."
+                          - paragraph [ref=e460]:
+                            - strong [ref=e461]: PB
+                            - text: ": Paybill or Business number."
+                          - paragraph [ref=e462]:
+                            - strong [ref=e463]: SM
+                            - text: ": Send Money(Mobile number)"
+                          - paragraph [ref=e464]:
+                            - strong [ref=e465]: SB
+                            - text: ": Sent to Business. Business number CPI in MSISDN format."
+                        - cell "String" [ref=e466]:
+                          - paragraph [ref=e467]:
+                            - generic [ref=e470]: String
+                        - cell "- BG - WA - PB - SM - SB" [ref=e471]:
+                          - paragraph [ref=e472]: "- BG"
+                          - paragraph [ref=e473]: "- WA"
+                          - paragraph [ref=e474]: "- PB"
+                          - paragraph [ref=e475]: "- SM"
+                          - paragraph [ref=e476]: "- SB"
+                      - row "CPI Credit Party Identifier. Can be a Mobile Number, Business Number, Agent Till, Paybill or Business number, or Merchant Buy Goods. String \"174379\"" [ref=e477]:
+                        - cell "CPI" [ref=e478]:
+                          - paragraph [ref=e479]:
+                            - generic [ref=e482]: CPI
+                        - cell "Credit Party Identifier. Can be a Mobile Number, Business Number, Agent Till, Paybill or Business number, or Merchant Buy Goods." [ref=e483]:
+                          - paragraph [ref=e484]:
+                            - generic [ref=e487]: Credit Party Identifier. Can be a Mobile Number, Business Number, Agent Till, Paybill or Business number, or Merchant Buy Goods.
+                        - cell "String" [ref=e488]:
+                          - paragraph [ref=e489]:
+                            - generic [ref=e492]: String
+                        - cell "\"174379\"" [ref=e493]:
+                          - paragraph [ref=e494]:
+                            - generic [ref=e497]: "\"174379\""
+                      - row "Size Size of the QR code image in pixels. QR code image will always be a square image. String \"300\"" [ref=e498]:
+                        - cell "Size" [ref=e499]:
+                          - paragraph [ref=e500]:
+                            - generic [ref=e503]: Size
+                        - cell "Size of the QR code image in pixels. QR code image will always be a square image." [ref=e504]:
+                          - paragraph [ref=e505]:
+                            - generic [ref=e508]: Size of the QR code image in pixels. QR code image will always be a square image.
+                        - cell "String" [ref=e509]:
+                          - paragraph [ref=e510]:
+                            - generic [ref=e513]: String
+                        - cell "\"300\"" [ref=e514]:
+                          - paragraph [ref=e515]:
+                            - generic [ref=e518]: "\"300\""
+              - generic [ref=e519]:
+                - paragraph [ref=e520]: Response Body
+                - paragraph [ref=e521]:
+                  - generic [ref=e522]:
+                    - generic [ref=e524]: "{"
+                    - generic [ref=e526]: "\"ResponseCode\":\"AG_20191219_000043fdf61864fe9ff5\","
+                    - generic [ref=e527]: "\"RequestID\":\"16738-27456357-1\","
+                    - generic [ref=e528]: "\"ResponseDescription\":QR Code Successfully Generated.,"
+                    - generic [ref=e529]: "\"QRCode\":\"iVBORw0KGgoAAAANSUhEUgAAASwAAAEsCAIAAAD2HxkiAAAHtElEQVR42u3d23rqIBAGUN//pbNv91c1cpwMsP7L1lg uUAaF+XiDyal0MgAqEIhCICoQiEIgKhCIQiAqEIhCICoQiEu+zbf2l7wfvLyl/Z/Cc62/Btk8Ktag/Ot7/1LeWbQLgbw dWtLlVfVxj7AZWEON9hf34wjPoQjhXIRDLsi11TmkspMgPMHhQQjfu7MZYRWnSQhrr6u1lZ0H4fYOIazg8QjCIW3odDX bxqryHcCuGf7oxB2AljIMJ5AzPDEQ7cEQjTISy/Rr1v1fyQ2Yywsw09Ffw4wnMcHjRF0YOwZ5NRCCc9Q0II4QMICyfxB 8eAq4//kMhPOmKCCEsLQLyxG2jTHW/qptcKJhjHT2FAWEEFYj/DnIEfOr/utq84QhhBA+g/DPxTAS4f1DaW0J9i9hq1p yGEUxAWTl1UzSMPnPGbNJcNIYTPI7wq5w/XQjhw8s08IYQTEV6/JtMmIfx2M9wwstI8ZrMKQitmjkbY8+GjUQhHteH+5 wGNmzhjbmfhvCZRBeZRMA8xAOuV5N/YhQHoTX7oEwFOFVP8s36qF3yIBqPMLrgPhkfcsH4Xs2H/jYVnvL3TyO+gjC65j EIRgVAEQhl0cD99bUnP15zMeM3PP73uP1qBkMBXMMIeVw1N1cUQLiNwFML715S/4YxXCoSpBRbWa+c94fuvSmjVnkc4h 9foXFWnsZvEHY9sO222k9DuEaApvL/f6dm8FACOEpIzGjEJa8ZzPC8ntgAiFcCWHzo9fPt+1HWDvWYlQGwsUQ9ox/9MA dA8IYQ73532XwaHI/zGzJUQQgi/XiSHPBOWt8QzIYSbI6wVGIzQ6CiEEFb8Mz0IIZRlEM54pUAI4e/b11FDOBBCuA/Ctt etHa0fMjUGCmEEPoUBYSSFeE14vOEPa8UCCGse+dyVATOzj9sNbb7uEGwmwAAAABJRU5ErkJggg==.\""
+                    - generic [ref=e530]: "}"
+              - generic [ref=e531]:
+                - paragraph [ref=e532]: Response Parameter Definition
+                - paragraph [ref=e533]:
+                  - table [ref=e534]:
+                    - rowgroup [ref=e535]:
+                      - row "Name Description Type Sample Values" [ref=e536]:
+                        - cell "Name" [ref=e537]:
+                          - paragraph [ref=e538]:
+                            - strong [ref=e539]: Name
+                        - cell "Description" [ref=e540]:
+                          - paragraph [ref=e541]:
+                            - strong [ref=e545]: Description
+                        - cell "Type" [ref=e546]:
+                          - paragraph [ref=e547]:
+                            - strong [ref=e551]: Type
+                        - cell "Sample Values" [ref=e552]:
+                          - paragraph [ref=e553]:
+                            - strong [ref=e557]: Sample Values
+                      - row "ResponseCode Used to return the Transaction Type. String An alpha-numeric string of fewer than 20 characters" [ref=e558]:
+                        - cell "ResponseCode" [ref=e559]:
+                          - paragraph [ref=e560]:
+                            - generic [ref=e563]: ResponseCode
+                        - cell "Used to return the Transaction Type." [ref=e564]:
+                          - paragraph [ref=e565]:
+                            - generic [ref=e568]: Used to return the Transaction Type.
+                        - cell "String" [ref=e569]:
+                          - paragraph [ref=e570]:
+                            - generic [ref=e573]: String
+                        - cell "An alpha-numeric string of fewer than 20 characters" [ref=e574]:
+                          - paragraph [ref=e575]:
+                            - generic [ref=e578]: An alpha-numeric string of fewer than 20 characters
+                      - row "ResponseDescription This is a response describing the status of the transaction. String QR Code Successfully Generated" [ref=e579]:
+                        - cell "ResponseDescription" [ref=e580]:
+                          - paragraph [ref=e581]:
+                            - generic [ref=e584]: ResponseDescription
+                        - cell "This is a response describing the status of the transaction." [ref=e585]:
+                          - paragraph [ref=e586]:
+                            - generic [ref=e589]: This is a response describing the status of the transaction.
+                        - cell "String" [ref=e590]:
+                          - paragraph [ref=e591]:
+                            - generic [ref=e594]: String
+                        - cell "QR Code Successfully Generated" [ref=e595]:
+                          - paragraph [ref=e596]: QR Code Successfully Generated
+                      - row "QRCode QR Code Image/Data/String. String An alpha-numeric string containing the QR Code" [ref=e597]:
+                        - cell "QRCode" [ref=e598]:
+                          - paragraph [ref=e599]:
+                            - generic [ref=e602]: QRCode
+                        - cell "QR Code Image/Data/String." [ref=e603]:
+                          - paragraph [ref=e604]:
+                            - generic [ref=e607]: QR Code Image/Data/String.
+                        - cell "String" [ref=e608]:
+                          - paragraph [ref=e609]:
+                            - generic [ref=e612]: String
+                        - cell "An alpha-numeric string containing the QR Code" [ref=e613]:
+                          - paragraph [ref=e614]:
+                            - generic [ref=e617]: An alpha-numeric string containing the QR Code
+      - generic [ref=e248]:
+        - paragraph [ref=e249]: Daraja 3.0
+        - paragraph [ref=e250]: Daraja 3.0 is a web platform that offers access to Safaricom and M-PESA APIs that creates a bridge for payment integration to web and mobile apps. By connecting to our APIs, you open a world of possibilities to you and your clients. Together, we can transform lives.
+    - button "chatbot icon" [ref=e252] [cursor=pointer]:
+      - img "chatbot icon" [ref=e253]
+  - alert [ref=e254]: Safaricom Developers Portal

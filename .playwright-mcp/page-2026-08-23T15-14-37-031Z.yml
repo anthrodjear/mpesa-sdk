@@ -1,0 +1,161 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - banner [ref=e5]:
+        - generic [ref=e7]:
+          - link "safaricom logo" [ref=e9] [cursor=pointer]:
+            - /url: /
+            - img "safaricom logo" [ref=e10]
+          - generic [ref=e11]:
+            - button "Home" [ref=e12] [cursor=pointer]
+            - button "APIs" [ref=e13] [cursor=pointer]
+            - button "Dashboard" [ref=e14] [cursor=pointer]
+            - button "Marketplace" [ref=e15] [cursor=pointer]
+            - button "FAQs" [ref=e16] [cursor=pointer]
+            - button "MiniApps" [ref=e17] [cursor=pointer]
+          - generic [ref=e18]:
+            - button "Sign Up" [ref=e19] [cursor=pointer]: Sign Up
+            - button "Log In" [ref=e20] [cursor=pointer]
+      - generic [ref=e39]:
+        - generic [ref=e41]:
+          - navigation [ref=e42]:
+            - list [ref=e43]:
+              - listitem [ref=e44]:
+                - button "Discover APIs" [ref=e45] [cursor=pointer]:
+                  - img [ref=e46]
+                  - generic [ref=e48]: Discover APIs
+              - listitem [ref=e49]: /
+              - listitem [ref=e50]:
+                - paragraph [ref=e51]: Getting Started
+          - generic [ref=e55]:
+            - heading "Getting Started" [level=6] [ref=e56]
+            - generic [ref=e57]: By Safaricom
+          - paragraph [ref=e58]: Learn how to set up and integrate Daraja APIs into your application and start accepting M-Pesa payments today.
+        - generic [ref=e62]:
+          - heading "Introduction" [level=2] [ref=e63]
+          - paragraph [ref=e64]: Welcome to Safaricom APIs.
+          - paragraph [ref=e65]: We believe in investing in the future, creating technologies that positively impact society, and transforming lives. With more innovators emerging daily, we aim to aid our partners in achieving their business goals through encouraging platforms.
+          - paragraph [ref=e66]: In this release, we provide API endpoints for accessing M-Pesa services, including B2C, C2B, and B2B. Our APIs are RESTful, using HTTP verbs (GET and POST) with JSON-encoded request parameters and responses, including errors.
+          - paragraph [ref=e67]: Our APIs comply with HTTP status codes as defined in RFC 2616. You can invoke our API endpoints using REST clients like Postman or SoapUI, or command-line tools like Curl and Node.js. We provide code samples in Curl, Ruby, PHP, Python, NodeJS, and Java, along with sample JSON responses.
+          - heading "Terminologies" [level=2] [ref=e68]
+          - list [ref=e69]:
+            - listitem [ref=e70]:
+              - strong [ref=e71]: M-PESA
+              - text: ": A mobile money transfer service in Kenya for storing and transferring money via mobile phones."
+            - listitem [ref=e72]:
+              - strong [ref=e73]: Command IDs
+              - text: ": Unique commands specifying transaction types."
+              - list [ref=e74]:
+                - listitem [ref=e75]:
+                  - strong [ref=e76]: Salary Payment
+                  - text: ": Sends money to both registered and unregistered M-Pesa customers."
+                - listitem [ref=e77]:
+                  - strong [ref=e78]: Business Payment
+                  - text: ": Sends money to registered M-Pesa customers."
+                - listitem [ref=e79]:
+                  - strong [ref=e80]: Promotion Payment
+                  - text: ": Sends promotional payments to registered M-Pesa customers with congratulatory messages."
+            - listitem [ref=e81]:
+              - strong [ref=e82]: Short Code
+              - text: ": A unique number for receiving customer payments (Pay Bill, Buy Goods, or Till Number)."
+              - list [ref=e83]:
+                - listitem [ref=e84]:
+                  - strong [ref=e85]: Pay Bill
+                  - text: ": Collects money regularly from customers."
+                - listitem [ref=e86]:
+                  - strong [ref=e87]: Buy Goods
+                  - text: ": Used for retail purchases of goods and services."
+                - listitem [ref=e88]:
+                  - strong [ref=e89]: Till Number
+                  - text: ": Attached to a store for customer payments."
+            - listitem [ref=e90]:
+              - strong [ref=e91]: REST
+              - text: ": A software architectural style for creating web services."
+            - listitem [ref=e92]:
+              - strong [ref=e93]: APIs
+              - text: ": Functions and procedures for creating applications that access features or data of a service."
+            - listitem [ref=e94]:
+              - strong [ref=e95]: DOCS
+              - text: ": Technical documentation for using and integrating with an API."
+          - heading "Testing on Localhost" [level=2] [ref=e96]
+          - paragraph [ref=e97]:
+            - text: To test on localhost, use an HTTP tunneling client like
+            - strong [ref=e98]: Ngrok
+            - text: or
+            - strong [ref=e99]: LocalTunnel
+            - text: to make your local services accessible over the internet.
+          - heading "Going Live" [level=2] [ref=e100]
+          - paragraph [ref=e101]: "After testing the APIs in the sandbox, you're ready for production. Ensure the following:"
+          - list [ref=e102]:
+            - listitem [ref=e103]: You have an M-PESA account (PayBill, Till Number, or B2C).
+            - listitem [ref=e104]:
+              - text: You have access to the
+              - link "M-PESA Portal" [ref=e105] [cursor=pointer]:
+                - /url: https://org.ke.m-pesa.com/
+              - text: and have created an Admin or Business Manager.
+          - paragraph [ref=e106]:
+            - text: Follow the steps on the "Go Live" page. If you lack an admin, contact the M-PESA Business onboarding team at
+            - link "m-pesabusiness@safaricom.co.ke" [ref=e107] [cursor=pointer]:
+              - /url: mailto:m-pesabusiness@safaricom.co.ke
+            - text: .
+          - heading "Callback and IP Whitelisting" [level=2] [ref=e108]
+          - paragraph [ref=e109]: "For payment notifications, our API gateway communicates via callback URLs. Whitelist the following IPs to accept callbacks:"
+          - code [ref=e111]: 196.201.214.200 196.201.214.206 196.201.213.114 196.201.214.207 196.201.214.208 196.201.213.44 196.201.212.127 196.201.212.138 196.201.212.129 196.201.212.136 196.201.212.74 196.201.212.69
+          - paragraph [ref=e112]: Whitelisting ensures you only process notifications from the Safaricom API Gateway.
+          - heading "M-Pesa API Certificates" [level=2] [ref=e113]
+          - paragraph [ref=e114]: "Download the M-Pesa API certificates for encrypting security credentials:"
+          - list [ref=e115]:
+            - listitem [ref=e116]:
+              - link "Click to download M-Pesa public key certificate (Sandbox)" [ref=e117] [cursor=pointer]:
+                - /url: /certificates/SandboxCertificate.cer
+            - listitem [ref=e118]:
+              - link "Click to download M-Pesa public key certificate (Production)" [ref=e119] [cursor=pointer]:
+                - /url: /certificates/ProductionCertificate.cer
+          - paragraph [ref=e120]: These certificates encrypt security credentials for APIs like B2C, B2B, Transaction Status Query, and Reversal.
+          - blockquote [ref=e121]:
+            - paragraph [ref=e122]:
+              - strong [ref=e123]: Note
+              - text: ": These are not for accessing the M-PESA Organization portal. Learn more about portal certificates"
+              - link "here" [ref=e124] [cursor=pointer]:
+                - /url: https://www.youtube.com/watch?v=wQyBkJDsmuw
+              - text: .
+          - heading "How to Generate Your Security Credentials" [level=3] [ref=e125]
+          - paragraph [ref=e126]: M-Pesa Core authenticates transactions by decrypting security credentials. These credentials are generated by encrypting the base64-encoded initiator password with M-Pesa’s public key, an X509 certificate.
+          - heading "Algorithm for Generating Security Credentials" [level=3] [ref=e127]
+          - list [ref=e128]:
+            - listitem [ref=e129]: Write the unencrypted password into a byte array.
+            - listitem [ref=e130]:
+              - text: "Encrypt the array using the M-Pesa public key certificate:"
+              - list [ref=e131]:
+                - listitem [ref=e132]: Use the RSA algorithm.
+                - listitem [ref=e133]: "Apply PKCS #1.5 padding (not OAEP)."
+            - listitem [ref=e134]: Convert the resulting encrypted byte array into a string using base64 encoding.
+          - paragraph [ref=e135]: The resulting base64-encoded string is the security credential.
+          - blockquote [ref=e136]:
+            - paragraph [ref=e137]:
+              - strong [ref=e138]: Note
+              - text: ": Ensure you use the correct public key certificate for the environment (Sandbox or Production) when generating the credentials."
+          - heading "Creating an HTTP Server" [level=2] [ref=e139]
+          - paragraph [ref=e140]: M-Pesa APIs are asynchronous. Responses are sent to the CallBackURL or ResultURL. If the server is unavailable, the API Gateway logs a 503 error and discards the results.
+          - paragraph [ref=e141]: "To receive responses:"
+          - list [ref=e142]:
+            - listitem [ref=e143]: Deploy an HTTP listener with POST methods.
+            - listitem [ref=e144]:
+              - text: Use tools like
+              - strong [ref=e145]: Ngrok
+              - text: or
+              - strong [ref=e146]: LocalTunnel
+              - text: for local testing.
+          - paragraph [ref=e147]: Sample JSON responses and HTTP listeners in Python, NodeJS, PHP, and Java are provided in the API documentation.
+          - heading "SSL Certificates" [level=2] [ref=e148]
+          - paragraph [ref=e149]:
+            - text: Safaricom offers SSL Certificates for robust server authentication, data encryption, and protection against cyber threats. Learn more
+            - link "here" [ref=e150] [cursor=pointer]:
+              - /url: https://domains.safaricom.co.ke/index.php?rp=/store/ssl-certificates
+            - text: .
+      - generic [ref=e30]:
+        - paragraph [ref=e31]: Daraja 3.0
+        - paragraph [ref=e32]: Daraja 3.0 is a web platform that offers access to Safaricom and M-PESA APIs that creates a bridge for payment integration to web and mobile apps. By connecting to our APIs, you open a world of possibilities to you and your clients. Together, we can transform lives.
+    - button "chatbot icon" [ref=e34] [cursor=pointer]:
+      - img "chatbot icon" [ref=e35]
+  - alert [ref=e36]

@@ -1,0 +1,926 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - banner [ref=e5]:
+        - generic [ref=e7]:
+          - link "safaricom logo" [ref=e9] [cursor=pointer]:
+            - /url: /
+            - img "safaricom logo" [ref=e10]
+          - generic [ref=e11]:
+            - button "Home" [ref=e12] [cursor=pointer]
+            - button "APIs" [ref=e13] [cursor=pointer]
+            - button "Dashboard" [ref=e14] [cursor=pointer]
+            - button "Marketplace" [ref=e15] [cursor=pointer]
+            - button "FAQs" [ref=e16] [cursor=pointer]
+            - button "MiniApps" [ref=e17] [cursor=pointer]
+          - generic [ref=e18]:
+            - button "Sign Up" [ref=e19] [cursor=pointer]
+            - button "Log In" [ref=e20] [cursor=pointer]
+      - generic [ref=e344]:
+        - generic [ref=e346]:
+          - navigation [ref=e347]:
+            - list [ref=e348]:
+              - listitem [ref=e349]:
+                - button "Discover APIs" [ref=e350] [cursor=pointer]:
+                  - img [ref=e351]
+                  - generic [ref=e353]: Discover APIs
+              - listitem [ref=e354]: /
+              - listitem [ref=e355]:
+                - paragraph [ref=e356]: Business To Customer (B2C)
+          - generic [ref=e360]:
+            - heading "Business To Customer (B2C)" [level=6] [ref=e361]
+            - generic [ref=e362]: By Safaricom
+          - paragraph [ref=e363]: Enables a business to send money to a registered mobile money customer.
+          - generic [ref=e364]:
+            - generic [ref=e365]:
+              - button "POST" [ref=e366]
+              - paragraph [ref=e368]: https://sandbox.safaricom.co.ke/mpesa/b2c/v3/paymentrequest
+            - img [ref=e370] [cursor=pointer]
+        - generic [ref=e372]:
+          - generic [ref=e374]:
+            - heading "DOCUMENTATION" [level=6] [ref=e375]
+            - navigation [ref=e376]:
+              - listitem [ref=e378] [cursor=pointer]:
+                - generic [ref=e380]: Overview
+              - listitem [ref=e382] [cursor=pointer]:
+                - generic [ref=e384]: How It Works
+              - listitem [ref=e386] [cursor=pointer]:
+                - img [ref=e387]
+                - generic [ref=e390]: Getting Started
+              - listitem [ref=e392] [cursor=pointer]:
+                - img [ref=e393]
+                - generic [ref=e396]: Integration Steps
+              - listitem [ref=e398] [cursor=pointer]:
+                - generic [ref=e400]: Go live
+              - listitem [ref=e402] [cursor=pointer]:
+                - generic [ref=e404]: How To
+              - listitem [ref=e406] [cursor=pointer]:
+                - img [ref=e407]
+                - generic [ref=e410]: Support
+          - generic [ref=e413]:
+            - heading "Overview" [level=2] [ref=e414]
+            - paragraph [ref=e415]: B2C API is used to make payments from a Business to Customers' number also known as Bulk Disbursements.
+            - heading "How It Works" [level=2] [ref=e416]
+            - list [ref=e417]:
+              - listitem [ref=e418]: The Merchant (Partner) prepares and sends a payment request to the M-PESA B2C API endpoint.
+              - listitem [ref=e419]: The API Management Platform validates, authorizes, and authenticates the request, forwards it to M-PESA, and sends an acknowledgment to the Merchant.
+              - listitem [ref=e420]: M-PESA validates the request and initiator details, then processes the transaction.
+              - listitem [ref=e421]: M-PESA sends the transaction response to the Merchant via the specified callback URL.
+              - listitem [ref=e422]: The Customer receives an SMS notification confirming the payment
+            - blockquote [ref=e423]:
+              - paragraph [ref=e424]:
+                - strong [ref=e425]: "Note:"
+                - text: To go live and use the API in production, you must apply for a Bulk Disbursement Account and obtain a B2C Short Code or you convert your existing pay bill/till number to one account(can receive and disburse). Apply for the Bulk Disbursement Account/one account here
+                - link "https://www.safaricom.co.ke/business/sme/m-pesa-payment-solutions" [ref=e426] [cursor=pointer]:
+                  - /url: https://www.safaricom.co.ke/business/sme/m-pesa-payment-solutions
+                - text: .
+            - heading "Getting Started" [level=2] [ref=e427]
+            - heading "Prerequisites" [level=3] [ref=e428]
+            - list [ref=e429]:
+              - listitem [ref=e430]:
+                - text: Create a Daraja Account on
+                - link "Safaricom Developer Portal" [ref=e431] [cursor=pointer]:
+                  - /url: https://daraja.safaricom.co.ke/
+                - text: .
+              - listitem [ref=e432]: Create a sandbox app in the portal to get API credentials.
+              - listitem [ref=e433]:
+                - text: Retrieve Consumer Key & Consumer Secret from your sandbox app on
+                - link "My Apps" [ref=e434] [cursor=pointer]:
+                  - /url: https://daraja.safaricom.co.ke/dashboard/myapps
+                - text: .
+              - listitem [ref=e435]:
+                - strong [ref=e436]: "Test data:"
+                - text: Available on the simulator section.
+              - listitem [ref=e437]:
+                - strong [ref=e438]: "Initiator Username:"
+                - text: This is the API operator's username as set on the portal when the user was created. For Sandbox users, the username is already created and assigned to them and is available on the test credentials page as InitiatorName.
+              - listitem [ref=e439]:
+                - strong [ref=e440]: "Initiator Password:"
+                - text: This is the password assigned to the API operator after being created by the Business Administrator. For Sandbox users, this is available as InitiatorPassword on the test credentials page.
+                - strong [ref=e441]: "Note:"
+                - text: "The password should be limited to specific special characters such as #, &, %, and $. Other characters might cause issues, and the password may not be accepted. For example, using a"
+                - code [ref=e442]: (
+                - text: or
+                - code [ref=e443]: )
+                - text: character will not be accepted. In addition, @ is not a special character on M-Pesa; it is treated as a normal character.
+              - listitem [ref=e444]:
+                - strong [ref=e445]: "Public Key Certificate:"
+                - text: This certificate is used to encrypt the Initiator's plaintext password for use in API calls. It is provided for both Sandbox and Production clients on the portal. You need to encrypt the password using your API language or use the test credentials section, which offers the capability to encrypt your password.
+              - listitem [ref=e446]:
+                - strong [ref=e447]: "Live M-PESA B2C shortcode, Paybill/till number:"
+                - text: For Go Live, you need a shortcode or number that can receive and disburse funds (one account) with Business Admin/Manager operators created.
+            - heading "Good to Know" [level=3] [ref=e448]
+            - paragraph [ref=e449]: This API is asynchronous.
+            - heading "Get Auth Token" [level=4] [ref=e450]
+            - paragraph [ref=e451]:
+              - text: Devs gather here! You will first generate an access token to authenticate you to make the API call. See below generate access token
+              - link "API" [ref=e452] [cursor=pointer]:
+                - /url: https://daraja.safaricom.co.ke/dashboard/apis?api=Authorization
+              - text: here. We’ve also automated this on the simulate request section.
+            - heading "Integration Steps" [level=2] [ref=e453]
+            - heading "Sequence Diagram" [level=3] [ref=e454]
+            - paragraph [ref=e455]:
+              - img "business-to-customer-sequence-diagram!" [ref=e456]
+            - heading "Use Cases" [level=3] [ref=e457]
+            - list [ref=e458]:
+              - listitem [ref=e459]:
+                - paragraph [ref=e460]:
+                  - strong [ref=e461]: Salary Payments
+                  - text: Disbursement of employee wages from businesses to individual customer wallets or bank accounts.
+              - listitem [ref=e462]:
+                - paragraph [ref=e463]:
+                  - strong [ref=e464]: Cashback Payments
+                  - text: Automated refunds or rewards where a portion of money spent by customers is returned to their wallets as part of loyalty or promotional programs.
+              - listitem [ref=e465]:
+                - paragraph [ref=e466]:
+                  - strong [ref=e467]: Promotional Payments
+                  - text: Incentive payouts such as lottery winnings, betting rewards, or other campaign-based disbursements to customers.
+              - listitem [ref=e468]:
+                - paragraph [ref=e469]:
+                  - strong [ref=e470]: Winnings
+                  - text: Payouts from contests, games, or competitions where participants receive monetary rewards.
+              - listitem [ref=e471]:
+                - paragraph [ref=e472]:
+                  - strong [ref=e473]: Financial Institutions Withdrawal of Funds
+                  - text: Transfers initiated to move funds from a financial institution or digital wallet to a customer’s account or for cash-out purposes.
+              - listitem [ref=e474]:
+                - paragraph [ref=e475]:
+                  - strong [ref=e476]: Loan Disbursements
+                  - text: Distribution of approved loan amounts from lenders directly to borrowers’ wallets or bank accounts.
+            - heading "Request Body" [level=3] [ref=e477]
+            - code [ref=e479]: "{ \"OriginatorConversationID\": \"600997_Test_32et3241ed8yu\", \"InitiatorName\": \"testapi\", \"SecurityCredential\": \"RC6E9WDxXR4b9X2c6z3gp0oC5Th ==\", \"CommandID\": \"BusinessPayment\", \"Amount\": \"10\", \"PartyA\": \"600992\", \"PartyB\": \"254705912645\", \"Remarks\": \"remarked\", \"QueueTimeOutURL\": \"https://mydomain.com/path\", \"ResultURL\": \"https://mydomain.com/path\", \"Occassion\": \"ChristmasPay\" }"
+            - heading "Request Parameter Definition" [level=3] [ref=e480]
+            - table [ref=e481]:
+              - rowgroup [ref=e482]:
+                - row "Name Description Type Optional Sample Value" [ref=e483]:
+                  - columnheader "Name" [ref=e484]
+                  - columnheader "Description" [ref=e485]
+                  - columnheader "Type" [ref=e486]
+                  - columnheader "Optional" [ref=e487]
+                  - columnheader "Sample Value" [ref=e488]
+              - rowgroup [ref=e489]:
+                - row "OriginatorConversationID Unique string generated by the merchant system for every B2C request to avoid double disbursement. You can use this ID to query the status of a transaction before making another disbursement. String No 600997*Test*32et3241ed8yu" [ref=e490]:
+                  - cell "OriginatorConversationID" [ref=e491]
+                  - cell "Unique string generated by the merchant system for every B2C request to avoid double disbursement. You can use this ID to query the status of a transaction before making another disbursement." [ref=e492]
+                  - cell "String" [ref=e493]
+                  - cell "No" [ref=e494]
+                  - cell "600997*Test*32et3241ed8yu" [ref=e495]
+                - row "InitiatorName Username of the API user created on the M-PESA portal. String No johndoe" [ref=e496]:
+                  - cell "InitiatorName" [ref=e497]
+                  - cell "Username of the API user created on the M-PESA portal." [ref=e498]
+                  - cell "String" [ref=e499]
+                  - cell "No" [ref=e500]
+                  - cell "johndoe" [ref=e501]
+                - row "SecurityCredential Encrypted password of the API user created on the M-PESA portal. String No RC6E9WDx9X2c6z3gp0oC5Th==" [ref=e502]:
+                  - cell "SecurityCredential" [ref=e503]
+                  - cell "Encrypted password of the API user created on the M-PESA portal." [ref=e504]
+                  - cell "String" [ref=e505]
+                  - cell "No" [ref=e506]
+                  - cell "RC6E9WDx9X2c6z3gp0oC5Th==" [ref=e507]
+                - 'row "CommandID Transaction type used to identify the B2C transaction: - **_SalaryPayment***: Supports sending money to both registered and unregistered M-PESA customers (sending to unregistered numbers is no longer supported). - _BusinessPayment*: Normal business to customer payment, supports only M-PESA registered customers. - **PromotionPayment**: Promotional payment to customers. The M-PESA notification message is a congratulatory message. Supports only M-PESA registered customers. String No BusinessPayment" [ref=e508]':
+                  - cell "CommandID" [ref=e509]
+                  - 'cell "Transaction type used to identify the B2C transaction: - **_SalaryPayment***: Supports sending money to both registered and unregistered M-PESA customers (sending to unregistered numbers is no longer supported). - _BusinessPayment*: Normal business to customer payment, supports only M-PESA registered customers. - **PromotionPayment**: Promotional payment to customers. The M-PESA notification message is a congratulatory message. Supports only M-PESA registered customers." [ref=e510]':
+                    - text: "Transaction type used to identify the B2C transaction: - **_SalaryPayment***: Supports sending money to both registered and unregistered M-PESA customers (sending to unregistered numbers is no longer supported). -"
+                    - strong [ref=e511]: _BusinessPayment
+                    - text: "*: Normal business to customer payment, supports only M-PESA registered customers. - **"
+                    - emphasis [ref=e512]: PromotionPayment
+                    - text: "**: Promotional payment to customers. The M-PESA notification message is a congratulatory message. Supports only M-PESA registered customers."
+                  - cell "String" [ref=e513]
+                  - cell "No" [ref=e514]
+                  - cell "BusinessPayment" [ref=e515]
+                - row "Amount Transaction amount. Numeric No 11" [ref=e516]:
+                  - cell "Amount" [ref=e517]
+                  - cell "Transaction amount." [ref=e518]
+                  - cell "Numeric" [ref=e519]
+                  - cell "No" [ref=e520]
+                  - cell "11" [ref=e521]
+                - row "PartyA B2C organization short code from which the money is sent. Numeric No 600997" [ref=e522]:
+                  - cell "PartyA" [ref=e523]
+                  - cell "B2C organization short code from which the money is sent." [ref=e524]
+                  - cell "Numeric" [ref=e525]
+                  - cell "No" [ref=e526]
+                  - cell "600997" [ref=e527]
+                - row "PartyB Customer’s mobile number to receive the money (12-digit MSISDN without the plus sign, e.g. 254705912645). Numeric No 254705912645" [ref=e528]:
+                  - cell "PartyB" [ref=e529]
+                  - cell "Customer’s mobile number to receive the money (12-digit MSISDN without the plus sign, e.g. 254705912645)." [ref=e530]
+                  - cell "Numeric" [ref=e531]
+                  - cell "No" [ref=e532]
+                  - cell "254705912645" [ref=e533]
+                - row "Remarks Additional information sent with the request (2–100 characters). String No Any string between 2 and 100 chars" [ref=e534]:
+                  - cell "Remarks" [ref=e535]
+                  - cell "Additional information sent with the request (2–100 characters)." [ref=e536]
+                  - cell "String" [ref=e537]
+                  - cell "No" [ref=e538]
+                  - cell "Any string between 2 and 100 chars" [ref=e539]
+                - row "QueueTimeOutURL URL for notification if the payment request times out while awaiting processing. URL No https://mydomain.com/b2c/timedout" [ref=e540]:
+                  - cell "QueueTimeOutURL" [ref=e541]
+                  - cell "URL for notification if the payment request times out while awaiting processing." [ref=e542]
+                  - cell "URL" [ref=e543]
+                  - cell "No" [ref=e544]
+                  - cell "https://mydomain.com/b2c/timedout" [ref=e545]:
+                    - link "https://mydomain.com/b2c/timedout" [ref=e546] [cursor=pointer]:
+                      - /url: https://mydomain.com/b2c/timedout
+                - row "ResultURL URL where the payment gateway sends the result after processing the payment request. URL No https://mydomain.com/b2c/result" [ref=e547]:
+                  - cell "ResultURL" [ref=e548]
+                  - cell "URL where the payment gateway sends the result after processing the payment request." [ref=e549]
+                  - cell "URL" [ref=e550]
+                  - cell "No" [ref=e551]
+                  - cell "https://mydomain.com/b2c/result" [ref=e552]:
+                    - link "https://mydomain.com/b2c/result" [ref=e553] [cursor=pointer]:
+                      - /url: https://mydomain.com/b2c/result
+                - row "Occassion Additional information sent with the request (1–100 characters). String Yes Any string between 1 and 100 chars" [ref=e554]:
+                  - cell "Occassion" [ref=e555]
+                  - cell "Additional information sent with the request (1–100 characters)." [ref=e556]
+                  - cell "String" [ref=e557]
+                  - cell "Yes" [ref=e558]
+                  - cell "Any string between 1 and 100 chars" [ref=e559]
+            - heading "Response Body" [level=3] [ref=e560]
+            - code [ref=e562]: "{ \"ConversationID\": \"AG_20240706_20106e9209f64bebd05b\", \"OriginatorConversationID\": \"600997_Test_32et3241ed8yu\", \"ResponseCode\": \"0\", \"ResponseDescription\": \"Accept the service request successfully.\" }"
+            - heading "Response Parameter Definition" [level=3] [ref=e563]
+            - table [ref=e564]:
+              - rowgroup [ref=e565]:
+                - row "Name Description Parameter Type Sample Value" [ref=e566]:
+                  - columnheader "Name" [ref=e567]
+                  - columnheader "Description" [ref=e568]
+                  - columnheader "Parameter Type" [ref=e569]
+                  - columnheader "Sample Value" [ref=e570]
+              - rowgroup [ref=e571]:
+                - 'row "OriginatorConversationID The unique request ID for tracking a transaction Alpha-Numeric Alpha-Numeric String of less than 20 characters e.g.: 1236-7134259-1" [ref=e572]':
+                  - cell "OriginatorConversationID" [ref=e573]
+                  - cell "The unique request ID for tracking a transaction" [ref=e574]
+                  - cell "Alpha-Numeric" [ref=e575]
+                  - 'cell "Alpha-Numeric String of less than 20 characters e.g.: 1236-7134259-1" [ref=e576]'
+                - 'row "ConversationID The unique request ID returned my M-PESA for each request made Alpha-Numeric Alpha Numeric String of less than 20 characters e.g.: AG_20210709_1234409f86436c583e3f" [ref=e577]':
+                  - cell "ConversationID" [ref=e578]
+                  - cell "The unique request ID returned my M-PESA for each request made" [ref=e579]
+                  - cell "Alpha-Numeric" [ref=e580]
+                  - 'cell "Alpha Numeric String of less than 20 characters e.g.: AG_20210709_1234409f86436c583e3f" [ref=e581]'
+                - row "ResponseCode The numeric status code indicates the status transaction processing. 0 means success and any other code means an error occurred or the transaction failed. Number 0 or 1 or 2001 or 21" [ref=e582]:
+                  - cell "ResponseCode" [ref=e583]
+                  - cell "The numeric status code indicates the status transaction processing. 0 means success and any other code means an error occurred or the transaction failed." [ref=e584]
+                  - cell "Number" [ref=e585]
+                  - cell "0 or 1 or 2001 or 21" [ref=e586]
+                - row "ResponseDescription Response description message String Accept the service request successfully" [ref=e587]:
+                  - cell "ResponseDescription" [ref=e588]
+                  - cell "Response description message" [ref=e589]
+                  - cell "String" [ref=e590]
+                  - cell "Accept the service request successfully" [ref=e591]
+            - paragraph [ref=e592]:
+              - strong [ref=e593]: Callback payload
+              - text: After processing the B2C transaction on M-PESA, you get feedback via the ResultURL which you need to have specified beforehand in the B2C request.
+            - code [ref=e595]: "{ \"Result\": { \"ResultType\": 0, \"ResultCode\": 0, \"ResultDesc\": \"The service request is processed successfully.\", \"OriginatorConversationID\": \"53e3-4aa8-9fe0-8fb5e4092cdd3533373\", \"ConversationID\": \"AG_20240706_2010364430d9bbdaf872\", \"TransactionID\": \"SG632NMUAB\", \"ResultParameters\": { \"ResultParameter\": [ { \"Key\": \"TransactionAmount\", \"Value\": 10 }, { \"Key\": \"TransactionReceipt\", \"Value\": \"SG632NMUAB\" }, { \"Key\": \"ReceiverPartyPublicName\", \"Value\": \"254705912645 - NICHOLAS JOHN SONGOK\" }, { \"Key\": \"TransactionCompletedDateTime\", \"Value\": \"06.07.2024 22:48:52\" }, { \"Key\": \"B2CUtilityAccountAvailableFunds\", \"Value\": 8959269.6 }, { \"Key\": \"B2CWorkingAccountAvailableFunds\", \"Value\": 1199371.0 }, { \"Key\": \"B2CRecipientIsRegisteredCustomer\", \"Value\": \"Y\" }, { \"Key\": \"B2CChargesPaidAccountAvailableFunds\", \"Value\": -1980.0 } ] }, \"ReferenceData\": { \"ReferenceItem\": { \"Key\": \"QueueTimeoutURL\", \"Value\": \"https://internalsandbox.safaricom.co.ke/mpesa/b2cresults/v1/submit\" } } } }"
+            - paragraph [ref=e596]:
+              - strong [ref=e597]: Sample Unsuccessful Callback Payload
+            - code [ref=e599]: "{ \"Result\": { \"ResultType\": 0, \"ResultCode\": 2001, \"ResultDesc\": \"The initiator information is invalid.\", \"OriginatorConversationID\": \"53e3-4aa8-9fe0-8fb5e4092cdd3544366\", \"ConversationID\": \"AG_20240707_201062f6f6f5804f7a33\", \"TransactionID\": \"SG722NMVXQ\", \"ReferenceData\": { \"ReferenceItem\": { \"Key\": \"QueueTimeoutURL\", \"Value\": \"https://internalsandbox.safaricom.co.ke/mpesa/b2cresults/v1/submit\" } } } }"
+            - paragraph [ref=e600]:
+              - strong [ref=e601]: Results Parameter Definition
+            - paragraph [ref=e602]: "The following parameters are returned in the callback payload, whether the request was successful or not:"
+            - table [ref=e603]:
+              - rowgroup [ref=e604]:
+                - row "Parameter Description Type Optional Sample Value" [ref=e605]:
+                  - columnheader "Parameter" [ref=e606]
+                  - columnheader "Description" [ref=e607]
+                  - columnheader "Type" [ref=e608]
+                  - columnheader "Optional" [ref=e609]
+                  - columnheader "Sample Value" [ref=e610]
+              - rowgroup [ref=e611]:
+                - 'row "Result Root object for the entire result message. JSON Object No { ... }" [ref=e612]':
+                  - cell "Result" [ref=e613]
+                  - cell "Root object for the entire result message." [ref=e614]
+                  - cell "JSON Object" [ref=e615]
+                  - cell "No" [ref=e616]
+                  - 'cell "{ ... }" [ref=e617]'
+                - row "ResultType Status code indicating if the transaction was sent to your listener. Usually 0. Numeric No 0" [ref=e618]:
+                  - cell "ResultType" [ref=e619]
+                  - cell "Status code indicating if the transaction was sent to your listener. Usually 0." [ref=e620]
+                  - cell "Numeric" [ref=e621]
+                  - cell "No" [ref=e622]
+                  - cell "0" [ref=e623]
+                - row "ResultCode Status code for transaction processing. 0 means success; any other code means failure. String No 0" [ref=e624]:
+                  - cell "ResultCode" [ref=e625]
+                  - cell "Status code for transaction processing. 0 means success; any other code means failure." [ref=e626]
+                  - cell "String" [ref=e627]
+                  - cell "No" [ref=e628]
+                  - cell "0" [ref=e629]
+                - row "ResultDesc Message describing the status of request processing. String No The service request is processed successfully. The initiator information is invalid." [ref=e630]:
+                  - cell "ResultDesc" [ref=e631]
+                  - cell "Message describing the status of request processing." [ref=e632]
+                  - cell "String" [ref=e633]
+                  - cell "No" [ref=e634]
+                  - cell "The service request is processed successfully. The initiator information is invalid." [ref=e635]
+                - row "OriginatorConversationID Unique identifier for the transaction request, returned by the API proxy. String No 53e3-4aa8-9fe0-8fb5e4092cdd3544366" [ref=e636]:
+                  - cell "OriginatorConversationID" [ref=e637]
+                  - cell "Unique identifier for the transaction request, returned by the API proxy." [ref=e638]
+                  - cell "String" [ref=e639]
+                  - cell "No" [ref=e640]
+                  - cell "53e3-4aa8-9fe0-8fb5e4092cdd3544366" [ref=e641]
+                - row "ConversationID Unique identifier for the transaction request, returned by M-PESA. String No AG_20240707_20106f7a33" [ref=e642]:
+                  - cell "ConversationID" [ref=e643]
+                  - cell "Unique identifier for the transaction request, returned by M-PESA." [ref=e644]
+                  - cell "String" [ref=e645]
+                  - cell "No" [ref=e646]
+                  - cell "AG_20240707_20106f7a33" [ref=e647]
+                - 'row "TransactionID Unique M-PESA transaction ID for each payment request. Also sent to customer via SMS. String No SG722NMVXQ`" [ref=e648]':
+                  - cell "TransactionID" [ref=e649]
+                  - cell "Unique M-PESA transaction ID for each payment request. Also sent to customer via SMS." [ref=e650]
+                  - cell "String" [ref=e651]
+                  - cell "No" [ref=e652]
+                  - 'cell "SG722NMVXQ`" [ref=e653]'
+            - paragraph [ref=e654]: "Additional parameters are returned for a successful request, under ResultParameters:"
+            - table [ref=e655]:
+              - rowgroup [ref=e656]:
+                - row "Parameter Description Type Optional Sample Value" [ref=e657]:
+                  - columnheader "Parameter" [ref=e658]
+                  - columnheader "Description" [ref=e659]
+                  - columnheader "Type" [ref=e660]
+                  - columnheader "Optional" [ref=e661]
+                  - columnheader "Sample Value" [ref=e662]
+              - rowgroup [ref=e663]:
+                - 'row "ResultParameters Object holding more transaction details. JSON Object Yes { \"ResultParameters\": { ... } }" [ref=e664]':
+                  - cell "ResultParameters" [ref=e665]
+                  - cell "Object holding more transaction details." [ref=e666]
+                  - cell "JSON Object" [ref=e667]
+                  - cell "Yes" [ref=e668]
+                  - 'cell "{ \"ResultParameters\": { ... } }" [ref=e669]'
+                - 'row "ResultParameter Array within ResultParameters holding additional transaction details as objects. JSON Array Yes [ { ... }, ... ]" [ref=e670]':
+                  - cell "ResultParameter" [ref=e671]
+                  - cell "Array within ResultParameters holding additional transaction details as objects." [ref=e672]
+                  - cell "JSON Array" [ref=e673]
+                  - cell "Yes" [ref=e674]
+                  - 'cell "[ { ... }, ... ]" [ref=e675]'
+                - row "TransactionAmount Amount transacted. Also returned under ResultParameter. Numeric Yes 10" [ref=e676]:
+                  - cell "TransactionAmount" [ref=e677]
+                  - cell "Amount transacted. Also returned under ResultParameter." [ref=e678]
+                  - cell "Numeric" [ref=e679]
+                  - cell "Yes" [ref=e680]
+                  - cell "10" [ref=e681]
+                - row "TransactionReceipt Unique M-PESA transaction ID for the payment request. String Yes SG722NMVXQ" [ref=e682]:
+                  - cell "TransactionReceipt" [ref=e683]
+                  - cell "Unique M-PESA transaction ID for the payment request." [ref=e684]
+                  - cell "String" [ref=e685]
+                  - cell "Yes" [ref=e686]
+                  - cell "SG722NMVXQ" [ref=e687]
+                - row "ReceiverPartyPublicName Name and phone number of the customer who received the payment. String Yes 254705912645 - NICHOLAS JOHN SONGOK" [ref=e688]:
+                  - cell "ReceiverPartyPublicName" [ref=e689]
+                  - cell "Name and phone number of the customer who received the payment." [ref=e690]
+                  - cell "String" [ref=e691]
+                  - cell "Yes" [ref=e692]
+                  - cell "254705912645 - NICHOLAS JOHN SONGOK" [ref=e693]
+                - row "TransactionCompletedDateTime Date and time the transaction completed on M-PESA. String Yes 06.07.2024 22:48:52" [ref=e694]:
+                  - cell "TransactionCompletedDateTime" [ref=e695]
+                  - cell "Date and time the transaction completed on M-PESA." [ref=e696]
+                  - cell "String" [ref=e697]
+                  - cell "Yes" [ref=e698]
+                  - cell "06.07.2024 22:48:52" [ref=e699]
+                - row "B2CUtilityAccountAvailableFunds Available balance of the Utility account under the B2C shortcode used. Decimal Yes 8959269.60" [ref=e700]:
+                  - cell "B2CUtilityAccountAvailableFunds" [ref=e701]
+                  - cell "Available balance of the Utility account under the B2C shortcode used." [ref=e702]
+                  - cell "Decimal" [ref=e703]
+                  - cell "Yes" [ref=e704]
+                  - cell "8959269.60" [ref=e705]
+                - row "B2CWorkingAccountAvailableFunds Available balance of the Working account under the B2C shortcode used. Decimal Yes 1199371.00" [ref=e706]:
+                  - cell "B2CWorkingAccountAvailableFunds" [ref=e707]
+                  - cell "Available balance of the Working account under the B2C shortcode used." [ref=e708]
+                  - cell "Decimal" [ref=e709]
+                  - cell "Yes" [ref=e710]
+                  - cell "1199371.00" [ref=e711]
+                - row "B2CRecipientIsRegisteredCustomer Indicates if the customer is a registered M-PESA customer. Character Yes \"Y\" for Yes, \"N\" for No" [ref=e712]:
+                  - cell "B2CRecipientIsRegisteredCustomer" [ref=e713]
+                  - cell "Indicates if the customer is a registered M-PESA customer." [ref=e714]
+                  - cell "Character" [ref=e715]
+                  - cell "Yes" [ref=e716]
+                  - cell "\"Y\" for Yes, \"N\" for No" [ref=e717]
+                - row "B2CChargesPaidAccountAvailableFunds Available balance of the Charges Paid account under the B2C shortcode used. Decimal Yes -1980.00" [ref=e718]:
+                  - cell "B2CChargesPaidAccountAvailableFunds" [ref=e719]
+                  - cell "Available balance of the Charges Paid account under the B2C shortcode used." [ref=e720]
+                  - cell "Decimal" [ref=e721]
+                  - cell "Yes" [ref=e722]
+                  - cell "-1980.00" [ref=e723]
+            - paragraph [ref=e724]: "Reference data parameters:"
+            - table [ref=e725]:
+              - rowgroup [ref=e726]:
+                - row "Parameter Description Type Optional Sample Value" [ref=e727]:
+                  - columnheader "Parameter" [ref=e728]
+                  - columnheader "Description" [ref=e729]
+                  - columnheader "Type" [ref=e730]
+                  - columnheader "Optional" [ref=e731]
+                  - columnheader "Sample Value" [ref=e732]
+              - rowgroup [ref=e733]:
+                - 'row "ReferenceData Object holding additional details for the request. JSON Object Yes { \"ReferenceData\": { ... } }" [ref=e734]':
+                  - cell "ReferenceData" [ref=e735]
+                  - cell "Object holding additional details for the request." [ref=e736]
+                  - cell "JSON Object" [ref=e737]
+                  - cell "Yes" [ref=e738]
+                  - 'cell "{ \"ReferenceData\": { ... } }" [ref=e739]'
+                - 'row "ReferenceItem Object within ReferenceData holding more transaction details. JSON Object Yes { \"ReferenceItem\": { ... } }" [ref=e740]':
+                  - cell "ReferenceItem" [ref=e741]
+                  - cell "Object within ReferenceData holding more transaction details." [ref=e742]
+                  - cell "JSON Object" [ref=e743]
+                  - cell "Yes" [ref=e744]
+                  - 'cell "{ \"ReferenceItem\": { ... } }" [ref=e745]'
+            - heading "Sample Error Response" [level=3] [ref=e746]
+            - code [ref=e748]: "{ \"requestId\": \"1c5b-4ba8-815c-ac45c57a3db01469899\", \"errorCode\": \"500.002.1001\", \"errorMessage\": \"Duplicate OriginatorConversationID.\" }"
+            - table [ref=e749]:
+              - rowgroup [ref=e750]:
+                - row "Name Description Sample Type" [ref=e751]:
+                  - columnheader "Name" [ref=e752]
+                  - columnheader "Description" [ref=e753]
+                  - columnheader "Sample" [ref=e754]
+                  - columnheader "Type" [ref=e755]
+              - rowgroup [ref=e756]:
+                - row "requestId Unique identifier assigned by API gateway. 30764-19833054-1 String" [ref=e757]:
+                  - cell "requestId" [ref=e758]
+                  - cell "Unique identifier assigned by API gateway." [ref=e759]
+                  - cell "30764-19833054-1" [ref=e760]
+                  - cell "String" [ref=e761]
+                - row "errorCode Unique error code. 401.001 String" [ref=e762]:
+                  - cell "errorCode" [ref=e763]
+                  - cell "Unique error code." [ref=e764]
+                  - cell "401.001" [ref=e765]
+                  - cell "String" [ref=e766]
+                - row "errorMessage A descriptive message of failure. Bad Request - Invalid amount String" [ref=e767]:
+                  - cell "errorMessage" [ref=e768]
+                  - cell "A descriptive message of failure." [ref=e769]
+                  - cell "Bad Request - Invalid amount" [ref=e770]
+                  - cell "String" [ref=e771]
+            - heading "Response Codes" [level=2] [ref=e772]
+            - table [ref=e773]:
+              - rowgroup [ref=e774]:
+                - row "Response Code Response Description" [ref=e775]:
+                  - columnheader "Response Code" [ref=e776]
+                  - columnheader "Response Description" [ref=e777]
+              - rowgroup [ref=e778]:
+                - row "0 Success" [ref=e779]:
+                  - cell "0" [ref=e780]
+                  - cell "Success" [ref=e781]
+            - heading "Result Codes" [level=2] [ref=e782]
+            - table [ref=e783]:
+              - rowgroup [ref=e784]:
+                - row "ResultCode ResultDesc Explanation" [ref=e785]:
+                  - columnheader "ResultCode" [ref=e786]
+                  - columnheader "ResultDesc" [ref=e787]
+                  - columnheader "Explanation" [ref=e788]
+              - rowgroup [ref=e789]:
+                - row "0 The service request is processed successfully. The B2C transaction has been processed successfully on M-PESA." [ref=e790]:
+                  - cell "0" [ref=e791]
+                  - cell "The service request is processed successfully." [ref=e792]
+                  - cell "The B2C transaction has been processed successfully on M-PESA." [ref=e793]
+                - row "1 The balance is insufficient for the transaction. The B2C account does not have enough money in its utility account to complete the transaction requested." [ref=e794]:
+                  - cell "1" [ref=e795]
+                  - cell "The balance is insufficient for the transaction." [ref=e796]
+                  - cell "The B2C account does not have enough money in its utility account to complete the transaction requested." [ref=e797]
+                - row "2 Declined due to limit rule The amount provided in the request is smaller than the allowed B2C transaction amount." [ref=e798]:
+                  - cell "2" [ref=e799]
+                  - cell "Declined due to limit rule" [ref=e800]
+                  - cell "The amount provided in the request is smaller than the allowed B2C transaction amount." [ref=e801]
+                - 'row "3 Declined due to limit rule: greater than the maximum transaction amount. The amount provided in the request is greater than the allowed B2C transaction amount." [ref=e802]':
+                  - cell "3" [ref=e803]
+                  - 'cell "Declined due to limit rule: greater than the maximum transaction amount." [ref=e804]'
+                  - cell "The amount provided in the request is greater than the allowed B2C transaction amount." [ref=e805]
+                - 'row "4 Declined due to limit rule: would exceed daily transfer limit For the business organization, the daily transfer limit is very high; this rule is more likely to apply to the customer, where the customer daily transfer amount limit is currently Ksh 500,000." [ref=e806]':
+                  - cell "4" [ref=e807]
+                  - 'cell "Declined due to limit rule: would exceed daily transfer limit" [ref=e808]'
+                  - cell "For the business organization, the daily transfer limit is very high; this rule is more likely to apply to the customer, where the customer daily transfer amount limit is currently Ksh 500,000." [ref=e809]
+                - 'row "8 Declined due to limit rule: would exceed the maximum balance. Continuing to process the requested transaction would exceed the maximum customer account balance limit (currently Ksh 500,000)." [ref=e810]':
+                  - cell "8" [ref=e811]
+                  - 'cell "Declined due to limit rule: would exceed the maximum balance." [ref=e812]'
+                  - cell "Continuing to process the requested transaction would exceed the maximum customer account balance limit (currently Ksh 500,000)." [ref=e813]
+                - row "11 The DebitParty is in an invalid state. The B2C account is not active." [ref=e814]:
+                  - cell "11" [ref=e815]
+                  - cell "The DebitParty is in an invalid state." [ref=e816]
+                  - cell "The B2C account is not active." [ref=e817]
+                - row "21 The initiator is not allowed to initiate this request The API user used in the request has no ORG B2C API initiator role required to successfully initiate B2C request." [ref=e818]:
+                  - cell "21" [ref=e819]
+                  - cell "The initiator is not allowed to initiate this request" [ref=e820]
+                  - cell "The API user used in the request has no ORG B2C API initiator role required to successfully initiate B2C request." [ref=e821]
+                - 'row "2001 The initiator information is invalid. The API user credentials provided in the request are invalid. This can be: - Wrong API user username. - Wrong API user password encrypted. - Wrong algorithm or certificate used for API user password encryption." [ref=e822]':
+                  - cell "2001" [ref=e823]
+                  - cell "The initiator information is invalid." [ref=e824]
+                  - 'cell "The API user credentials provided in the request are invalid. This can be: - Wrong API user username. - Wrong API user password encrypted. - Wrong algorithm or certificate used for API user password encryption." [ref=e825]'
+                - 'row "2006 Declined due to account rule: The account status does not allow this transaction. The B2C account is not active." [ref=e826]':
+                  - cell "2006" [ref=e827]
+                  - 'cell "Declined due to account rule: The account status does not allow this transaction." [ref=e828]'
+                  - cell "The B2C account is not active." [ref=e829]
+                - row "2028 The request is not permitted according to product assignment. The PartyA short code specified in the request has no permission to perform B2C payments." [ref=e830]:
+                  - cell "2028" [ref=e831]
+                  - cell "The request is not permitted according to product assignment." [ref=e832]
+                  - cell "The PartyA short code specified in the request has no permission to perform B2C payments." [ref=e833]
+                - row "2040 Credit Party customer type (Unregistered or Registered Customer) can't be supported by the service. The customer is not registered." [ref=e834]:
+                  - cell "2040" [ref=e835]
+                  - cell "Credit Party customer type (Unregistered or Registered Customer) can't be supported by the service." [ref=e836]
+                  - cell "The customer is not registered." [ref=e837]
+                - row "8006 The security credential is locked Indicates that the password for the API user is locked. The Business Administrator can unlock it." [ref=e838]:
+                  - cell "8006" [ref=e839]
+                  - cell "The security credential is locked" [ref=e840]
+                  - cell "Indicates that the password for the API user is locked. The Business Administrator can unlock it." [ref=e841]
+                - row "SFC_IC0003 The operator does not exist. The phone number provided in the request is invalid or does not exist on M-PESA." [ref=e842]:
+                  - cell "SFC_IC0003" [ref=e843]
+                  - cell "The operator does not exist." [ref=e844]
+                  - cell "The phone number provided in the request is invalid or does not exist on M-PESA." [ref=e845]
+            - heading "Next steps" [level=2] [ref=e846]
+            - heading "TESTING" [level=3] [ref=e847]
+            - paragraph [ref=e848]:
+              - strong [ref=e849]:
+                - emphasis [ref=e850]: Testing time Devs
+            - 'heading "Option 1: Daraja Simulator" [level=3] [ref=e851]'
+            - paragraph [ref=e852]:
+              - text: Create a new test app under apps on the main nerve bar, select business to customer product. Once app is successfully created the simulator is automated to pick app credentials (Consumer key and Consumer Secret) and predefined test data, you can hit the simulate button.
+              - img "Create App!" [ref=e853]
+            - 'heading "Note: The simulator can only be accessed when logged in. Please log in to your Daraja account to access the simulator." [level=3] [ref=e854]':
+              - text: "Note: The simulator can only be accessed when logged in. Please"
+              - link "log in" [ref=e855] [cursor=pointer]:
+                - /url: https://developer.safaricom.co.ke/account/login
+              - text: to your Daraja account to access the simulator.
+            - paragraph [ref=e856]:
+              - img "Simulator!" [ref=e857]
+            - 'heading "Option 2: Postman" [level=3] [ref=e858]'
+            - paragraph [ref=e859]: Use the credentials to generate access token using the below endpoint.
+            - list [ref=e860]:
+              - listitem [ref=e861]:
+                - text: "Sandbox:"
+                - link "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials" [ref=e862] [cursor=pointer]:
+                  - /url: https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials
+                - text: .
+              - listitem [ref=e863]:
+                - text: "Production:"
+                - link "https://api.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials" [ref=e864] [cursor=pointer]:
+                  - /url: https://api.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials
+                - text: .
+              - listitem [ref=e865]: "Production: (see production details) Initiate a transaction using the request body above."
+            - 'heading "Note: The Postman collection can only be accessed when logged in. Please log in to your Daraja account to access the collection." [level=3] [ref=e866]':
+              - text: "Note: The Postman collection can only be accessed when logged in. Please"
+              - link "log in" [ref=e867] [cursor=pointer]:
+                - /url: https://developer.safaricom.co.ke/account/login
+              - text: to your Daraja account to access the collection.
+            - paragraph [ref=e868]:
+              - text: Click the button named "Use API" to access the Postman collection with pre-built requests for all APIs.
+              - img "Postman Collection!" [ref=e869]
+            - paragraph [ref=e870]: Download the Postman collection and replace parameters with your credentials.
+            - heading "GO LIVE" [level=3] [ref=e871]
+            - paragraph [ref=e872]:
+              - strong [ref=e873]: Time to launch, here Dev you need help from the business teams no more Rambo stunts behind the keyboard. Some collaboration will do; a handshake to the business team in the morning it is. Wait! You can act Rambo if you are both the Business and Dev
+            - paragraph [ref=e874]: We’ve already tested, and finished development now attach the integration to a live pay bill/till number. Navigate to GO LIVE tab. Fill in the below fields with live data. We require a short code of a live pay bill or till number, the organization name and an M-PESA admin/manager username to successfully go live. Kindly visit our how-to section for more information on m-pesa org portal access and user creation.
+            - paragraph [ref=e875]:
+              - img "Go Live!" [ref=e876]
+            - paragraph [ref=e877]: Upon successful go live, production endpoints will be sent to developer email and the test sandbox app will be moved to production with production consumer key and secrets. Below is how to see the production app.
+            - paragraph [ref=e878]:
+              - strong [ref=e879]: We’ve successfully deployed dev congratulations we are now live!
+            - heading "How To" [level=2] [ref=e880]
+            - paragraph [ref=e881]:
+              - strong [ref=e882]: Access to the M-PESA Organization Portal and create Users
+            - paragraph [ref=e883]: The M-PESA organization portal is a platform designed for businesses and organizations to manage their financial transactions through the M-PESA services.
+            - paragraph [ref=e884]: "The portal offers various features for businesses, including:"
+            - list [ref=e885]:
+              - listitem [ref=e886]: "Transaction Management: Monitor and manage transactions, generate reports, and reconcile accounts."
+              - listitem [ref=e887]: "Account Management: Manage multiple user accounts with different access levels within the organization."
+              - listitem [ref=e888]: "Bulk Payments: Facilitate bulk payments to employees, suppliers, and other beneficiaries efficiently."
+            - paragraph [ref=e889]:
+              - strong [ref=e890]: Access to the M-PESA Organization Portal
+            - paragraph [ref=e891]:
+              - img "org-portal!" [ref=e892]
+            - paragraph [ref=e893]:
+              - text: To access the Organization portal (
+              - link "https://org.ke.m-pesa.com/orglogin.action" [ref=e894] [cursor=pointer]:
+                - /url: https://org.ke.m-pesa.com/orglogin.action
+              - text: ), you need to have a Business Administrator role created under your business short code (Pay Bill/ Till).
+            - paragraph [ref=e895]: The first step before getting access, is to ensure the settlement option set to your short code is Bank via a Head Office application.
+            - paragraph [ref=e896]:
+              - text: To make an application for a Head Office for your short code/Store Number kindly contact
+              - link "M-PESABusiness@Safaricom.co.ke" [ref=e897] [cursor=pointer]:
+                - /url: mailto:M-PESABusiness@Safaricom.co.ke
+              - text: where they will provide you with the forms to be filled.
+            - paragraph [ref=e898]:
+              - text: After Head Office is created the
+              - link "M-PESABusiness@Safaricom.co.ke" [ref=e899] [cursor=pointer]:
+                - /url: mailto:M-PESABusiness@Safaricom.co.ke
+              - text: will also guide on the creation of the Business Administrator (username).
+            - paragraph [ref=e900]:
+              - strong [ref=e901]: "How to login to M-PESA Organization Portal For the first time:"
+            - list [ref=e902]:
+              - listitem [ref=e903]:
+                - text: "Launch the link from any of the browsers:"
+                - link "https://org.ke.m-pesa.com" [ref=e904] [cursor=pointer]:
+                  - /url: https://org.ke.m-pesa.com
+                - text: .
+              - listitem [ref=e905]: Enter the Short code which is Bulk payment number.
+              - listitem [ref=e906]: Enter the Business Administrator username received
+            - paragraph [ref=e907]:
+              - text: To make an application for a Head Office for your short code/Store Number kindly contact
+              - link "M-PESABusiness@Safaricom.co.ke" [ref=e908] [cursor=pointer]:
+                - /url: mailto:M-PESABusiness@Safaricom.co.ke
+              - text: where they will provide you with the forms to be filled. After Head Office is created, the
+              - link "M-PESABusiness@Safaricom.co.ke" [ref=e909] [cursor=pointer]:
+                - /url: mailto:M-PESABusiness@Safaricom.co.ke
+              - text: will also guide on the creation of the Business Administrator (username).
+            - heading "How to login to M-PESA Organization Portal For the first time:" [level=2] [ref=e910]
+            - list [ref=e911]:
+              - listitem [ref=e912]:
+                - text: "Launch the link from any of the browsers:"
+                - link "https://org.ke.m-pesa.com" [ref=e913] [cursor=pointer]:
+                  - /url: https://org.ke.m-pesa.com
+                - text: .
+              - listitem [ref=e914]: Enter the Short code which is Bulk payment number.
+              - listitem [ref=e915]: Enter the Business Administrator username received on email.
+              - listitem [ref=e916]: Enter the first-time password received on the same email – the Password is case-sensitive (full stop is not part of the password).
+              - listitem [ref=e917]: Enter the Verification Code displayed then click login, on the Next Page.
+              - listitem [ref=e918]: Enter OTP to proceed to the change password page.
+              - listitem [ref=e919]: Enter the first-time password on email, then proceed to set a new password.
+              - listitem [ref=e920]: Confirm password, security question, and security answer one and two which are mandatory.
+              - listitem [ref=e921]: The Password must meet the password rules as instructed.
+              - listitem [ref=e922]: Submit to successfully activate the Business Administrator account.
+              - listitem [ref=e923]: After activation, you will only be entering your username, shortcode, and password verification code and entering the OTP received via SMS to log in.
+            - heading "Account Types in C2B Organization" [level=2] [ref=e924]
+            - list [ref=e925]:
+              - listitem [ref=e926]:
+                - paragraph [ref=e927]:
+                  - strong [ref=e928]: MMF/WORKING/M-PESA ACCOUNT FOR ORGANIZATION
+                - list [ref=e929]:
+                  - listitem [ref=e930]: When an organization wants to make a business withdrawal, the funds are transferred to this account before the withdrawal request is made.
+              - listitem [ref=e931]:
+                - paragraph [ref=e932]:
+                  - strong [ref=e933]: UTILITY ACCOUNT
+                - list [ref=e934]:
+                  - listitem [ref=e935]: Payments from customers are credited into the utility account.
+              - listitem [ref=e936]:
+                - paragraph [ref=e937]:
+                  - strong [ref=e938]: CHARGES PAID ACCOUNT
+                - list [ref=e939]:
+                  - listitem [ref=e940]: For payments received from customers, depending on the tariff, a charge is levied on the Organization or is split between the organization and the customer. The charges paid account is debited and always accrues a negative balance which has to be settled before an organization can make a withdrawal request.
+              - listitem [ref=e941]:
+                - paragraph [ref=e942]:
+                  - strong [ref=e943]: ORGANIZATION SETTLEMENT ACCOUNT
+                - list [ref=e944]:
+                  - listitem [ref=e945]: This account does the calculations for the organization operator when s/he initiates a revenue settlement. This account settles the charges paid account and then moves the balance from the Utility Account to the MMF account automatically. You will notice that the transaction type “Move funds from Utility to MMF” is no longer available as the revenue settlement process takes care of this.
+            - heading "Various Roles under the portal" [level=2] [ref=e946]
+            - heading "Business Administrator role" [level=3] [ref=e947]
+            - paragraph [ref=e948]: The Business Administrator role is crucial for managing and overseeing user activities within the portal.
+            - paragraph [ref=e949]:
+              - strong [ref=e950]: "Responsibilities of a Business Administrator:"
+            - list [ref=e951]:
+              - listitem [ref=e952]:
+                - text: "Create other system users and give them roles depending on what he/she wants them to do within the portal. The roles include:"
+                - list [ref=e953]:
+                  - listitem [ref=e954]: A Business Web Operator who can initiate transactions, access statements, and check balance.
+                  - listitem [ref=e955]: A business manager.
+                  - listitem [ref=e956]: A Business Auditor – View Only/ Read Only Rights.
+              - listitem [ref=e957]: Not able to view transactions.
+              - listitem [ref=e958]:
+                - text: User created by Safaricom (
+                - link "M-PESABusiness@Safaricom.co.ke" [ref=e959] [cursor=pointer]:
+                  - /url: mailto:M-PESABusiness@Safaricom.co.ke
+                - text: ).
+            - heading "Business Manager" [level=3] [ref=e960]
+            - paragraph [ref=e961]: The Business manager approves transactions, checks balances, and access statements.
+            - paragraph [ref=e962]:
+              - strong [ref=e963]: "Responsibilities of a Business Manager:"
+            - list [ref=e964]:
+              - listitem [ref=e965]: The user can View statements.
+              - listitem [ref=e966]: The user can initiate transactions.
+              - listitem [ref=e967]: The user can Approve/reject other transactions.
+              - listitem [ref=e968]: The user can withdraw funds from M-PESA.
+            - paragraph [ref=e969]:
+              - strong [ref=e970]: "Proceed as below to create a business manager:"
+            - list [ref=e971]:
+              - listitem [ref=e972]: Log in the Organization portal as the Business administrator.
+              - listitem [ref=e973]: Select operators.
+            - paragraph [ref=e974]:
+              - img "select-operator!" [ref=e975]
+            - list [ref=e976]:
+              - listitem [ref=e977]: Then click the add option.
+              - listitem [ref=e978]: It will take you to a new page where you will enter the username of the operator.
+              - listitem [ref=e979]: Select access channel as Web.
+            - paragraph [ref=e980]:
+              - img "access-channel!" [ref=e981]
+            - list [ref=e982]:
+              - listitem [ref=e983]: Then select web profile default rule profile.
+              - listitem [ref=e984]: Then assign role...Business Manager and Set Restricted ORG API PASSWORD.
+            - paragraph [ref=e985]:
+              - img "assign-role!" [ref=e986]
+            - list [ref=e987]:
+              - listitem [ref=e988]: Enter the KYC information of the operator then submit.
+            - heading "API user creation" [level=3] [ref=e989]
+            - paragraph [ref=e990]:
+              - strong [ref=e991]: "Proceed as below to create an API Operator:"
+            - list [ref=e992]:
+              - listitem [ref=e993]: Log in as the Business administrator.
+              - listitem [ref=e994]: Select operators.
+            - paragraph [ref=e995]:
+              - img "select-operator!" [ref=e996]
+            - list [ref=e997]:
+              - listitem [ref=e998]: Then click the add option.
+              - listitem [ref=e999]: It will take you to a new page where you will enter the username of the API initiator.
+              - listitem [ref=e1000]: Select access channel as API.
+              - listitem [ref=e1001]: Then select web profile default rule profile.
+              - listitem [ref=e1002]: Then assign role...look for the ORG B2C API initiator, Balance Query ORG API, Transaction Status query ORG API roles.
+            - paragraph [ref=e1003]:
+              - img "assign-api-role!" [ref=e1004]
+            - list [ref=e1005]:
+              - listitem [ref=e1006]: Enter the KYC information of the operator then submit.
+            - paragraph [ref=e1007]:
+              - strong [ref=e1008]: "Here is how to set the password for the API user:"
+            - list [ref=e1009]:
+              - listitem [ref=e1010]: Login as User with the Set Restrict Password Role i.e. The Business Manager.
+            - paragraph [ref=e1011]:
+              - img "Operator Management!" [ref=e1012]
+            - list [ref=e1013]:
+              - listitem [ref=e1014]: Click on My Functions, Then Operator Management.
+              - listitem [ref=e1015]: Enter the API username to search after it populates the API user, At the end click on operations.
+              - listitem [ref=e1016]: Then click on set password avoid such (@ or.) in the setting of this password.
+            - paragraph [ref=e1017]:
+              - img "set-password.!" [ref=e1018]
+            - heading "Various API roles:" [level=3] [ref=e1019]
+            - table [ref=e1020]:
+              - rowgroup [ref=e1021]:
+                - row "API API Role Assignment" [ref=e1022]:
+                  - columnheader "API" [ref=e1023]
+                  - columnheader "API Role Assignment" [ref=e1024]
+              - rowgroup [ref=e1025]:
+                - row "B2C ORG B2C API Initiator." [ref=e1026]:
+                  - cell "B2C" [ref=e1027]
+                  - cell "ORG B2C API Initiator." [ref=e1028]
+                - row "Business Pay Bill Business Paybill Org API initiator." [ref=e1029]:
+                  - cell "Business Pay Bill" [ref=e1030]
+                  - cell "Business Paybill Org API initiator." [ref=e1031]
+                - row "Business Buy Goods Business Buy Goods Org API initiator." [ref=e1032]:
+                  - cell "Business Buy Goods" [ref=e1033]
+                  - cell "Business Buy Goods Org API initiator." [ref=e1034]
+                - row "Transaction Status Transaction Status query ORG API." [ref=e1035]:
+                  - cell "Transaction Status" [ref=e1036]
+                  - cell "Transaction Status query ORG API." [ref=e1037]
+                - row "Reversals Org Reversals Initiator." [ref=e1038]:
+                  - cell "Reversals" [ref=e1039]
+                  - cell "Org Reversals Initiator." [ref=e1040]
+                - row "Tax Remittance Tax Remittance to KRA API." [ref=e1041]:
+                  - cell "Tax Remittance" [ref=e1042]
+                  - cell "Tax Remittance to KRA API." [ref=e1043]
+                - row "Set Password role Set Restricted ORG API PASSWORD." [ref=e1044]:
+                  - cell "Set Password role" [ref=e1045]
+                  - cell "Set Restricted ORG API PASSWORD." [ref=e1046]
+            - heading "How to apply for a live pay bill number/till number or B2C Account" [level=2] [ref=e1047]
+            - paragraph [ref=e1048]:
+              - text: "Apply here:"
+              - link "M-PESABusiness@Safaricom.co.ke" [ref=e1049] [cursor=pointer]:
+                - /url: mailto:M-PESABusiness@Safaricom.co.ke
+            - heading "Support" [level=2] [ref=e1050]
+            - heading "Chatbot" [level=3] [ref=e1051]
+            - paragraph [ref=e1052]: Developers can get instant responses using the Daraja Chatbot for both development and production support.
+            - heading "Production Issues & Incident Management" [level=3] [ref=e1053]
+            - paragraph [ref=e1054]: "For production support and incident management, use:"
+            - list [ref=e1055]:
+              - listitem [ref=e1056]:
+                - strong [ref=e1057]: "Incident Management Page:"
+                - text: Visit the
+                - link "Incident Management" [ref=e1058] [cursor=pointer]:
+                  - /url: https://daraja.safaricom.co.ke/dashboard/incidentmanagement
+                - text: page.
+              - listitem [ref=e1059]:
+                - strong [ref=e1060]: "Email:"
+                - text: Reach out to API support at
+                - link "apisupport@safaricom.co.ke" [ref=e1061] [cursor=pointer]:
+                  - /url: mailto:apisupport@safaricom.co.ke
+                - text: .
+            - heading "Frequently Asked Questions (FAQs)" [level=3] [ref=e1062]
+            - list [ref=e1063]:
+              - listitem [ref=e1064]:
+                - paragraph [ref=e1065]:
+                  - strong [ref=e1066]: Why am I not receiving callbacks on my B2C ResultURL?
+                  - text: Ensure your callback endpoint (ResultURL) is publicly accessible over the internet. Use a valid IP address or domain name, and confirm your server is reachable.
+              - listitem [ref=e1067]:
+                - paragraph [ref=e1068]:
+                  - strong [ref=e1069]: What should I do if I encounter an invalid access token error?
+                - list [ref=e1070]:
+                  - listitem [ref=e1071]: Check that your access token has not expired (tokens expire hourly).
+                  - listitem [ref=e1072]: Ensure you are using the correct consumer key and consumer secret to generate the token.
+              - listitem [ref=e1073]:
+                - paragraph [ref=e1074]:
+                  - strong [ref=e1075]: Can I use my actual B2C short code on the Daraja portal simulator?
+                  - text: No. The simulator supports only sandbox test short codes. Use your application or a REST client (e.g., Postman) for live short code testing.
+              - listitem [ref=e1076]:
+                - paragraph [ref=e1077]:
+                  - strong [ref=e1078]: How do I know if the B2C request is successful?
+                  - text: The B2C API is asynchronous. You receive an acknowledgement immediately, but the actual transaction result is sent later to your specified ResultURL. A successful transaction has ResultCode 0.
+              - listitem [ref=e1079]:
+                - paragraph [ref=e1080]:
+                  - strong [ref=e1081]: Is there a test environment for B2C API?
+                  - text: Yes. Use the sandbox environment and test credentials provided on the Daraja developer portal. You can test via the simulator, your code, or any REST client.
+              - listitem [ref=e1082]:
+                - paragraph [ref=e1083]:
+                  - strong [ref=e1084]: Why am I getting a balance insufficient error, yet I have money in my B2C account?
+                  - text: B2C transactions debit the Utility account. Ensure sufficient funds are available in the Utility account, not just the MMF/Working account.
+              - listitem [ref=e1085]:
+                - paragraph [ref=e1086]:
+                  - strong [ref=e1087]: How do I move funds from MMF/Working account to Utility account for B2C disbursement?
+                  - text: "Log in to the M-PESA portal as a Business Web Operator:"
+                - list [ref=e1088]:
+                  - listitem [ref=e1089]: Go to My Functions > Initiate Transaction
+                  - listitem [ref=e1090]: Select "Business Services – Move Funds from MMF Account to Utility Account"
+                  - listitem [ref=e1091]: Enter required details and submit
+                  - listitem [ref=e1092]:
+                    - text: Another operator must approve the transaction under My Tasks > Group Task
+                    - text: This can also be automated via the B2B API.
+              - listitem [ref=e1093]:
+                - paragraph [ref=e1094]:
+                  - strong [ref=e1095]: Can I automate the funds transfer from MMF/Working account to Utility account?
+                  - text: Yes. Use the B2B API with CommandID
+                  - strong [ref=e1096]:
+                    - emphasis [ref=e1097]: BusinessTransferFromMMFToUtility
+                  - text: . Contact
+                  - link "apisupport@safaricom.co.ke" [ref=e1098] [cursor=pointer]:
+                    - /url: mailto:apisupport@safaricom.co.ke
+                  - text: for whitelisting.
+              - listitem [ref=e1099]:
+                - paragraph [ref=e1100]:
+                  - strong [ref=e1101]: What are the minimum and maximum limits for B2C transaction amounts?
+                - list [ref=e1102]:
+                  - listitem [ref=e1103]: "Minimum: Ksh 10"
+                  - listitem [ref=e1104]: "Maximum per transaction: Ksh 250,000"
+                  - listitem [ref=e1105]: "Maximum customer account balance: Ksh 500,000"
+                  - listitem [ref=e1106]: "Maximum daily value: Ksh 500,000"
+              - listitem [ref=e1107]:
+                - paragraph [ref=e1108]:
+                  - strong [ref=e1109]: Which API role is required for B2C requests?
+                  - text: Assign the
+                  - strong [ref=e1110]:
+                    - emphasis [ref=e1111]: ORG B2C API initiator
+                  - text: role to your API user (done by the Business Administrator).
+              - listitem [ref=e1112]:
+                - paragraph [ref=e1113]:
+                  - strong [ref=e1114]: My API user is showing pending active status; how do I activate it?
+                  - text: The API user must have their password set by a user with the Set
+                  - strong [ref=e1115]:
+                    - emphasis [ref=e1116]: Restricted ORG API PASSWORD
+                  - text: role. Once set, the status changes to active.
+              - listitem [ref=e1117]:
+                - paragraph [ref=e1118]:
+                  - strong [ref=e1119]: Why am I getting "initiator information is invalid" error?
+                  - text: "This means the API user credentials are incorrect. Check:"
+                - list [ref=e1120]:
+                  - listitem [ref=e1121]: Username
+                  - listitem [ref=e1122]: Encrypted password
+                  - listitem [ref=e1123]: Encryption algorithm/certificate (use the tool on the developer portal)
+              - listitem [ref=e1124]:
+                - paragraph [ref=e1125]:
+                  - strong [ref=e1126]: Why am I getting "security credential is locked" error?
+                  - text: Multiple failed login attempts lock the API user password. The Business Administrator can unlock it on the M-PESA portal. Ensure the correct password is used.
+              - listitem [ref=e1127]:
+                - paragraph [ref=e1128]:
+                  - strong [ref=e1129]: How do I resolve "Invalid API call as no apiproduct match found" error?
+                - list [ref=e1130]:
+                  - listitem [ref=e1131]: For production, ensure the B2C product is enabled on your Daraja app.
+                  - listitem [ref=e1132]: Verify you are calling the correct API endpoint.
+              - listitem [ref=e1133]:
+                - paragraph [ref=e1134]:
+                  - strong [ref=e1135]: Do I need a passkey for B2C?
+                  - text: No. Passkey is only required for M-PESA Express/STK Push API.
+              - listitem [ref=e1136]:
+                - paragraph [ref=e1137]:
+                  - strong [ref=e1138]: Why is the B2C product missing when I try to Go Live with my pay bill?
+                  - text: Your pay bill may not have B2C permissions. You need a B2C or one account short code. Apply via
+                  - link "https://m-pesaforbusiness.co.ke/" [ref=e1139] [cursor=pointer]:
+                    - /url: https://m-pesaforbusiness.co.ke/
+                  - text: .
+              - listitem [ref=e1140]:
+                - paragraph [ref=e1141]:
+                  - strong [ref=e1142]: Can I reverse a B2C transaction using the Reversal API?
+                  - text: No. B2C reversals are not supported via API and must be done manually on the M-PESA portal.
+              - listitem [ref=e1143]:
+                - paragraph [ref=e1144]:
+                  - strong [ref=e1145]: Why am I getting "Bad Request - Invalid InitiatorName" error?
+                  - text: "Possible causes:"
+                - list [ref=e1146]:
+                  - listitem [ref=e1147]: Wrong Content-Type (should be application/json)
+                  - listitem [ref=e1148]: Incorrect parameter name
+                  - listitem [ref=e1149]: Invalid or missing InitiatorName value
+              - listitem [ref=e1150]:
+                - paragraph [ref=e1151]:
+                  - strong [ref=e1152]: Can I have both B2C and C2B on my Daraja application?
+                  - text: Yes, if both functionalities are enabled for your short code.
+              - listitem [ref=e1153]:
+                - paragraph [ref=e1154]:
+                  - strong [ref=e1155]: Which operator can create an API user?
+                  - text: Only the Business Administrator can create API users. Any web user with the Set Restricted ORG API PASSWORD role can set the password.
+              - listitem [ref=e1156]:
+                - paragraph [ref=e1157]:
+                  - strong [ref=e1158]: Do I need to generate the security credential for every B2C request?
+                  - text: No. You can reuse the same security credential for multiple requests.
+              - listitem [ref=e1159]:
+                - paragraph [ref=e1160]:
+                  - strong [ref=e1161]: Do I need to manually approve B2C requests initiated via API?
+                  - text: No. Manual approval is not required for API-initiated B2C requests.
+              - listitem [ref=e1162]:
+                - paragraph [ref=e1163]:
+                  - strong [ref=e1164]: Can I check B2C transaction status using the Transaction Status Query API?
+                  - text: Yes. Use the OriginatorConversationID or the M-PESA Receipt Number.
+              - listitem [ref=e1165]:
+                - paragraph [ref=e1166]:
+                  - strong [ref=e1167]: Is there an API for moving money from a pay bill number to a B2C short code?
+                  - text: Yes. Use the B2C Account Top Up API to move funds from your pay bill’s Working account to the B2C Utility account. See
+                  - link "B2C Account Top Up API documentation" [ref=e1168] [cursor=pointer]:
+                    - /url: https://developer.safaricom.co.ke/APIs/B2CAccountTopUp
+                  - text: .
+      - generic [ref=e127]:
+        - paragraph [ref=e128]: Daraja 3.0
+        - paragraph [ref=e129]: Daraja 3.0 is a web platform that offers access to Safaricom and M-PESA APIs that creates a bridge for payment integration to web and mobile apps. By connecting to our APIs, you open a world of possibilities to you and your clients. Together, we can transform lives.
+    - button "chatbot icon" [ref=e131] [cursor=pointer]:
+      - img "chatbot icon" [ref=e132]
+  - alert [ref=e133]: Safaricom Developers Portal
