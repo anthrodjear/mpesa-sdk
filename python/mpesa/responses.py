@@ -1,23 +1,33 @@
 """Synchronous acknowledgement payloads (mirrors go/responses.go).
 
-Every model here is the INSTANT reply of an endpoint -- none of them
-confirms money moved (settle via callbacks/classification). Build one
-via ``Model.from_json(raw)``, accepting a dict, JSON str or raw bytes;
-decoding is lenient about TYPES (Safaricom flips str/int encodings)
-but loud about SHAPE (a missing wire key raises ValueError naming it --
-never a raw KeyError). See docs/apis/<endpoint>.md per class.
+Every model here is the INSTANT reply of an endpoint -- none confirms
+money moved (settle via callbacks/classification). Build via
+``Model.from_json(raw)`` (dict, JSON str or raw bytes); decoding is
+lenient about TYPES (Safaricom flips str/int encodings) but loud about
+SHAPE (missing wire key raises ValueError naming it -- never KeyError).
+See docs/apis/<endpoint>.md per class.
+
+Divergences from go/responses.go, deliberate and documented:
+* ``OAuthToken`` is PUBLIC here (Go keeps its token struct unexported);
+  field renamed ``expires_in`` -> ``expires_in_seconds`` (unit explicit).
+* Missing wire keys RAISE here; Go zero-fills silently, hiding gateway
+  contract drift -- ours surfaces it.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar
 
 from .coercion import coerce_int, coerce_str
 
 __all__ = ["STKPushResponse", "STKQueryResponse", "ConversationResponse",
            "B2CResponse", "C2BAckResponse", "QRCodeResponse", "OAuthToken"]
+
+_R = TypeVar("_R", bound="_Response")
+
+_MAX_BODY_CHARS = 1_048_576
 
 
 @dataclass(frozen=True)
@@ -28,16 +38,23 @@ class _Response:
     _COERCE: ClassVar[dict[str, Any]] = {}
 
     @classmethod
-    def from_json(cls, data: "dict | bytes | str") -> "_Response":
+    def from_json(cls: type[_R], data: "dict | bytes | str") -> _R:
         if isinstance(data, (bytes, bytearray)):
             data = data.decode("utf-8", errors="replace")
         if isinstance(data, str):
+            if len(data) > _MAX_BODY_CHARS:
+                raise ValueError(
+                    f"mpesa: {cls.__name__} response exceeds "
+                    f"{_MAX_BODY_CHARS} bytes")
             try:
                 data = json.loads(data)
             except json.JSONDecodeError as exc:
+                raise ValueError(f"mpesa: unparseable {cls.__name__} body "
+                                 f"({exc.msg} at position {exc.pos})") from None
+            except RecursionError:
                 raise ValueError(
                     f"mpesa: unparseable {cls.__name__} body "
-                    f"({type(exc).__name__})") from None
+                    "(RecursionError)") from None
         if not isinstance(data, dict):
             raise ValueError(
                 f"mpesa: unexpected {cls.__name__} response shape: "
@@ -50,9 +67,8 @@ class _Response:
                 f"missing {', '.join(missing)}")
         for attr, key in cls._WIRE.items():
             value = data[key]
-            coerce = cls._COERCE.get(attr)
-            kwargs[attr] = coerce(value) if coerce else (
-                value if isinstance(value, str) else coerce_str(value))
+            kwargs[attr] = cls._COERCE[attr](value) if attr in cls._COERCE \
+                else (coerce_str(value) or "")
         return cls(**kwargs)
 
 
@@ -61,20 +77,16 @@ class STKPushResponse(_Response):
     """Sync ack of POST /mpesa/stkpush/v1/processrequest.
 
     ACCEPTED IS NOT PAID: ``response_code == "0"`` only means Safaricom
-    took the request -- settle exclusively via callback or STK Query.
-    Persist ``checkout_request_id`` as your dedup/join key.
-
+    took the request -- settle exclusively via callback or STK Query;
+    persist ``checkout_request_id`` as the dedup/join key.
     Example::
 
         resp = STKPushResponse.from_json(body)
         if resp.is_accepted:
             order.attach(checkout_request_id=resp.checkout_request_id)
 
-    See docs/apis/stk-push.md. Wire::
-
-        {"MerchantRequestID": "...", "CheckoutRequestID": "ws_CO_...",
-         "ResponseCode": "0", "ResponseDescription": "Success. Request
-         accepted for processing", "CustomerMessage": "..."}
+    See docs/apis/stk-push.md. Wire keys: MerchantRequestID,
+    CheckoutRequestID, ResponseCode, ResponseDescription, CustomerMessage.
     """
 
     merchant_request_id: str = ""
@@ -100,13 +112,13 @@ class STKPushResponse(_Response):
 @dataclass(frozen=True)
 class STKQueryResponse(_Response):
     """Reply of POST /mpesa/stkpushquery/v1/query (docs/apis/stk-query.md):
-    carries the ack AND the transaction outcome; ``result_code`` is
-    normalized to str because captures flip between "1032" and 1032.
+    carries ack AND outcome; ``result_code`` is normalized to str
+    because captures flip between "1032" and 1032.
 
     Example::
 
         resp = STKQueryResponse.from_json(raw)
-        bucket = classify_result_code(resp.result_code)
+        classify_result_code(resp.result_code)  # -> ResultClass.FAILURE
     """
 
     response_code: str = ""
@@ -129,12 +141,11 @@ class STKQueryResponse(_Response):
 
 @dataclass(frozen=True)
 class ConversationResponse(_Response):
-    """Shared sync ACK of the async APIs -- B2C, Transaction Status,
-    Reversal, Account Balance (docs/apis/b2c.md et al.). Usage::
+    """Shared sync ACK of the async APIs -- B2C/TxStatus/Reversal/Balance
+    (docs/apis/b2c.md et al.). Usage::
 
         ack = ConversationResponse.from_json(raw)
-        enqueue_poll(ack.originator_conversation_id)
-    """
+        enqueue_poll(ack.originator_conversation_id)    """
 
     originator_conversation_id: str = ""
     conversation_id: str = ""
@@ -150,7 +161,13 @@ class ConversationResponse(_Response):
 
 
 B2CResponse = ConversationResponse
-"""Alias: B2C payouts return this exact ACK shape (go type parity)."""
+"""Alias: B2C payouts return this exact ACK shape (go type parity).
+
+Usage::
+
+    ack = B2CResponse.from_json(raw)
+See docs/apis/b2c.md for the full payout flow.
+"""
 
 
 @dataclass(frozen=True)
@@ -160,12 +177,11 @@ class C2BAckResponse(_Response):
     WIRE TRAPS, both loud: Safaricom MISSPELLS the key as
     ``OriginatorCoversationID`` (single 's' in Coversation -- we accept
     ONLY their spelling so typos fail fast), and there is NO
-    ``ConversationID`` field at all on this endpoint.
+    ``ConversationID`` field at all.
 
     Example::
 
-        ack = C2BAckResponse.from_json(raw)
-        assert ack.response_code == "0"
+        ack = C2BAckResponse.from_json(raw); assert ack.response_code == "0"
     """
 
     originator_conversation_id: str = ""
@@ -187,9 +203,7 @@ class QRCodeResponse(_Response):
     OPAQUE alphanumeric tracking string (e.g. "AG_20191219_000043f...")
     preserved verbatim here. Usage::
 
-        qr = QRCodeResponse.from_json(raw)
-        render(qr.qr_code)
-    """
+        qr = QRCodeResponse.from_json(raw); render(qr.qr_code)    """
 
     response_code: str = ""
     request_id: str = ""
@@ -207,15 +221,20 @@ class QRCodeResponse(_Response):
 @dataclass(frozen=True)
 class OAuthToken(_Response):
     """Payload of GET /oauth/v1/generate (docs/apis/oauth.md);
-    ``expires_in_seconds`` is coerced from the observed "3599"/3599
-    shapes -- None means TTL unknown, so refresh defensively. Usage::
+    ``expires_in_seconds`` coerces the observed "3599"/3599 shapes --
+    None means TTL unknown, so refresh defensively. Usage::
 
         token = OAuthToken.from_json(raw)
-        cache(token.access_token, ttl=token.expires_in_seconds)
-    """
+        cache(token.access_token, ttl=token.expires_in_seconds)    """
 
     access_token: str = ""
     expires_in_seconds: int | None = None
 
     _WIRE = {"access_token": "access_token", "expires_in_seconds": "expires_in"}
     _COERCE = {"access_token": str, "expires_in_seconds": coerce_int}
+
+    def __repr__(self) -> str:
+        """Credential-safe: token length only, never the value."""
+        token = f"<redacted {len(self.access_token)}ch>"
+        return (f"OAuthToken(access_token={token}, "
+                f"expires_in_seconds={self.expires_in_seconds!r})")

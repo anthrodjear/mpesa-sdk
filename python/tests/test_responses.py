@@ -122,3 +122,72 @@ def test_bytes_str_dict_inputs_equivalent():
     from_str = OAuthToken.from_json(json := '{"access_token": "abc", "expires_in": "3600"}')
     from_bytes = OAuthToken.from_json(json.encode())
     assert OAuthToken.from_json(as_dict) == from_str == from_bytes
+
+
+def test_recursion_bomb_becomes_value_error():
+    with pytest.raises(ValueError, match="RecursionError"):
+        STKPushResponse.from_json("[" * 100_000)
+
+
+def test_oversize_body_rejected_before_parse():
+    with pytest.raises(ValueError, match="exceeds 1048576 bytes"):
+        STKPushResponse.from_json('{"x":"' + "A" * 1_048_577 + '"}')
+
+
+def test_oauth_token_repr_never_leaks_token():
+    token = OAuthToken.from_json({"access_token": "SECRET-TOKEN-123",
+                                  "expires_in": "3599"})
+    rendered = repr(token)
+    assert "SECRET-TOKEN-123" not in rendered
+    assert "<redacted 16ch>" in rendered
+    assert "expires_in_seconds=3599" in rendered
+
+
+def test_int_response_code_is_accepted_leniently():
+    resp = STKPushResponse.from_json({
+        "MerchantRequestID": "m", "CheckoutRequestID": "c",
+        "ResponseCode": 0, "ResponseDescription": None,
+        "CustomerMessage": None,
+    })
+    assert resp.response_code == "0"
+    assert resp.is_accepted is True
+    assert resp.response_description == ""  # null coerced to empty string
+
+
+def test_parse_error_includes_decoder_position_not_body():
+    marker_body = '{"SECRET-MARKER": '
+    with pytest.raises(ValueError) as excinfo:
+        STKPushResponse.from_json(marker_body)
+    message = str(excinfo.value)
+    assert "position" in message
+    assert "SECRET-MARKER" not in message
+
+
+@pytest.mark.parametrize("cls", [STKQueryResponse, C2BAckResponse, QRCodeResponse])
+def test_missing_key_errors_name_keys_per_class(cls):
+    with pytest.raises(ValueError) as excinfo:
+        cls.from_json({})
+    message = str(excinfo.value)
+    for key in cls._WIRE.values():
+        assert key in message
+
+
+@pytest.mark.parametrize("raw,want_ttl", [
+    ({"access_token": "t", "expires_in": "abc"}, None),
+    ({"access_token": "t", "expires_in": 1.5}, None),
+    ({"access_token": "t", "expires_in": 3599.0}, 3599),
+])
+def test_expires_in_hostile_paths(raw, want_ttl):
+    assert OAuthToken.from_json(raw).expires_in_seconds == want_ttl
+
+
+def test_extra_keys_ignored_and_models_frozen():
+    resp = STKQueryResponse.from_json({
+        "ResponseCode": "0", "ResponseDescription": "ok",
+        "MerchantRequestID": "m", "CheckoutRequestID": "ws_CO_1",
+        "ResultCode": 1032, "ResultDesc": "cancelled",
+        "UnexpectedExtra": "ignored",
+    })
+    assert resp.result_code == "1032"
+    with pytest.raises(AttributeError):
+        resp.result_desc = "mutate"  # type: ignore[misc]
