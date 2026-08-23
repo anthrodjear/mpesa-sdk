@@ -191,3 +191,23 @@ def test_extra_keys_ignored_and_models_frozen():
     assert resp.result_code == "1032"
     with pytest.raises(AttributeError):
         resp.result_desc = "mutate"  # type: ignore[misc]
+
+
+def test_giant_int_field_decodes_to_explicit_absence():
+    # Mirrors the results/callbacks giant-int rows: a 400-digit integer
+    # must not survive as an unbounded value anywhere in the model.
+    raw = (
+        '{"MerchantRequestID":"m","CheckoutRequestID":"c",'
+        '"ResponseCode":' + "9" * 400 + ','
+        '"ResponseDescription":"ok","CustomerMessage":"hi"}'
+    )
+    resp = STKPushResponse.from_json(raw)
+    assert resp.response_code == ""            # hostile magnitude -> absence
+    assert resp.is_accepted is False
+
+    token = OAuthToken.from_json(
+        {"access_token": "t", "expires_in": int("7" * 400)})
+    token2 = OAuthToken.from_json(
+        '{"access_token":"t","expires_in":' + "7" * 400 + "}")
+    assert token.expires_in_seconds is None
+    assert token2.expires_in_seconds is None   # TTL-unknown, not corrupted

@@ -20,7 +20,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, ClassVar, TypeVar
 
-from .coercion import coerce_int, coerce_str
+from .coercion import coerce_int, coerce_str, safe_json_int
 
 __all__ = ["STKPushResponse", "STKQueryResponse", "ConversationResponse",
            "B2CResponse", "C2BAckResponse", "QRCodeResponse", "OAuthToken"]
@@ -47,7 +47,7 @@ class _Response:
                     f"mpesa: {cls.__name__} response exceeds "
                     f"{_MAX_BODY_CHARS} bytes")
             try:
-                data = json.loads(data)
+                data = json.loads(data, parse_int=safe_json_int)
             except json.JSONDecodeError as exc:
                 raise ValueError(f"mpesa: unparseable {cls.__name__} body "
                                  f"({exc.msg} at position {exc.pos})") from None
@@ -67,6 +67,9 @@ class _Response:
                 f"missing {', '.join(missing)}")
         for attr, key in cls._WIRE.items():
             value = data[key]
+            if isinstance(value, int) and not isinstance(value, bool) \
+                    and abs(value) > 2 ** 53:
+                value = None  # unbounded magnitude -> explicit absence
             kwargs[attr] = cls._COERCE[attr](value) if attr in cls._COERCE \
                 else (coerce_str(value) or "")
         return cls(**kwargs)
