@@ -34,17 +34,18 @@ type STKQueryRequest struct {
 // Safaricom exactly, including the double-s Occassion and InitiatorName.
 // Contains credentials — never log directly; GoString/Format redact.
 type B2CPayoutRequest struct {
-	OriginatorConversationID string    `json:"OriginatorConversationID,omitempty"`
-	InitiatorName            string    `json:"InitiatorName"`
-	SecurityCredential       string    `json:"SecurityCredential"`
-	CommandID                CommandID `json:"CommandID"`
-	Amount                   int64     `json:"Amount"`
-	PartyA                   string    `json:"PartyA"`
-	PartyB                   string    `json:"PartyB"`
-	Remarks                  string    `json:"Remarks"`
-	QueueTimeOutURL          string    `json:"QueueTimeOutURL"`
-	ResultURL                string    `json:"ResultURL"`
-	Occassion                string    `json:"Occassion,omitempty"`
+	OriginatorConversationID string `json:"OriginatorConversationID,omitempty"`
+	InitiatorName            string `json:"InitiatorName"`
+	// Build via mpesa.SecurityCredential() — see docs/apis/getting-started.md.
+	SecurityCredential string    `json:"SecurityCredential"`
+	CommandID          CommandID `json:"CommandID"`
+	Amount             int64     `json:"Amount"`
+	PartyA             string    `json:"PartyA"`
+	PartyB             string    `json:"PartyB"`
+	Remarks            string    `json:"Remarks"`
+	QueueTimeOutURL    string    `json:"QueueTimeOutURL"`
+	ResultURL          string    `json:"ResultURL"`
+	Occassion          string    `json:"Occassion,omitempty"`
 }
 
 // GoString redacts SecurityCredential for %#v formatting.
@@ -61,7 +62,8 @@ func (r B2CPayoutRequest) Format(f fmt.State, verb rune) {
 // TransactionStatusRequest queries by receipt XOR original conversation ID.
 // Contains credentials — never log directly; GoString/Format redact.
 type TransactionStatusRequest struct {
-	Initiator              string    `json:"Initiator"`
+	Initiator string `json:"Initiator"`
+	// Build via mpesa.SecurityCredential() — see docs/apis/getting-started.md.
 	SecurityCredential     string    `json:"SecurityCredential"`
 	CommandID              CommandID `json:"CommandID,omitempty"`
 	TransactionID          string    `json:"TransactionID,omitempty"`
@@ -90,7 +92,8 @@ func (r TransactionStatusRequest) Format(f fmt.State, verb rune) {
 // spelled correctly; default "11".
 // Contains credentials — never log directly; GoString/Format redact.
 type ReversalRequest struct {
-	Initiator              string    `json:"Initiator"`
+	Initiator string `json:"Initiator"`
+	// Build via mpesa.SecurityCredential() — see docs/apis/getting-started.md.
 	SecurityCredential     string    `json:"SecurityCredential"`
 	CommandID              CommandID `json:"CommandID,omitempty"`
 	TransactionID          string    `json:"TransactionID"`
@@ -116,7 +119,8 @@ func (r ReversalRequest) Format(f fmt.State, verb rune) {
 // AccountBalanceRequest queries organization shortcode balances.
 // Contains credentials — never log directly; GoString/Format redact.
 type AccountBalanceRequest struct {
-	Initiator          string    `json:"Initiator"`
+	Initiator string `json:"Initiator"`
+	// Build via mpesa.SecurityCredential() — see docs/apis/getting-started.md.
 	SecurityCredential string    `json:"SecurityCredential"`
 	CommandID          CommandID `json:"CommandID,omitempty"`
 	PartyA             string    `json:"PartyA"`

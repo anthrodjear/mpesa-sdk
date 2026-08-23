@@ -213,7 +213,10 @@ func (c *Client) STKPush(ctx context.Context, r STKPushRequest) (*STKPushRespons
 	}
 	// Password binds to the shortcode actually sent — divergent values cause
 	// 500.001.1001 credential mismatches.
-	password, timestamp := GeneratePassword(r.BusinessShortCode, c.cfg.Passkey, c.cfg.Now())
+	password, timestamp, err := GeneratePassword(r.BusinessShortCode, c.cfg.Passkey, c.cfg.Now())
+	if err != nil {
+		return nil, err
+	}
 	payload := struct {
 		STKPushRequest
 		Password  string `json:"Password"`
@@ -232,7 +235,10 @@ func (c *Client) STKQuery(ctx context.Context, r STKQueryRequest) (*STKQueryResp
 	if err := r.Validate(); err != nil {
 		return nil, err
 	}
-	password, timestamp := GeneratePassword(c.cfg.Shortcode, c.cfg.Passkey, c.cfg.Now())
+	password, timestamp, err := GeneratePassword(c.cfg.Shortcode, c.cfg.Passkey, c.cfg.Now())
+	if err != nil {
+		return nil, err
+	}
 	payload := struct {
 		BusinessShortCode string `json:"BusinessShortCode"`
 		Password          string `json:"Password"`
@@ -250,7 +256,11 @@ func (c *Client) STKQuery(ctx context.Context, r STKQueryRequest) (*STKQueryResp
 // B2CPayout pays a registered shortcode out to a customer MSISDN (async).
 func (c *Client) B2CPayout(ctx context.Context, r B2CPayoutRequest) (*B2CResponse, error) {
 	if r.OriginatorConversationID == "" {
-		r.OriginatorConversationID = newOriginatorID()
+		ocid, oerr := newOriginatorID()
+		if oerr != nil {
+			return nil, fmt.Errorf("mpesa: generate OriginatorConversationID: %w", oerr)
+		}
+		r.OriginatorConversationID = ocid
 	}
 	if err := r.Validate(); err != nil {
 		return nil, err
