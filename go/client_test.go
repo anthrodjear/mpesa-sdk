@@ -255,7 +255,7 @@ func TestAllEndpointsHitDocumentedPathsWithBearer(t *testing.T) {
 		}
 	})
 	assertBody(txStatusPath, func(m map[string]any) {
-		if m["CommandID"] != CommandTransactionStatusQuery {
+		if m["CommandID"] != string(CommandTransactionStatusQuery) {
 			t.Errorf("txstatus CommandID = %v", m["CommandID"])
 		}
 		if m["IdentifierType"] != IdentifierOrgShortcode {
@@ -266,12 +266,12 @@ func TestAllEndpointsHitDocumentedPathsWithBearer(t *testing.T) {
 		if m["RecieverIdentifierType"] != ReceiverIdentifierOrg {
 			t.Errorf("reversal RecieverIdentifierType default = %v, want 11", m["RecieverIdentifierType"])
 		}
-		if m["CommandID"] != CommandTransactionReversal {
+		if m["CommandID"] != string(CommandTransactionReversal) {
 			t.Errorf("reversal CommandID = %v", m["CommandID"])
 		}
 	})
 	assertBody(accountBalancePath, func(m map[string]any) {
-		if m["CommandID"] != CommandAccountBalance {
+		if m["CommandID"] != string(CommandAccountBalance) {
 			t.Errorf("balance CommandID = %v", m["CommandID"])
 		}
 	})

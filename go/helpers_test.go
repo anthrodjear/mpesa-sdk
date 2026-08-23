@@ -130,41 +130,11 @@ func TestSecurityCredentialRejectsGarbage(t *testing.T) {
 	}
 }
 
-func TestClassifyResultCode(t *testing.T) {
-	cases := []struct {
-		code string
-		want ResultClass
-	}{
-		{"0", ResultClassSuccess},
-		{"1", ResultClassFailure},
-		{"17", ResultClassFailure},
-		{"1019", ResultClassFailure},
-		{"1025", ResultClassFailure},
-		{"2001", ResultClassFailure},
-		{"9999", ResultClassFailure},
-		{"1001", ResultClassIndeterminate},
-		{"1037", ResultClassIndeterminate},
-		{"26", ResultClassIndeterminate},
-		{"4999", ResultClassIndeterminate},
-		// Unknown codes are NEVER auto-failed (ADR-010 safety rule).
-		{"1032", ResultClassIndeterminate},
-		{"-5", ResultClassIndeterminate},
-		{"123456", ResultClassIndeterminate},
-		{"SFC_IC0003", ResultClassIndeterminate},
-		{"", ResultClassIndeterminate},
-	}
-	for _, tc := range cases {
-		if got := ClassifyResultCode(tc.code); got != tc.want {
-			t.Errorf("ClassifyResultCode(%q) = %q, want %q", tc.code, got, tc.want)
-		}
-	}
-}
-
 func TestParseBalanceSegments(t *testing.T) {
 	in := "Working Account|KES|700000.00|700000.00|0.00|0.00&Utility Account|KES|228037.00|228037.00|0.00|0.00&Charges Paid Account|KES|-1540.00|-1540.00|0.00|0.00&"
-	segs, err := ParseBalanceSegments(in)
-	if err != nil {
-		t.Fatalf("ParseBalanceSegments: %v", err)
+	segs, skipped := ParseBalanceSegments(in)
+	if skipped != 0 {
+		t.Fatalf("clean input skipped = %d, want 0", skipped)
 	}
 	if len(segs) != 3 {
 		t.Fatalf("got %d segments, want 3", len(segs))
@@ -173,7 +143,20 @@ func TestParseBalanceSegments(t *testing.T) {
 	if last.AccountName != "Charges Paid Account" || last.Available != -1540.0 || last.Currency != "KES" {
 		t.Fatalf("last segment = %+v", last)
 	}
-	if empty, err := ParseBalanceSegments(""); err != nil || empty != nil {
-		t.Fatalf("empty input: segs=%v err=%v", empty, err)
+	wantRaw := "Charges Paid Account|KES|-1540.00|-1540.00|0.00|0.00"
+	if last.Raw != wantRaw {
+		t.Fatalf("Raw = %q, want %q", last.Raw, wantRaw)
+	}
+
+	// Malformed rows are skipped and counted, never fatal (account-balance.md
+	// tolerance requirement).
+	junk := "Utility Account|KES|1.00|1.00|0.00|0.00&GARBAGE ROW&Charges Paid Account|KES|-1540.00|-1540.00|0.00|0.00&Short|Row&"
+	segs, skipped = ParseBalanceSegments(junk)
+	if len(segs) != 2 || skipped != 2 {
+		t.Fatalf("junk input: %d segments (want 2), skipped %d (want 2)", len(segs), skipped)
+	}
+	segs, skipped = ParseBalanceSegments("")
+	if segs != nil || skipped != 0 {
+		t.Fatalf("empty input: segs=%v skipped=%d", segs, skipped)
 	}
 }

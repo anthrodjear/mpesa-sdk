@@ -211,7 +211,7 @@ func (c *Client) STKPush(ctx context.Context, r STKPushRequest) (*STKPushRespons
 	if r.TransactionType == "" {
 		r.TransactionType = TransactionTypePayBillOnline
 	}
-	if err := validateSTKPush(&r); err != nil {
+	if err := r.Validate(); err != nil {
 		return nil, err
 	}
 	// Password binds to the shortcode actually sent — divergent values cause
@@ -232,7 +232,7 @@ func (c *Client) STKPush(ctx context.Context, r STKPushRequest) (*STKPushRespons
 
 // STKQuery checks the outcome of a push; the fallback when callbacks are late.
 func (c *Client) STKQuery(ctx context.Context, r STKQueryRequest) (*STKQueryResponse, error) {
-	if err := validateSTKQuery(&r); err != nil {
+	if err := r.Validate(); err != nil {
 		return nil, err
 	}
 	password, timestamp := GeneratePassword(c.cfg.Shortcode, c.cfg.Passkey, c.cfg.Now())
@@ -255,7 +255,7 @@ func (c *Client) B2CPayout(ctx context.Context, r B2CPayoutRequest) (*B2CRespons
 	if r.OriginatorConversationID == "" {
 		r.OriginatorConversationID = newOriginatorID()
 	}
-	if err := validateB2C(&r); err != nil {
+	if err := r.Validate(); err != nil {
 		return nil, err
 	}
 	var out B2CResponse
@@ -273,7 +273,7 @@ func (c *Client) TransactionStatus(ctx context.Context, r TransactionStatusReque
 	if r.IdentifierType == "" {
 		r.IdentifierType = IdentifierOrgShortcode
 	}
-	if err := validateTransactionStatus(&r); err != nil {
+	if err := r.Validate(); err != nil {
 		return nil, err
 	}
 	var out ConversationResponse
@@ -288,10 +288,10 @@ func (c *Client) Reversal(ctx context.Context, r ReversalRequest) (*Conversation
 	if r.CommandID == "" {
 		r.CommandID = CommandTransactionReversal
 	}
-	if r.RecieverIdentifierType == "" {
-		r.RecieverIdentifierType = ReceiverIdentifierOrg
+	if r.ReceiverIdentifierType == "" {
+		r.ReceiverIdentifierType = ReceiverIdentifierOrg
 	}
-	if err := validateReversal(&r); err != nil {
+	if err := r.Validate(); err != nil {
 		return nil, err
 	}
 	var out ConversationResponse
@@ -309,7 +309,7 @@ func (c *Client) AccountBalance(ctx context.Context, r AccountBalanceRequest) (*
 	if r.IdentifierType == "" {
 		r.IdentifierType = IdentifierOrgShortcode
 	}
-	if err := validateAccountBalance(&r); err != nil {
+	if err := r.Validate(); err != nil {
 		return nil, err
 	}
 	var out ConversationResponse
@@ -325,7 +325,7 @@ func (c *Client) C2BRegisterURL(ctx context.Context, r C2BRegisterRequest) (*C2B
 	if r.ShortCode == "" {
 		r.ShortCode = c.cfg.Shortcode
 	}
-	if err := validateC2BRegister(&r); err != nil {
+	if err := r.Validate(); err != nil {
 		return nil, err
 	}
 	var out C2BAckResponse
@@ -340,7 +340,7 @@ func (c *Client) C2BSimulate(ctx context.Context, r C2BSimulateRequest) (*C2BAck
 	if r.ShortCode == "" {
 		r.ShortCode = c.cfg.Shortcode
 	}
-	if err := validateC2BSimulate(&r); err != nil {
+	if err := r.Validate(); err != nil {
 		return nil, err
 	}
 	var out C2BAckResponse
@@ -352,7 +352,7 @@ func (c *Client) C2BSimulate(ctx context.Context, r C2BSimulateRequest) (*C2BAck
 
 // GenerateQRCode creates a dynamic M-PESA QR image payload (fully synchronous).
 func (c *Client) GenerateQRCode(ctx context.Context, r QRCodeRequest) (*QRCodeResponse, error) {
-	if err := validateQRCode(&r); err != nil {
+	if err := r.Validate(); err != nil {
 		return nil, err
 	}
 	var out QRCodeResponse
