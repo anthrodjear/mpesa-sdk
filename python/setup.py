@@ -38,8 +38,12 @@ setup(
     packages=find_packages(exclude=["tests", "tests.*"]),
     python_requires=">=3.9",
     install_requires=[
-        "requests>=2.31,<3",
-        "cryptography>=42",
+        # >=2.32.4 fixes CVE-2024-35195 (verify=False persistence) and
+        # CVE-2024-47081 (netrc credential leak).
+        "requests>=2.32.4,<3",
+        # >=48.0.1 clears bundled-OpenSSL advisory lineage incl.
+        # CVE-2026-34181/12797; upper-bounded before next major line.
+        "cryptography>=48.0.1,<51",
     ],
     extras_require={
         "dev": [
