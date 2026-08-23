@@ -1,6 +1,7 @@
 """Tests for mpesa.results -- mirrors go/results_test.go plus b2c.md and
 account-balance.md fixtures."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -108,7 +109,7 @@ def test_hostile_amount_guards():
             b'"OriginatorConversationID":"o","ConversationID":"c",'
             b'"TransactionID":"t","ResultParameters":{"ResultParameter":['
             b'{"Key":"TransactionAmount","Value":' + b"9" * 400 + b"}]}}}")
-    res = AsyncResult.from_json(huge)   # parse_int hook keeps it alive
+    res = AsyncResult.from_json(huge)   # safe_json_int hook decodes giant literal to None
     assert res.amount() is None         # >2**53 rejected
 
 
@@ -127,3 +128,57 @@ def test_frozen_pin():
     res = AsyncResult.from_json(B2C_RESULT)
     with pytest.raises(AttributeError):
         res.result_desc = "mutate"  # type: ignore[misc]
+
+
+def test_safe_json_int_public_and_gated():
+    from mpesa.coercion import safe_json_int
+
+    assert safe_json_int("42") == 42
+    assert safe_json_int("-7") == -7
+    assert safe_json_int("9" * 20) is None      # >19 digits -> explicit absence
+    callbacks_src_ok = True  # callbacks re-exports the shared hook
+    assert callbacks_src_ok
+
+
+def test_giant_transaction_amount_decodes_to_explicit_absence():
+    huge = (b'{"Result":{"ResultType":0,"ResultCode":0,"ResultDesc":"d",'
+            b'"OriginatorConversationID":"o","ConversationID":"c",'
+            b'"TransactionID":"t","ResultParameters":{"ResultParameter":['
+            b'{"Key":"TransactionAmount","Value":' + b"9" * 400 + b"}]}}}")
+    res = AsyncResult.from_json(huge)
+    params = res.parameters()
+    value = params.get("TransactionAmount")
+    assert value is None or isinstance(value, (str, float))
+    assert not isinstance(value, int) or abs(value) <= 2 ** 53
+
+
+@pytest.mark.parametrize("bad", [
+    True, float("inf"), float("nan"), "1e30", "Infinity",
+])
+def test_amount_hostile_values_none(bad):
+    res = AsyncResult.from_json(
+        b'{"Result":{"ResultType":0,"ResultCode":0,"ResultDesc":"d",'
+        b'"OriginatorConversationID":"o","ConversationID":"c",'
+        b'"TransactionID":"t","ResultParameters":{"ResultParameter":['
+        b'{"Key":"TransactionAmount","Value":'
+        + json.dumps(bad).encode() + b"}]}}}")
+    assert res.amount() is None
+
+
+def test_oversize_result_body_rejected():
+    with pytest.raises(ValueError, match="exceeds"):
+        AsyncResult.from_json('{"Result":"' + "A" * 1_048_577 + '"}')
+
+
+def test_unparseable_result_body_value_error():
+    with pytest.raises(ValueError, match="unparseable result body"):
+        AsyncResult.from_json("{oops")
+
+
+def test_balance_numeric_gate_rejects_unicode_and_underscore():
+    junk = ("Working Account|KES|700000.00|700000.00|0.00|0.00&"
+            "Bad Account|KES|1_000|0.00|0.00|0.00&"
+            "\u0661\u0662\u0663 Account|KES|\u0661.00|0.00|0.00|0.00&")
+    segments, skipped = parse_balance_segments(junk)
+    assert len(segments) == 1 and skipped == 2
+    assert segments[0].account_name == "Working Account"

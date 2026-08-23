@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .classification import ResultClass, classify_result_code
-from .coercion import coerce_int, coerce_str
+from .coercion import coerce_int, coerce_str, safe_json_int
 
 __all__ = ["StkCallbackResult", "MetadataItem"]
 
@@ -48,12 +48,6 @@ def _item_name(entry: dict[str, Any]) -> str:
         return str(value)
     except (ValueError, TypeError):
         return ""
-
-
-def _safe_json_int(digits: str) -> Any:
-    """parse_int hook: >19-digit JSON integers decode as explicit absence
-    instead of tripping CPython's digit guard and killing the callback."""
-    return int(digits) if len(digits) <= 19 else None
 
 
 @dataclass(frozen=True)
@@ -88,7 +82,7 @@ class StkCallbackResult:
                 raise ValueError(
                     f"mpesa: callback body exceeds {_MAX_BODY_CHARS} chars")
             try:
-                data = json.loads(data, parse_int=_safe_json_int)
+                data = json.loads(data, parse_int=safe_json_int)
             except (ValueError, RecursionError) as exc:
                 raise ValueError(
                     f"mpesa: unparseable callback body "

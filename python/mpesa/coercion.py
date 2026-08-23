@@ -28,13 +28,28 @@ import json
 import re
 from typing import Any
 
-__all__ = ["coerce_str", "coerce_int"]
+__all__ = ["coerce_str", "coerce_int", "safe_json_int"]
 
 _MAX_STR_LEN = 4096
 
 # ASCII digits only, max 19 (int64 range): kills Unicode-Nd digits,
 # PEP 515 underscores, and overlong CPU-DoS digit runs on py<3.11.
 _INT_RE = re.compile(r"[+-]?[0-9]{1,19}", re.ASCII)
+
+
+def safe_json_int(digits: str) -> int | None:
+    """``json.loads(parse_int=...)`` hook shared by callback/result models.
+
+    Integers up to 19 digits decode normally; anything longer becomes
+    explicit absence (None) so one hostile magnitude can neither trip
+    CPython's 4300-digit conversion guard nor survive as an unbounded
+    precision-corrupted value.
+
+    Example::
+
+        json.loads(body, parse_int=safe_json_int)
+    """
+    return int(digits) if len(digits) <= 19 else None
 
 
 def coerce_str(raw: Any) -> str | None:

@@ -25,13 +25,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .classification import ResultClass, classify_result_code
-from .coercion import coerce_int, coerce_str
+from .coercion import coerce_int, coerce_str, safe_json_int
 
 __all__ = ["AsyncResult", "Parameter", "ReferenceItem", "BalanceSegment",
            "parse_balance_segments"]
 
 _MAX_BODY_CHARS = 1_048_576
 _AMOUNT_RE = re.compile(r"[+-]?[0-9]{1,12}(\.[0-9]{1,6})?", re.ASCII)
+_BALANCE_NUM_RE = re.compile(r"[+-]?[0-9]{1,18}(\.[0-9]{1,6})?", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,11 @@ def parse_balance_segments(
         if len(fields) < 6:
             skipped += 1
             continue
+        # ASCII gate: float() would otherwise accept "1_000" and Unicode
+        # Nd digits ("١٢٣") that Go's ParseFloat rejects.
+        if not all(_BALANCE_NUM_RE.fullmatch(f.strip()) for f in fields[2:6]):
+            skipped += 1
+            continue
         try:
             nums = [float(f.strip()) for f in fields[2:6]]
         except ValueError:
@@ -124,7 +130,7 @@ class AsyncResult:
                 raise ValueError(
                     f"mpesa: result body exceeds {_MAX_BODY_CHARS} chars")
             try:
-                data = json.loads(data)
+                data = json.loads(data, parse_int=safe_json_int)
             except (ValueError, RecursionError) as exc:
                 raise ValueError(
                     f"mpesa: unparseable result body "
