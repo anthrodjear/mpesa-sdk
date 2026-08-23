@@ -5,12 +5,16 @@ package mpesa
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 )
 
 // Config configures a Client. Timeout defaults to 30s; Now may inject a clock
-// for tests (defaults to time.Now). Config contains credentials — never log
-// directly; GoString/Format redact.
+// for tests (defaults to time.Now). HTTPClient optionally injects a custom
+// *http.Client (proxies, tracing, tests) — it is cloned, never mutated, and
+// always inherits the SDK's never-follow-redirects policy plus a timeout
+// default when zero. Config contains credentials — never log directly;
+// GoString/Format redact.
 type Config struct {
 	ConsumerKey    string
 	ConsumerSecret string
@@ -19,6 +23,7 @@ type Config struct {
 	Environment    Environment
 	Timeout        time.Duration
 	Now            func() time.Time
+	HTTPClient     *http.Client
 }
 
 // GoString redacts ConsumerSecret and Passkey for %#v formatting.

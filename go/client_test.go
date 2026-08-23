@@ -274,6 +274,9 @@ func TestAllEndpointsHitDocumentedPathsWithBearer(t *testing.T) {
 		if m["CommandID"] != string(CommandAccountBalance) {
 			t.Errorf("balance CommandID = %v", m["CommandID"])
 		}
+		if m["IdentifierType"] != IdentifierOrgShortcode {
+			t.Errorf("balance IdentifierType default = %v, want 4", m["IdentifierType"])
+		}
 	})
 	assertBody(qrCodePath, func(m map[string]any) {
 		if _, ok := m["RefNo"]; !ok {
@@ -493,6 +496,12 @@ func TestValidationBeforeAnyNetworkCall(t *testing.T) {
 			_, err := c.STKPush(ctx, r)
 			return err
 		}, "TransactionType"},
+		{"stk missing transaction type", func() error {
+			r := validSTKPushRequest()
+			r.TransactionType = ""
+			_, err := c.STKPush(ctx, r)
+			return err
+		}, "TransactionType is required"},
 		{"b2c remarks too short", func() error {
 			_, err := c.B2CPayout(ctx, B2CPayoutRequest{InitiatorName: "i", SecurityCredential: "c", CommandID: CommandSalaryPayment, Amount: 500, PartyA: "600992", PartyB: "254705912645", Remarks: "x", QueueTimeOutURL: "https://a.com/t", ResultURL: "https://a.com/r"})
 			return err
@@ -555,5 +564,455 @@ func TestValidationBeforeAnyNetworkCall(t *testing.T) {
 	}
 	if networkTouched {
 		t.Fatal("network was touched during validation failures")
+	}
+}
+
+// --- Consolidated review round: client hardening (K1..S9) ---
+
+// K2 + test gap: STKQuery honors a BusinessShortCode override end-to-end and
+// binds the password to the EFFECTIVE shortcode; the default path keeps
+// cfg.Shortcode. Body must always carry BusinessShortCode/Password/Timestamp.
+func TestSTKQueryOverrideAndDefaultBinding(t *testing.T) {
+	oauthHits := 0
+	var mu sync.Mutex
+	var bodies []map[string]any
+	mux := http.NewServeMux()
+	mux.Handle("/oauth/v1/generate", oauthHandler(t, &oauthHits))
+	mux.HandleFunc(stkQueryPath, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Errorf("bad query body %s: %v", raw, err)
+		}
+		mu.Lock()
+		bodies = append(bodies, m)
+		mu.Unlock()
+		writeJSON(t, w, http.StatusOK, STKQueryResponse{ResponseCode: "0", ResultCode: "0"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := testClient(t, srv.URL)
+	ctx := context.Background()
+
+	if _, err := c.STKQuery(ctx, STKQueryRequest{CheckoutRequestID: "ws_CO_default"}); err != nil {
+		t.Fatalf("default query: %v", err)
+	}
+	if _, err := c.STKQuery(ctx, STKQueryRequest{CheckoutRequestID: "ws_CO_override", BusinessShortCode: "999888"}); err != nil {
+		t.Fatalf("override query: %v", err)
+	}
+
+	if len(bodies) != 2 {
+		t.Fatalf("captured %d bodies, want 2", len(bodies))
+	}
+	def, ov := bodies[0], bodies[1]
+	for _, m := range []map[string]any{def, ov} {
+		for _, key := range []string{"BusinessShortCode", "Password", "Timestamp"} {
+			if _, ok := m[key]; !ok {
+				t.Fatalf("query body missing %q: %v", key, m)
+			}
+		}
+	}
+	if def["BusinessShortCode"] != testShortcode {
+		t.Errorf("default BusinessShortCode = %v, want cfg.Shortcode", def["BusinessShortCode"])
+	}
+	verifyPasswordBinding(t, def, testShortcode)
+	if ov["BusinessShortCode"] != "999888" {
+		t.Errorf("override BusinessShortCode = %v, want 999888", ov["BusinessShortCode"])
+	}
+	verifyPasswordBinding(t, ov, "999888")
+}
+
+func verifyPasswordBinding(t *testing.T, m map[string]any, shortcode string) {
+	t.Helper()
+	ts, _ := m["Timestamp"].(string)
+	pw, _ := m["Password"].(string)
+	want := base64.StdEncoding.EncodeToString([]byte(shortcode + testPasskey + ts))
+	if pw != want {
+		t.Fatalf("password not bound to effective shortcode %q / timestamp %q", shortcode, ts)
+	}
+}
+
+// Test gap: PartyB defaults to the shortcode and passes explicit values through.
+func TestPartyBDefaultAndPassthrough(t *testing.T) {
+	var mu sync.Mutex
+	var partyBs []any
+	mux := http.NewServeMux()
+	oauthHits := 0
+	mux.Handle("/oauth/v1/generate", oauthHandler(t, &oauthHits))
+	mux.HandleFunc(stkPushPath, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var m map[string]any
+		_ = json.Unmarshal(raw, &m)
+		mu.Lock()
+		partyBs = append(partyBs, m["PartyB"])
+		mu.Unlock()
+		writeJSON(t, w, http.StatusOK, STKPushResponse{ResponseCode: "0", CheckoutRequestID: "ws_CO_1"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := testClient(t, srv.URL)
+
+	noB := validSTKPushRequest()
+	noB.PartyB = ""
+	withB := validSTKPushRequest()
+	withB.PartyB = "999777"
+	if _, err := c.STKPush(context.Background(), noB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.STKPush(context.Background(), withB); err != nil {
+		t.Fatal(err)
+	}
+	if partyBs[0] != testShortcode {
+		t.Errorf("empty PartyB = %v, want default shortcode", partyBs[0])
+	}
+	if partyBs[1] != "999777" {
+		t.Errorf("explicit PartyB = %v, want passthrough 999777", partyBs[1])
+	}
+}
+
+// K4: zero-config clients fail with an actionable message before any network I/O.
+func TestZeroConfigSurfacesActionableError(t *testing.T) {
+	totalHits := 0
+	mux := http.NewServeMux()
+	guard := func(pattern string) {
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			totalHits++
+			http.Error(w, "must not be reached", http.StatusInternalServerError)
+		})
+	}
+	guard("/oauth/v1/generate")
+	guard(stkPushPath)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := NewClient(Config{Environment: Sandbox})
+	c.baseURL = srv.URL
+
+	if _, err := c.Token(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "Config.ConsumerKey and Config.ConsumerSecret are required") {
+		t.Fatalf("Token err = %v, want actionable config error", err)
+	}
+	req := validSTKPushRequest()
+	req.BusinessShortCode = testShortcode
+	if _, err := c.STKPush(context.Background(), req); err == nil ||
+		!strings.Contains(err.Error(), "Config.ConsumerKey and Config.ConsumerSecret are required") {
+		t.Fatalf("STKPush err = %v, want same actionable config error", err)
+	}
+	if totalHits != 0 {
+		t.Fatalf("network hits = %d, want 0", totalHits)
+	}
+}
+
+// S1: Daraja never legitimately redirects; the SDK must surface redirects as
+// responses, never follow them (307/308 would replay the body cross-host).
+func TestRedirectsNeverFollowed(t *testing.T) {
+	targetHits := 0
+	mux := http.NewServeMux()
+	oauthHits := 0
+	mux.Handle("/oauth/v1/generate", oauthHandler(t, &oauthHits))
+	mux.HandleFunc(qrCodePath, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "/elsewhere")
+		w.WriteHeader(http.StatusFound)
+	})
+	mux.HandleFunc("/elsewhere", func(w http.ResponseWriter, r *http.Request) {
+		targetHits++
+		writeJSON(t, w, http.StatusOK, QRCodeResponse{})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	_, err := testClient(t, srv.URL).GenerateQRCode(context.Background(),
+		QRCodeRequest{MerchantName: "m", RefNo: "r", Amount: 1, TrxCode: QRTrxBuyGoods, CPI: "174379", Size: "300"})
+	var mpesaErr *Error
+	if !errors.As(err, &mpesaErr) || mpesaErr.StatusCode != http.StatusFound {
+		t.Fatalf("err = %v, want typed HTTP 302 error", err)
+	}
+	if targetHits != 0 {
+		t.Fatalf("redirect target hit %d times, want never followed", targetHits)
+	}
+}
+
+// S2: concurrent 401.003.01 holders must produce exactly ONE forced refetch;
+// the loser adopts the winner's token via the generation guard.
+func TestConcurrent401GenerationGuardSingleRefetch(t *testing.T) {
+	var mu sync.Mutex
+	oauthHits, okCount := 0, 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/v1/generate", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		oauthHits++
+		n := oauthHits
+		mu.Unlock()
+		tok := "tok-v1"
+		if n > 1 {
+			tok = "tok-v2"
+		}
+		writeJSON(t, w, http.StatusOK, map[string]any{"access_token": tok, "expires_in": "3599"})
+	})
+	mux.HandleFunc(stkPushPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer tok-v1" {
+			writeJSON(t, w, http.StatusUnauthorized, errorEnvelope{ErrorCode: "401.003.01", ErrorMessage: "Invalid access token"})
+			return
+		}
+		mu.Lock()
+		okCount++
+		mu.Unlock()
+		writeJSON(t, w, http.StatusOK, STKPushResponse{ResponseCode: "0"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := testClient(t, srv.URL)
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := c.STKPush(context.Background(), validSTKPushRequest()); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent retry failed: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if okCount != 2 {
+		t.Errorf("successful pushes = %d, want 2 (peer adoption must still succeed)", okCount)
+	}
+	if oauthHits != 2 {
+		t.Errorf("oauth fetches = %d, want exactly 2 (initial + ONE guarded refresh)", oauthHits)
+	}
+}
+
+// Test gap: a 401 WITHOUT errorCode 401.003.01 is not retryable — surface it
+// immediately after exactly one attempt.
+func TestNonRetryable401SurfacesImmediately(t *testing.T) {
+	pushHits, oauthHits := 0, 0
+	mux := http.NewServeMux()
+	mux.Handle("/oauth/v1/generate", oauthHandler(t, &oauthHits))
+	mux.HandleFunc(stkPushPath, func(w http.ResponseWriter, r *http.Request) {
+		pushHits++
+		writeJSON(t, w, http.StatusUnauthorized, errorEnvelope{ErrorCode: "500.001.1001", ErrorMessage: "wrong credentials"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	_, err := testClient(t, srv.URL).STKPush(context.Background(), validSTKPushRequest())
+	var mpesaErr *Error
+	if !errors.As(err, &mpesaErr) || mpesaErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("err = %v, want typed 401", err)
+	}
+	if pushHits != 1 || oauthHits != 1 {
+		t.Fatalf("pushHits=%d oauthHits=%d, want 1/1 (no retry for other error codes)", pushHits, oauthHits)
+	}
+}
+
+// Test gap: persistent 401.003.01 exhausts the single retry and surfaces a
+// typed error — never an infinite loop.
+func TestRetryExhaustionTypedError(t *testing.T) {
+	pushHits, oauthHits := 0, 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/v1/generate", func(w http.ResponseWriter, r *http.Request) {
+		oauthHits++
+		writeJSON(t, w, http.StatusOK, map[string]any{"access_token": fmt.Sprintf("tok-%d", oauthHits), "expires_in": "3599"})
+	})
+	mux.HandleFunc(stkPushPath, func(w http.ResponseWriter, r *http.Request) {
+		pushHits++
+		writeJSON(t, w, http.StatusUnauthorized, errorEnvelope{ErrorCode: "401.003.01", ErrorMessage: "still invalid"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	_, err := testClient(t, srv.URL).STKPush(context.Background(), validSTKPushRequest())
+	var mpesaErr *Error
+	if !errors.As(err, &mpesaErr) || mpesaErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("err = %v, want typed 401 after exhaustion", err)
+	}
+	if pushHits != 2 || oauthHits != 2 {
+		t.Fatalf("pushHits=%d oauthHits=%d, want exactly one retry (2/2)", pushHits, oauthHits)
+	}
+}
+
+// S4: expires_in drives refresh cadence (TTL-60s), not a fixed 50 minutes.
+func TestShortTTLDrivesRefreshCadence(t *testing.T) {
+	now := fixedClock
+	clockMu := sync.Mutex{}
+	currentNow := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		return now
+	}
+	oauthHits := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/v1/generate", func(w http.ResponseWriter, r *http.Request) {
+		oauthHits++
+		writeJSON(t, w, http.StatusOK, map[string]any{"access_token": "tok-short", "expires_in": "120"})
+	})
+	mux.HandleFunc(accountBalancePath, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, ConversationResponse{ResponseCode: "0"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := NewClient(Config{
+		ConsumerKey: "test-key", ConsumerSecret: "test-secret",
+		Shortcode: testShortcode, Passkey: testPasskey,
+		Environment: Sandbox, Now: currentNow,
+	})
+	c.baseURL = srv.URL
+	bal := AccountBalanceRequest{
+		Initiator: "i", SecurityCredential: "c", PartyA: "600992", Remarks: "eod",
+		ResultURL: "https://a.com/r", QueueTimeOutURL: "https://a.com/t",
+	}
+	ctx := context.Background()
+
+	if _, err := c.AccountBalance(ctx, bal); err != nil {
+		t.Fatal(err)
+	}
+	clockMu.Lock()
+	now = fixedClock.Add(59 * time.Second)
+	clockMu.Unlock()
+	if _, err := c.AccountBalance(ctx, bal); err != nil {
+		t.Fatal(err)
+	}
+	if oauthHits != 1 {
+		t.Fatalf("within TTL-60s cadence token must be cached; oauthHits=%d", oauthHits)
+	}
+	clockMu.Lock()
+	now = fixedClock.Add(70 * time.Second)
+	clockMu.Unlock()
+	if _, err := c.AccountBalance(ctx, bal); err != nil {
+		t.Fatal(err)
+	}
+	if oauthHits != 2 {
+		t.Fatalf("past TTL-60s (60s for a 120s TTL) token must refresh; oauthHits=%d", oauthHits)
+	}
+}
+
+// S5: hostile envelope fields are control-stripped and byte-capped.
+func TestHostileErrorEnvelopeSanitized(t *testing.T) {
+	mux := http.NewServeMux()
+	oauthHits := 0
+	mux.Handle("/oauth/v1/generate", oauthHandler(t, &oauthHits))
+	mux.HandleFunc(qrCodePath, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusBadRequest, map[string]any{
+			"requestId":    strings.Repeat("A", 600),
+			"errorCode":    "X\x1b[31m",
+			"errorMessage": "line1\n\x1b[32mline2<script>",
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	_, err := testClient(t, srv.URL).GenerateQRCode(context.Background(),
+		QRCodeRequest{MerchantName: "m", RefNo: "r", Amount: 1, TrxCode: QRTrxPaybill, CPI: "174379", Size: "300"})
+	var mpesaErr *Error
+	if !errors.As(err, &mpesaErr) {
+		t.Fatalf("err = %v, want typed error", err)
+	}
+	if len(mpesaErr.RequestID) != 512 {
+		t.Errorf("requestId len = %d, want capped at 512", len(mpesaErr.RequestID))
+	}
+	for _, field := range []string{mpesaErr.ErrorCode, mpesaErr.ErrorMessage} {
+		if strings.ContainsAny(field, "\n\x1b\x07") {
+			t.Errorf("field %q retains control characters", field)
+		}
+	}
+	msg := mpesaErr.Error()
+	if strings.ContainsAny(msg, "\n\x1b") {
+		t.Errorf("Error() = %q renders multi-line/escape output", msg)
+	}
+}
+
+// S6/C7: non-2xx bodies that are NOT the Daraja envelope yield diagnostics:
+// content-type, byte length and a control-stripped ASCII snippet.
+func TestUnparseableBodyDiagnostics(t *testing.T) {
+	body := "<html>request blocked by WAF</html>"
+	mux := http.NewServeMux()
+	oauthHits := 0
+	mux.Handle("/oauth/v1/generate", oauthHandler(t, &oauthHits))
+	mux.HandleFunc(accountBalancePath, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(body))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	bal := AccountBalanceRequest{
+		Initiator: "i", SecurityCredential: "c", PartyA: "600992", Remarks: "eod",
+		ResultURL: "https://a.com/r", QueueTimeOutURL: "https://a.com/t",
+	}
+	_, err := testClient(t, srv.URL).AccountBalance(context.Background(), bal)
+	var mpesaErr *Error
+	if !errors.As(err, &mpesaErr) {
+		t.Fatalf("err = %v, want typed error", err)
+	}
+	msg := mpesaErr.Error()
+	for _, want := range []string{"text/html", fmt.Sprintf("%d bytes", len(body)), "blocked by WAF"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("diagnostic error %q missing %q", msg, want)
+		}
+	}
+}
+
+// S8: optional injected *http.Client is cloned (never mutated) and still gets
+// the no-redirect policy plus a timeout default when zero.
+func TestHTTPClientInjection(t *testing.T) {
+	injected := &http.Client{Timeout: 5 * time.Second}
+	c := NewClient(Config{Environment: Sandbox, HTTPClient: injected})
+	if c.http == injected {
+		t.Fatal("injected client must be cloned, not aliased")
+	}
+	if c.http.Timeout != 5*time.Second {
+		t.Errorf("cloned timeout = %v, want injected 5s preserved", c.http.Timeout)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://example/", nil)
+	if c.http.CheckRedirect == nil || c.http.CheckRedirect(req, nil) != http.ErrUseLastResponse {
+		t.Error("injected client must inherit ErrUseLastResponse redirect policy")
+	}
+
+	def := NewClient(Config{Environment: Sandbox})
+	if def.http.Timeout != defaultTimeout {
+		t.Errorf("default timeout = %v, want %v", def.http.Timeout, defaultTimeout)
+	}
+	zero := &http.Client{}
+	c2 := NewClient(Config{Environment: Sandbox, HTTPClient: zero})
+	if c2.http.Timeout != defaultTimeout {
+		t.Errorf("zero-timeout injection should get default; got %v", c2.http.Timeout)
+	}
+	if injected.Timeout != 5*time.Second || zero.Timeout != 0 {
+		t.Error("injected clients were mutated")
+	}
+}
+
+// Test gap: raw misspelled ACK bytes straight off the wire decode through the
+// HTTP path into the clean Go field name.
+func TestC2BAckRawMisspelledBytesThroughHTTP(t *testing.T) {
+	mux := http.NewServeMux()
+	oauthHits := 0
+	mux.Handle("/oauth/v1/generate", oauthHandler(t, &oauthHits))
+	mux.HandleFunc(c2bRegisterPath, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"OriginatorCoversationID":"raw-bytes-check","ResponseCode":"0","ResponseDescription":"Accept"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ack, err := testClient(t, srv.URL).C2BRegisterURL(context.Background(),
+		C2BRegisterRequest{ResponseType: ResponseTypeCompleted, ConfirmationURL: "https://a.com/c", ValidationURL: "https://a.com/v"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.OriginatorConversationID != "raw-bytes-check" {
+		t.Fatalf("OriginatorConversationID = %q, want raw-bytes-check", ack.OriginatorConversationID)
 	}
 }

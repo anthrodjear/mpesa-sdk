@@ -24,9 +24,11 @@ type STKPushRequest struct {
 	TransactionDesc   string `json:"TransactionDesc"`
 }
 
-// STKQueryRequest checks an existing push outcome. BusinessShortCode,
-// Password and Timestamp are injected by the client.
+// STKQueryRequest checks an existing push outcome. Password and Timestamp
+// are injected by the client; BusinessShortCode defaults to cfg.Shortcode
+// when empty but may be overridden (the password then binds to it).
 type STKQueryRequest struct {
+	BusinessShortCode string `json:"BusinessShortCode,omitempty"`
 	CheckoutRequestID string `json:"CheckoutRequestID"`
 }
 
@@ -206,13 +208,19 @@ var b2cCommands = map[CommandID]bool{
 
 // Validate checks every documented STK Push constraint (amount, MSISDNs,
 // length caps, callback URL, transaction-type enum) — safe to call before
-// hand-marshalling.
+// hand-marshalling. TransactionType has NO default: callers must choose.
 func (r *STKPushRequest) Validate() error {
 	if err := requireNonEmpty("BusinessShortCode", r.BusinessShortCode); err != nil {
 		return err
 	}
+	if r.TransactionType == "" {
+		return fmt.Errorf("mpesa: TransactionType is required (CustomerPayBillOnline | CustomerBuyGoodsOnline)")
+	}
+	if r.TransactionType == "" {
+		return fmt.Errorf("mpesa: TransactionType is required (CustomerPayBillOnline | CustomerBuyGoodsOnline)")
+	}
 	switch r.TransactionType {
-	case "", TransactionTypePayBillOnline, TransactionTypeBuyGoodsOnline:
+	case TransactionTypePayBillOnline, TransactionTypeBuyGoodsOnline:
 	default:
 		return fmt.Errorf("mpesa: TransactionType %q not in {CustomerPayBillOnline, CustomerBuyGoodsOnline}", r.TransactionType)
 	}
