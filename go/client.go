@@ -103,10 +103,7 @@ func (c *Client) refreshLocked(ctx context.Context) (string, error) {
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return "", parseError(resp.StatusCode, body)
 	}
-	var tok struct {
-		AccessToken string    `json:"access_token"`
-		ExpiresIn   FlexInt64 `json:"expires_in"`
-	}
+	var tok oauthTokenResponse
 	if err := json.Unmarshal(body, &tok); err != nil {
 		return "", fmt.Errorf("mpesa: decode oauth response: %w", err)
 	}
