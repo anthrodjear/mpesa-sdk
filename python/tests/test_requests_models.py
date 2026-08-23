@@ -45,7 +45,9 @@ def stk_good(**over):
 
 
 def test_stk_push_wire_keys_and_client_injected_absent():
-    payload = stk_good().to_payload()
+    req = stk_good()
+    req.validate()
+    payload = req.to_payload()
     encoded = json.dumps(payload)
     for key in ("BusinessShortCode", "Amount", "PartyA", "PartyB",
                 "PhoneNumber", "CallBackURL", "AccountReference", "TransactionDesc"):
@@ -214,5 +216,157 @@ def test_query_requires_checkout_id():
     ],
 )
 def test_validate_rejection_table(req):
+    with pytest.raises(ValueError):
+        req.validate()
+
+
+# ---- consolidated-fix rounds -------------------------------------------------
+
+def _b2c(**over):
+    base = dict(initiator_name="testapi", security_credential="cred",
+                command_id=CommandID.BUSINESS_PAYMENT, amount=10,
+                party_a="600992", party_b="254705912645", remarks="ok",
+                queue_time_out_url=CB, result_url=CB)
+    base.update(over)
+    return B2CPayoutRequest(**base)
+
+
+def _txs(**over):
+    base = dict(initiator="testapi", security_credential="cred",
+                command_id=CommandID.TX_STATUS_QUERY, transaction_id="NLJ7RT61SV",
+                party_a="600992", result_url=CB, queue_time_out_url=CB, remarks="r")
+    base.update(over)
+    return TransactionStatusRequest(**base)
+
+
+def _rev(**over):
+    base = dict(initiator="testapi", security_credential="cred",
+                command_id=CommandID.REVERSAL, transaction_id="NLJ7RT61SV",
+                amount=10, receiver_party="600992", remarks="duplicate charge",
+                result_url=CB, queue_time_out_url=CB)
+    base.update(over)
+    return ReversalRequest(**base)
+
+
+def _bal(**over):
+    base = dict(initiator="testapi", security_credential="cred",
+                command_id=CommandID.ACCOUNT_BALANCE, party_a="600992",
+                remarks="balance check", queue_time_out_url=CB, result_url=CB)
+    base.update(over)
+    return AccountBalanceRequest(**base)
+
+
+def test_credential_models_never_leak_via_any_text_form():
+    leaky = {
+        "B2C": _b2c(),
+        "TxStatus": _txs(),
+        "Reversal": _rev(),
+        "Balance": _bal(),
+    }
+    for name, req in leaky.items():
+        for rendered in (repr(req), f"{req}", str(req)):
+            assert "testapi" not in rendered, name
+            assert "cred" != rendered and "security_credential='cred'" not in rendered
+            assert "credentials=REDACTED" in rendered, (name, rendered)
+
+
+def test_to_payload_requires_validate_sentinel():
+    with pytest.raises(RuntimeError, match=r"validate\(\) before to_payload"):
+        stk_good().to_payload()
+
+
+def test_qr_size_ascii_digit_gate():
+    for bad in ("\u0663\u0660\u0660", "\u00b2"):  # Arabic-Indic 300, superscript two
+        req = QRCodeRequest(merchant_name="m", ref_no="r", amount=1,
+                            trx_code=QRTrxCode.PAYBILL, cpi="174379", size=bad)
+        with pytest.raises(ValueError):
+            req.validate()
+    ok = QRCodeRequest(merchant_name="m", ref_no="r", amount=1,
+                       trx_code=QRTrxCode.PAYBILL, cpi="174379", size="300")
+    ok.validate()
+
+
+def test_url_regex_rejects_whitespace_in_target():
+    req = stk_good(call_back_url="https://x.com/pa th")
+    with pytest.raises(ValueError, match="CallBackURL"):
+        req.validate()
+
+
+def test_remarks_stripped_in_place():
+    req = _b2c(remarks="  padded remark  ")
+    req.validate()
+    assert req.remarks == "padded remark"
+
+
+def test_xor_identifiers_treat_whitespace_as_unset():
+    with pytest.raises(ValueError, match="exactly one"):
+        _txs(transaction_id="   ").validate()
+    req = _txs(transaction_id="  NLJ7RT61SV  ")
+    req.validate()
+    assert req.transaction_id == "NLJ7RT61SV"
+
+
+def test_clean_drops_only_none_and_empty_strings():
+    from mpesa.requests_sync import _clean
+    assert _clean({"A": 0, "B": None, "C": "", "D": False}) == {"A": 0, "D": False}
+
+
+def test_stk_party_a_normalized_in_place():
+    req = stk_good(party_a="0722000000", phone_number="0722111111")
+    req.validate()
+    assert req.party_a == "254722000000"
+    assert req.phone_number == "254722111111"
+
+
+def test_transaction_type_empty_string_is_required_message():
+    with pytest.raises(ValueError, match=r"\(CustomerPayBillOnline \| CustomerBuyGoodsOnline\)"):
+        stk_good(transaction_type="").validate()
+
+
+def test_omission_pins():
+    b2c = _b2c(); b2c.validate()
+    assert '"Occassion"' not in json.dumps(b2c.to_payload())
+    txs = _txs(); txs.validate()
+    txs_encoded = json.dumps(txs.to_payload())
+    assert '"Occasion"' not in txs_encoded
+    assert '"IdentifierType"' not in txs_encoded
+    rev = _rev(receiver_identifier_type=None); rev.validate()
+    assert '"RecieverIdentifierType": "11"' in json.dumps(rev.to_payload())
+    bal = _bal(); bal.validate()
+    assert '"IdentifierType"' not in json.dumps(bal.to_payload())
+
+
+@pytest.mark.parametrize(
+    "req",
+    [
+        _b2c(party_b="123"),
+        _b2c(queue_time_out_url="https://x.com/a b"),
+        _b2c(result_url="nope"),
+        _b2c(initiator_name=" "),
+        _b2c(security_credential=""),
+        _b2c(remarks="x" * 101),
+        _txs(command_id=CommandID.REVERSAL),
+        _txs(remarks=""),
+        _txs(remarks="x" * 101),
+        _rev(amount=0),
+        _rev(remarks="x" * 101),
+        _rev(transaction_id=" "),
+        _bal(command_id=CommandID.BUSINESS_PAYMENT),
+        C2BSimulateRequest(short_code="174379",
+                           command_id=TransactionType.CUSTOMER_PAY_BILL_ONLINE,
+                           amount=0, msisdn="0712345678", bill_ref_number="acct"),
+        C2BSimulateRequest(short_code="174379",
+                           command_id=CommandID.BUSINESS_PAYMENT,
+                           amount=5, msisdn="0712345678", bill_ref_number="acct"),
+        QRCodeRequest(merchant_name="m", ref_no="r", amount=1,
+                      trx_code=QRTrxCode.SEND_MONEY, cpi="1234", size="300"),
+        STKQueryRequest(checkout_request_id="x" * 65),
+        C2BSimulateRequest(short_code="174379",
+                           command_id=TransactionType.CUSTOMER_PAY_BILL_ONLINE,
+                           amount=5, msisdn="254712345678",
+                           bill_ref_number="bad\nref"),
+    ],
+)
+def test_extended_rejection_table(req):
     with pytest.raises(ValueError):
         req.validate()
