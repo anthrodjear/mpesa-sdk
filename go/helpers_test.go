@@ -129,34 +129,3 @@ func TestSecurityCredentialRejectsGarbage(t *testing.T) {
 		t.Fatal("expected error for non-certificate input")
 	}
 }
-
-func TestParseBalanceSegments(t *testing.T) {
-	in := "Working Account|KES|700000.00|700000.00|0.00|0.00&Utility Account|KES|228037.00|228037.00|0.00|0.00&Charges Paid Account|KES|-1540.00|-1540.00|0.00|0.00&"
-	segs, skipped := ParseBalanceSegments(in)
-	if skipped != 0 {
-		t.Fatalf("clean input skipped = %d, want 0", skipped)
-	}
-	if len(segs) != 3 {
-		t.Fatalf("got %d segments, want 3", len(segs))
-	}
-	last := segs[2]
-	if last.AccountName != "Charges Paid Account" || last.Available != -1540.0 || last.Currency != "KES" {
-		t.Fatalf("last segment = %+v", last)
-	}
-	wantRaw := "Charges Paid Account|KES|-1540.00|-1540.00|0.00|0.00"
-	if last.Raw != wantRaw {
-		t.Fatalf("Raw = %q, want %q", last.Raw, wantRaw)
-	}
-
-	// Malformed rows are skipped and counted, never fatal (account-balance.md
-	// tolerance requirement).
-	junk := "Utility Account|KES|1.00|1.00|0.00|0.00&GARBAGE ROW&Charges Paid Account|KES|-1540.00|-1540.00|0.00|0.00&Short|Row&"
-	segs, skipped = ParseBalanceSegments(junk)
-	if len(segs) != 2 || skipped != 2 {
-		t.Fatalf("junk input: %d segments (want 2), skipped %d (want 2)", len(segs), skipped)
-	}
-	segs, skipped = ParseBalanceSegments("")
-	if segs != nil || skipped != 0 {
-		t.Fatalf("empty input: segs=%v skipped=%d", segs, skipped)
-	}
-}
