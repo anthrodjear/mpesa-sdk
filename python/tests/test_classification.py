@@ -79,3 +79,26 @@ def test_union_covers_all_documented_groups():
     from mpesa.classification import _FAILURE_CODES
 
     assert _FAILURE_CODES == frozenset(STK_FAILURE + B2C_FAILURE + AB_FAILURE)
+
+
+@pytest.mark.parametrize("raw", ["\u0660", "\u0662", "\u0661\u0660\u0663\u0662"])
+def test_unicode_digit_forgery_blocked(raw):
+    # float() accepts Unicode Nd digits ("٠"->0.0); Go ParseFloat doesn't --
+    # non-ASCII text can never classify.
+    assert classify_result_code(raw) is ResultClass.INDETERMINATE
+
+
+@pytest.mark.parametrize("raw", [True, False])
+def test_booleans_never_classify(raw):
+    assert classify_result_code(raw) is ResultClass.INDETERMINATE
+
+
+def test_adversarial_boundaries():
+    assert classify_result_code("1e30") is ResultClass.INDETERMINATE
+    assert classify_result_code(1e30) is ResultClass.INDETERMINATE
+    assert classify_result_code(float("nan")) is ResultClass.INDETERMINATE
+    assert classify_result_code("+0") is ResultClass.SUCCESS
+    assert classify_result_code("-0") is ResultClass.SUCCESS
+    # Doubled quotes survive coercion.py's single-pair strip but Go's
+    # strings.Trim cutset cuts all of them -> 0. Explicit Trim parity.
+    assert classify_result_code('""0""') is ResultClass.SUCCESS

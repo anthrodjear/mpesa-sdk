@@ -37,6 +37,9 @@ class ResultClass(enum.Enum):
 
 
 # STK Push terminal failures -- docs/apis/stk-push.md ResultCode Catalog.
+# 2001 (wrong PIN) is owned by THIS group only: b2c.md reuses the number
+# for initiator errors in async captures, but the union below already
+# covers it, so no duplicate member here.
 _STK_FAILURE = frozenset({1, 17, 1019, 1025, 1032, 2001, 9999})
 # Async B2C Result callback failures -- docs/apis/b2c.md.
 _B2C_FAILURE = frozenset({2, 3, 4, 8, 11, 21, 2006, 2028, 2040, 8006})
@@ -54,12 +57,19 @@ def _coerce_code(raw: Any) -> int | None:
         return code
     if isinstance(raw, str):
         text = raw.strip().strip('"')
+        # Go strings.Trim cuts the whole quote cutset, so doubled quoting
+        # ('""0""') is accepted here even though coercion.py's single-pair
+        # strip calls it malformed -- deliberate Trim-cutset parity.
+        if not text.isascii():
+            return None  # float() accepts Unicode Nd digits ("٠"->0.0); Go
+            # ParseFloat doesn't -- non-ASCII can never classify.
         try:
             value = float(text)
         except ValueError:
             return None
         # Lenient fallback: integral floats only ("0.0" -> 0); non-integral
-        # or out-of-int64-range values are not result codes.
+        # or out-of-range values are not result codes. Bound mirrors Go's
+        # math.MinInt64/MaxInt64 check.
         if value.is_integer() and -(2**63) <= value <= 2**63 - 1:
             return int(value)
     return None
