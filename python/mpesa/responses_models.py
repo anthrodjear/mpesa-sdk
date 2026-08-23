@@ -11,9 +11,8 @@ This module exists so import paths named after the Go file keep working;
 it intentionally contains NO duplicated logic. See docs/apis/<endpoint>.md
 per class in :mod:`mpesa.responses`.
 
-KNOWN GAP (tracked): ``mpesa.responses.from_json`` does not yet pass
-``parse_int=safe_json_int`` to json.loads, so giant JSON integers in a
-response body are not nulled the way callbacks/results decode them.
+Giant JSON integers are handled canonically: json.loads uses
+parse_int=safe_json_int, and |int| > 2**53 is nulled before coercion.
 """
 
 from .responses import (
