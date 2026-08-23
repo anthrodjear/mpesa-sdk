@@ -4,11 +4,19 @@
     "lib": ["ES2022"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "isolatedModules": true,
     "strict": true,
+    // exactOptionalPropertyTypes: optional Daraja request/body fields must be OMITTED when
+    // unset — passing explicit `undefined` is a compile error. Body builders must use
+    // conditional spreads (`...(value !== undefined && { key: value })`), never `key: value ?? undefined`.
+    // noUncheckedIndexedAccess: every index-signature/array read returns `T | undefined`
+    // (headers, callback payload maps) — narrow before use; do not assume presence.
     "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
     "rootDir": "src",
     "outDir": "dist",
     "skipLibCheck": false
