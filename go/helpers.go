@@ -122,7 +122,10 @@ func requireMSISDN(field, v string) (string, error) {
 	return norm, nil
 }
 
-func validateSTKPush(r *STKPushRequest) error {
+// Validate checks every documented STK Push constraint (amount, MSISDNs,
+// length caps, callback URL, transaction-type enum) — safe to call before
+// hand-marshalling.
+func (r *STKPushRequest) Validate() error {
 	if err := requireNonEmpty("BusinessShortCode", r.BusinessShortCode); err != nil {
 		return err
 	}
@@ -155,15 +158,20 @@ func validateSTKPush(r *STKPushRequest) error {
 	return requireMaxLen("TransactionDesc", r.TransactionDesc, 13)
 }
 
-func validateSTKQuery(r *STKQueryRequest) error {
+// Validate requires a CheckoutRequestID — safe to call before
+// hand-marshalling.
+func (r *STKQueryRequest) Validate() error {
 	return requireNonEmpty("CheckoutRequestID", r.CheckoutRequestID)
 }
 
-var b2cCommands = map[string]bool{
+var b2cCommands = map[CommandID]bool{
 	CommandSalaryPayment: true, CommandBusinessPayment: true, CommandPromotionPayment: true,
 }
 
-func validateB2C(r *B2CPayoutRequest) error {
+// Validate checks every documented constraint (amount bounds, remarks length,
+// command enum, URL shape) and normalizes PartyB — safe to call before
+// hand-marshalling.
+func (r *B2CPayoutRequest) Validate() error {
 	if err := requireNonEmpty("InitiatorName", r.InitiatorName); err != nil {
 		return err
 	}
@@ -193,7 +201,10 @@ func validateB2C(r *B2CPayoutRequest) error {
 	return requireURL("ResultURL", r.ResultURL)
 }
 
-func validateTransactionStatus(r *TransactionStatusRequest) error {
+// Validate enforces the exactly-one-of TransactionID XOR OriginalConversationID
+// rule plus credential/URL/remarks constraints; fills IdentifierType default
+// expectations — safe to call before hand-marshalling.
+func (r *TransactionStatusRequest) Validate() error {
 	switch {
 	case r.TransactionID == "" && r.OriginalConversationID == "":
 		return fmt.Errorf("mpesa: exactly one of TransactionID or OriginalConversationID is required")
@@ -221,7 +232,9 @@ func validateTransactionStatus(r *TransactionStatusRequest) error {
 	return requireURL("QueueTimeOutURL", r.QueueTimeOutURL)
 }
 
-func validateReversal(r *ReversalRequest) error {
+// Validate checks reversal constraints; RecieverIdentifierType defaulting to
+// "11" is applied by the client — safe to call before hand-marshalling.
+func (r *ReversalRequest) Validate() error {
 	if r.CommandID != "" && r.CommandID != CommandTransactionReversal {
 		return fmt.Errorf("mpesa: Reversal CommandID must be TransactionReversal")
 	}
@@ -249,7 +262,9 @@ func validateReversal(r *ReversalRequest) error {
 	return requireURL("QueueTimeOutURL", r.QueueTimeOutURL)
 }
 
-func validateAccountBalance(r *AccountBalanceRequest) error {
+// Validate checks balance-query constraints — safe to call before
+// hand-marshalling.
+func (r *AccountBalanceRequest) Validate() error {
 	if r.CommandID != "" && r.CommandID != CommandAccountBalance {
 		return fmt.Errorf("mpesa: AccountBalance CommandID must be AccountBalance")
 	}
@@ -271,9 +286,11 @@ func validateAccountBalance(r *AccountBalanceRequest) error {
 	return requireURL("ResultURL", r.ResultURL)
 }
 
-var c2bResponseTypes = map[string]bool{ResponseTypeCompleted: true, ResponseTypeCancelled: true}
+var c2bResponseTypes = map[ResponseType]bool{ResponseTypeCompleted: true, ResponseTypeCancelled: true}
 
-func validateC2BRegister(r *C2BRegisterRequest) error {
+// Validate checks response-type enum and callback URL shapes — safe to call
+// before hand-marshalling.
+func (r *C2BRegisterRequest) Validate() error {
 	if !c2bResponseTypes[r.ResponseType] {
 		return fmt.Errorf("mpesa: ResponseType %q must be Completed or Cancelled", r.ResponseType)
 	}
@@ -283,7 +300,9 @@ func validateC2BRegister(r *C2BRegisterRequest) error {
 	return requireURL("ValidationURL", r.ValidationURL)
 }
 
-func validateC2BSimulate(r *C2BSimulateRequest) error {
+// Validate checks simulation constraints and normalizes Msisdn — safe to call
+// before hand-marshalling.
+func (r *C2BSimulateRequest) Validate() error {
 	switch r.CommandID {
 	case TransactionTypePayBillOnline, TransactionTypeBuyGoodsOnline:
 	default:
@@ -303,9 +322,11 @@ func validateC2BSimulate(r *C2BSimulateRequest) error {
 	return nil
 }
 
-var qrTrxCodes = map[string]bool{QRTrxBuyGoods: true, QRTrxWithdrawAtAgentTill: true, QRTrxPaybill: true, QRTrxSendMoney: true, QRTrxSendToBusiness: true}
+var qrTrxCodes = map[TrxCode]bool{QRTrxBuyGoods: true, QRTrxWithdrawAtAgentTill: true, QRTrxPaybill: true, QRTrxSendMoney: true, QRTrxSendToBusiness: true}
 
-func validateQRCode(r *QRCodeRequest) error {
+// Validate checks merchant/reference presence, amount positivity, TrxCode
+// whitelist, CPI digit-shape and Size — safe to call before hand-marshalling.
+func (r *QRCodeRequest) Validate() error {
 	if err := requireNonEmpty("MerchantName", r.MerchantName); err != nil {
 		return err
 	}
@@ -338,32 +359,39 @@ func validateQRCode(r *QRCodeRequest) error {
 }
 
 // ParseBalanceSegments splits the Account Balance result blob — segments
-// joined by "&", fields joined by "|" into typed rows. Trailing separators and
-// unknown extra fields are tolerated; malformed rows are skipped.
-func ParseBalanceSegments(s string) ([]BalanceSegment, error) {
-	var out []BalanceSegment
+// joined by "&", fields joined by "|" into typed rows. Per account-balance.md
+// tolerance requirements, trailing separators, unknown extra fields and
+// MALFORMED ROWS ARE SKIPPED AND COUNTED in skipped, never fatal. Parsed
+// floats are display-only; BalanceSegment.Raw preserves each source segment.
+func ParseBalanceSegments(s string) (segments []BalanceSegment, skipped int) {
 	for _, seg := range strings.Split(s, "&") {
 		fields := strings.Split(seg, "|")
 		if len(strings.TrimSpace(strings.Join(fields, ""))) == 0 {
 			continue
 		}
+		row := BalanceSegment{Raw: seg}
 		if len(fields) < 6 {
+			skipped++
 			continue
 		}
-		row := BalanceSegment{
-			AccountName: strings.TrimSpace(fields[0]),
-			Currency:    strings.TrimSpace(fields[1]),
-		}
+		row.AccountName = strings.TrimSpace(fields[0])
+		row.Currency = strings.TrimSpace(fields[1])
 		nums := [4]float64{}
+		bad := false
 		for i := range nums {
 			v, err := strconv.ParseFloat(strings.TrimSpace(fields[2+i]), 64)
 			if err != nil {
-				return nil, fmt.Errorf("mpesa: balance segment %q has non-numeric amount %q", row.AccountName, fields[2+i])
+				skipped++
+				bad = true
+				break
 			}
 			nums[i] = v
 		}
+		if bad {
+			continue
+		}
 		row.Available, row.Uncleared, row.Reserved, row.Min = nums[0], nums[1], nums[2], nums[3]
-		out = append(out, row)
+		segments = append(segments, row)
 	}
-	return out, nil
+	return segments, skipped
 }
