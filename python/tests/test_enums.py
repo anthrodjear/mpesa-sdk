@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mpesa.enums import (  # noqa: E402
@@ -85,3 +87,58 @@ def test_json_round_trip_back_to_members():
     decoded = json.loads(blob)["CommandID"]
     assert decoded == "TransactionStatusQuery"
     assert CommandID(decoded) is CommandID.TX_STATUS_QUERY
+
+
+def test_fstring_renders_wire_value_not_member_repr():
+    # py3.11+ renders str-mixin enums as "Class.MEMBER" without overrides.
+    assert f"{TransactionType.CUSTOMER_PAY_BILL_ONLINE}" == "CustomerPayBillOnline"
+    assert f"{CommandID.BUSINESS_PAYMENT}" == "BusinessPayment"
+    assert f"{ResponseType.CANCELLED}" == "Cancelled"
+    assert f"{QRTrxCode.SEND_MONEY}" == "SM"
+
+
+def test_format_spec_delegates_to_value():
+    assert f"{QRTrxCode.PAYBILL:>4}" == "  PB"
+    assert "{:<20}".format(CommandID.ACCOUNT_BALANCE) == "AccountBalance      "
+
+
+@pytest.mark.parametrize(
+    "cls,raw",
+    [
+        (CommandID, "SalaryPayment"),
+        (CommandID, CommandID.TX_STATUS_QUERY),
+        (TransactionType, "CustomerPayBillOnline"),
+        (ResponseType, "Completed"),
+        (QRTrxCode, "BG"),
+    ],
+)
+def test_coerce_exact_match(cls, raw):
+    member = cls.coerce(raw)
+    assert member.value == (raw if isinstance(raw, str) else raw.value)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["", "customerpaybillonline", "CustomerPayBillOnline ", "'; DROP TABLE", None],
+)
+def test_coerce_and_constructor_negative(bad):
+    with pytest.raises(ValueError, match="invalid CommandID"):
+        CommandID.coerce(bad)
+    with pytest.raises(ValueError):
+        CommandID(bad)  # constructor path stays strict too
+
+
+def test_environment_from_config_whitelist():
+    assert Environment.from_config("sandbox") is Environment.SANDBOX
+    assert Environment.from_config("production") is Environment.PRODUCTION
+    assert Environment.from_config("  PROD ") is Environment.PRODUCTION
+    assert Environment.from_config(None) is Environment.SANDBOX  # default
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["https://api.safaricom.co.ke", "staging", "", "SANDBOX-PROD"],
+)
+def test_environment_from_config_rejects(raw):
+    with pytest.raises(ValueError, match="unknown environment"):
+        Environment.from_config(raw)

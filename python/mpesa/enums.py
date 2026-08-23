@@ -1,4 +1,4 @@
-"""Wire-safe enumerations and identifier constants for the Daraja API.
+﻿"""Wire-safe enumerations and identifier constants for the Daraja API.
 
 Mirrors go/enums.go. Every enum here replaces a bare wire string that
 Safaricom matches exactly (case-sensitive). Typo-bugs these prevent::
@@ -10,11 +10,8 @@ Safaricom matches exactly (case-sensitive). Typo-bugs these prevent::
 Design decisions:
 * ``TransactionType``, ``CommandID``, ``ResponseType`` and ``QRTrxCode``
   subclass ``(str, Enum)`` so ``json.dumps({"TransactionType": TT.X})``
-  emits the exact wire string directly -- call sites never sprinkle
-  ``.value`` and can also compare members against raw strings safely.
-* ``Environment`` deliberately does NOT mix in ``str``: its members hold
-  full base URLs, which should flow only through ``Client`` config, not
-  leak into payloads via implicit string coercion.
+  emits the exact wire string directly; ``Environment`` deliberately does
+  NOT mix in ``str`` (base URLs flow through Client config only).
 """
 
 from __future__ import annotations
@@ -48,8 +45,57 @@ class Environment(enum.Enum):
         """Platform root URL for this environment."""
         return self.value
 
+    @classmethod
+    def from_config(cls, raw: object) -> "Environment":
+        """Resolve config input to an Environment member via a fixed whitelist.
 
-class TransactionType(str, enum.Enum):
+        Accepts ``None`` (zero-config default: SANDBOX, mirroring go/enums.go's
+        zero value), or a string key of ``sandbox`` / ``production`` / ``prod``
+        compared after ``strip().lower()``. URLs and anything unknown raise --
+        base URLs are never fuzzy-matched back to members.
+        """
+        if raw is None:
+            return cls.SANDBOX
+        if not isinstance(raw, str):
+            raise ValueError(f"unknown environment: {raw!r}")
+        key = raw.strip().lower()
+        if key == "sandbox":
+            return cls.SANDBOX
+        if key in ("production", "prod"):
+            return cls.PRODUCTION
+        raise ValueError(f"unknown environment: {raw!r}")
+
+
+class _WireEnum(str, enum.Enum):
+    """Base for all wire-value enums: renders as its wire string, coerces strictly.
+
+    ``__str__``/``__format__`` return the raw value so f-strings, logging and
+    format specs never emit ``"Class.MEMBER"`` bytes on Python 3.11+.
+
+    Pass members directly where possible; when a raw string arrives from
+    outside (env vars, HTTP input) use :meth:`coerce`. Never test membership
+    with ``raw in EnumClass`` -- it matches member *names* rather than values
+    and has shifted meaning across Python versions.
+    """
+
+    def __str__(self) -> str:
+        """The exact gateway string."""
+        return self.value
+
+    def __format__(self, format_spec: str) -> str:
+        """Format the underlying wire value per *format_spec*."""
+        return self.value.__format__(format_spec)
+
+    @classmethod
+    def coerce(cls, raw: object) -> "_WireEnum":
+        """Exact-match lookup of *raw* -- never trimmed, case-folded or fuzzy."""
+        try:
+            return cls(raw)  # type: ignore[return-value]
+        except ValueError:
+            raise ValueError(f"invalid {cls.__name__}: {raw!r}") from None
+
+
+class TransactionType(_WireEnum):
     """STK Push ``TransactionType`` -- REQUIRED, no default (Go review K1).
 
     The caller must pick explicitly because the choice must match the
@@ -62,7 +108,7 @@ class TransactionType(str, enum.Enum):
     """Buy Goods tills (till number, no account reference)."""
 
 
-class CommandID(str, enum.Enum):
+class CommandID(_WireEnum):
     """``CommandID`` strings shared by B2C, Transaction Status, Reversal,
     Account Balance and C2B Simulate -- each endpoint accepts a subset."""
 
@@ -87,7 +133,7 @@ class CommandID(str, enum.Enum):
     """C2B Simulate. Buy-goods/till direction; same spelling caveat."""
 
 
-class ResponseType(str, enum.Enum):
+class ResponseType(_WireEnum):
     """C2B URL-registration fallback behaviour when ValidationURL is
     unreachable. Wire values are sentence-case -- NOT SCREAMING_CASE."""
 
@@ -97,7 +143,7 @@ class ResponseType(str, enum.Enum):
     """Reject the payment when validation is unreachable."""
 
 
-class QRTrxCode(str, enum.Enum):
+class QRTrxCode(_WireEnum):
     """Dynamic QR transaction types (wire codes BG/WA/PB/SM/SB)."""
 
     BUY_GOODS = "BG"
