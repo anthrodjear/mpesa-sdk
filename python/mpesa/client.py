@@ -1,23 +1,35 @@
 """Concurrency-safe Daraja transport (mirrors go/client.go).
 
 Create one :class:`MpesaClient` per environment and share it -- the
-OAuth cache inside :class:`mpesa.auth.TokenManager` is guarded and
-generation-aware. Every outbound call refuses redirects ALWAYS (Daraja
-never legitimately redirects; following 307/308 would replay request
-bodies against an arbitrary Location host), caps reads at 1 MiB, and
-retries exactly once on ``401.003.01`` under the generation guard.
+OAuth cache inside :class:`mpesa.auth.TokenManager` is synchronized and
+generation-aware; share the Session per requests norms and do not
+mutate config or session after first use.
 
-Example::
+Environment wiring from process env vars fulfils config.py's deferred
+pointer::
 
-    cfg = Config(consumer_key=..., consumer_secret=..., shortcode="174379",
-                 passkey="...", environment=Environment.SANDBOX)
+    import os
+    from mpesa.config import Config
+    from mpesa.enums import Environment
+
+    cfg = Config(
+        consumer_key=os.environ["MPESA_CONSUMER_KEY"],
+        consumer_secret=os.environ["MPESA_CONSUMER_SECRET"],
+        shortcode=os.environ["MPESA_SHORTCODE"],
+        passkey=os.environ["MPESA_PASSKEY"],
+        environment=Environment.from_config(os.environ.get("MPESA_ENVIRONMENT")),
+    )
     client = MpesaClient(cfg)
-    resp = client.stk_push(STKPushRequest(...))
+
+Requests are treated as VALUES: endpoint methods apply injected
+defaults (shortcode/password/originator/identifiers) to an internal
+``dataclasses.replace`` copy -- the caller's object is never mutated.
 """
 
 from __future__ import annotations
 
 import copy
+import dataclasses
 from datetime import datetime, timezone
 from typing import Any
 
@@ -63,13 +75,12 @@ ACCOUNT_BALANCE_PATH = "/mpesa/accountbalance/v1/query"
 QR_CODE_PATH = "/mpesa/qrcode/v1/generate"
 
 _ERR_INVALID_TOKEN = "401.003.01"
-_MAX_RESPONSE_CHARS = 1_048_576
+_MAX_RESPONSE_BYTES = 1_048_576
 
 
 class _OAuthOnlySession:
     """Thin read-only view over the client session that injects
-    ``allow_redirects=False`` into TokenManager's OAuth GETs (the token
-    manager itself stays transport-agnostic)."""
+    ``allow_redirects=False`` into TokenManager's OAuth GETs."""
 
     def __init__(self, session: Any) -> None:
         self._session = session
@@ -82,11 +93,12 @@ class _OAuthOnlySession:
 class MpesaClient:
     """Daraja API engine bound to one :class:`~mpesa.config.Config`.
 
-    The injected ``http_client`` (if any) is SHALLOW-cloned -- headers
-    and adapters are copied, the caller's object is never mutated -- and
-    the clone is forced to ``verify=True`` per the config.py contract.
-    Credentials are not required until the first call surfaces them via
-    the token manager (go/client.go K4 parity).
+    Trust boundary: an injected ``http_client`` is shallow-cloned --
+    headers are snapshot-copied and adapters remounted -- so later
+    mutations of the caller's objects stay invisible here; do not mutate
+    them after first use either. The clone is forced ``verify=True``
+    per the config.py contract. Concurrency: TokenManager is fully
+    synchronized; share one Session per requests norms.
     """
 
     def __init__(self, config: Config) -> None:
@@ -95,17 +107,37 @@ class MpesaClient:
         source = config.http_client
         self._session = (copy.copy(source) if source is not None
                          else requests.Session())
+        self._session.headers = dict(source.headers) if source is not None \
+            else {}
+        for prefix, adapter in dict(
+                source.adapters if source is not None else {}).items():
+            self._session.mount(prefix, adapter)
         self._session.verify = True  # forced on OUR clone only
+        # Timeout clamp: non-positive values fall back to Go's 30s default.
+        self._timeout = (config.timeout_seconds
+                         if config.timeout_seconds > 0 else 30.0)
         self._tokens = TokenManager(
             _OAuthOnlySession(self._session), base_url=self._base_url,
             consumer_key=config.consumer_key,
             consumer_secret=config.consumer_secret,
-            now=config.now, timeout=config.timeout_seconds)
+            now=config.now, timeout=self._timeout)
 
     def __repr__(self) -> str:
         """Credential-safe rendering (never secrets/token)."""
         return (f"MpesaClient(environment={self._cfg.environment.name}, "
-                f"timeout_seconds={self._cfg.timeout_seconds!r})")
+                f"timeout_seconds={self._timeout!r})")
+
+    def close(self) -> None:
+        """Release the underlying session's connection pool."""
+        closer = getattr(self._session, "close", None)
+        if callable(closer):
+            closer()
+
+    def __enter__(self) -> "MpesaClient":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
 
     # ---- transport --------------------------------------------------------
 
@@ -114,50 +146,56 @@ class MpesaClient:
 
     def _send(self, token: str, method: str, path: str,
               json_body: Any, params: Any) -> requests.Response:
-        return self._session.request(
+        """True streaming cap: read at most _MAX_RESPONSE_BYTES+1 via
+        iter_content (Go LimitReader parity), never trusting .content."""
+        response = self._session.request(
             method, self._base_url + path, json=json_body, params=params,
-            timeout=self._cfg.timeout_seconds, allow_redirects=False,
+            timeout=self._timeout, allow_redirects=False, stream=True,
             headers={"Authorization": f"Bearer {token}",
                      "Content-Type": "application/json"})
+        chunks = []
+        total = 0
+        for chunk in response.iter_content(_MAX_RESPONSE_BYTES + 1):
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > _MAX_RESPONSE_BYTES:
+                raise ValueError(f"mpesa: {path} response exceeds "
+                                 f"{_MAX_RESPONSE_BYTES} bytes")
+        response.content = b"".join(chunks)
+        return response
 
     def _post_model(self, path: str, payload: dict, model: type):
         """Authenticated POST -> parsed sync-response model, with the
-        documented retry-once on 401.003.01."""
+        documented retry-once on 401.003.01. The 401 probe itself is
+        size-capped before any parsing."""
         token, gen = self._tokens.get_token_with_gen()
         response = self._send(token, "POST", path, payload, None)
-        if response.status_code == 401:
+        if response.status_code == 401 and \
+                len(response.content) <= _MAX_RESPONSE_BYTES:
             probe = MpesaError.from_response(401, response.content)
             if probe.error_code == _ERR_INVALID_TOKEN:
                 fresh = self._tokens.refresh_after_invalid_token(gen)
                 response = self._send(fresh, "POST", path, payload, None)
-        self._guard(response, path)
-        return model.from_json(response.content)
-
-    @staticmethod
-    def _guard(response: requests.Response, path: str) -> None:
-        if len(response.content) > _MAX_RESPONSE_CHARS:
-            raise ValueError(
-                f"mpesa: {path} response exceeds {_MAX_RESPONSE_CHARS} bytes")
+        if len(response.content) > _MAX_RESPONSE_BYTES:
+            raise ValueError(f"mpesa: {path} response exceeds "
+                             f"{_MAX_RESPONSE_BYTES} bytes")
         if not 200 <= response.status_code <= 299:
             raise MpesaError.from_response(
                 response.status_code, response.content)
+        return model.from_json(response.content)
 
     # ---- endpoints --------------------------------------------------------
 
     def stk_push(self, req: STKPushRequest) -> STKPushResponse:
-        """Send a payment prompt (docs/apis/stk-push.md). Password and
-        Timestamp derive from ONE shared EAT instant and bind to the
-        shortcode ACTUALLY sent. Injected defaults: BusinessShortCode and
-        PartyB <- cfg.shortcode when empty.
+        """Send a payment prompt (docs/apis/stk-push.md); Password and
+        Timestamp derive from ONE shared EAT instant bound to the
+        shortcode ACTUALLY sent.
 
         Example::
 
-            resp = client.stk_push(STKPushRequest(
-                transaction_type=TransactionType.CUSTOMER_PAY_BILL_ONLINE,
-                amount=1, party_a="0722000000", phone_number="0722000000",
-                call_back_url="https://x.com/cb",
-                account_reference="Order001", transaction_desc="pay"))
+            resp = client.stk_push(STKPushRequest(...))
         """
+        req = dataclasses.replace(req)
         if not req.business_short_code:
             req.business_short_code = self._cfg.shortcode
         if not req.party_b:
@@ -180,7 +218,10 @@ class MpesaClient:
                 checkout_request_id="ws_CO_191220191020363925"))
         """
         effective = req.business_short_code or self._cfg.shortcode
+        req = dataclasses.replace(req)
         req.validate()
+        # Hand-built flat payload mirrors go/client.go stkQueryPayload:
+        # BusinessShortCode participates in password derivation.
         password, timestamp = generate_password(
             effective, self._cfg.passkey, self._now())
         payload = {"BusinessShortCode": effective, "Password": password,
@@ -189,18 +230,14 @@ class MpesaClient:
         return self._post_model(STK_QUERY_PATH, payload, STKQueryResponse)
 
     def b2c_payout(self, req: B2CPayoutRequest) -> B2CResponse:
-        """Async payout to a customer MSISDN (docs/apis/b2c.md). Injected:
-        OriginatorConversationID <- new_originator_id() when empty;
-        PartyA <- cfg.shortcode when empty.
+        """Async payout (docs/apis/b2c.md); OriginatorConversationID <-
+        new_originator_id() and PartyA <- cfg.shortcode when empty.
 
         Example::
 
-            ack = client.b2c_payout(B2CPayoutRequest(
-                initiator_name="testapi", security_credential=cred,
-                command_id=CommandID.BUSINESS_PAYMENT, amount=10,
-                party_b="+254705912645", remarks="payout",
-                queue_time_out_url=u1, result_url=u2))
+            ack = client.b2c_payout(B2CPayoutRequest(...))
         """
+        req = dataclasses.replace(req)
         if not req.originator_conversation_id:
             req.originator_conversation_id = new_originator_id()
         if not req.party_a:
@@ -211,17 +248,15 @@ class MpesaClient:
     def transaction_status(
             self, req: TransactionStatusRequest) -> ConversationResponse:
         """Query by receipt XOR conversation ID
-        (docs/apis/transaction-status.md). Defaults: CommandID <-
-        TX_STATUS_QUERY, IdentifierType <- "4".
+        (docs/apis/transaction-status.md); CommandID <- TX_STATUS_QUERY,
+        IdentifierType <- "4" when unset.
 
         Example::
 
-            ack = client.transaction_status(TransactionStatusRequest(
-                initiator="testapi", security_credential=cred,
-                transaction_id="NLJ7RT61SV", party_a="600992",
-                remarks="status", result_url=u1, queue_time_out_url=u2))
+            ack = client.transaction_status(TransactionStatusRequest(...))
         """
-        if req.command_id is None:
+        req = dataclasses.replace(req)
+        if not req.command_id:
             req.command_id = CommandID.TX_STATUS_QUERY
         if not req.identifier_type:
             req.identifier_type = "4"
@@ -230,20 +265,15 @@ class MpesaClient:
                                 ConversationResponse)
 
     def reversal(self, req: ReversalRequest) -> ConversationResponse:
-        """Reverse a recent C2B transaction (docs/apis/reversal.md);
-        C2B ONLY -- B2C payouts cannot be reversed here. Defaults:
-        CommandID <- REVERSAL, receiver_identifier_type handled at
-        payload time ("11").
+        """Reverse a recent C2B transaction -- C2B ONLY
+        (docs/apis/reversal.md); CommandID <- REVERSAL when unset.
 
         Example::
 
-            ack = client.reversal(ReversalRequest(
-                initiator="testapi", security_credential=cred,
-                transaction_id="NLJ7RT61SV", amount=10,
-                receiver_party="600992", remarks="duplicate charge",
-                result_url=u1, queue_time_out_url=u2))
+            ack = client.reversal(ReversalRequest(...))
         """
-        if req.command_id is None:
+        req = dataclasses.replace(req)
+        if not req.command_id:
             req.command_id = CommandID.REVERSAL
         req.validate()
         return self._post_model(REVERSAL_PATH, req.to_payload(),
@@ -251,17 +281,15 @@ class MpesaClient:
 
     def account_balance(
             self, req: AccountBalanceRequest) -> ConversationResponse:
-        """Query organization balances (docs/apis/account-balance.md).
-        Defaults: CommandID <- ACCOUNT_BALANCE, IdentifierType <- "4".
+        """Query organization balances (docs/apis/account-balance.md);
+        CommandID <- ACCOUNT_BALANCE, IdentifierType <- "4" when unset.
 
         Example::
 
-            ack = client.account_balance(AccountBalanceRequest(
-                initiator="testapi", security_credential=cred,
-                party_a="600992", remarks="balance check",
-                result_url=u1, queue_time_out_url=u2))
+            ack = client.account_balance(AccountBalanceRequest(...))
         """
-        if req.command_id is None:
+        req = dataclasses.replace(req)
+        if not req.command_id:
             req.command_id = CommandID.ACCOUNT_BALANCE
         if not req.identifier_type:
             req.identifier_type = "4"
@@ -270,17 +298,14 @@ class MpesaClient:
                                 ConversationResponse)
 
     def c2b_register_url(self, req: C2BRegisterRequest) -> C2BAckResponse:
-        """Register validation/confirmation URLs, v2 (docs/apis/c2b.md);
-        production registration is effectively one-shot. ShortCode <-
-        cfg.shortcode when empty.
+        """Register validation/confirmation URLs, v2 -- effectively
+        one-shot in production (docs/apis/c2b.md); ShortCode <- cfg.
 
         Example::
 
-            ack = client.c2b_register_url(C2BRegisterRequest(
-                response_type=ResponseType.COMPLETED,
-                confirmation_url="https://a.com/confirm",
-                validation_url="https://a.com/validate"))
+            ack = client.c2b_register_url(C2BRegisterRequest(...))
         """
+        req = dataclasses.replace(req)
         if not req.short_code:
             req.short_code = self._cfg.shortcode
         req.validate()
@@ -288,15 +313,14 @@ class MpesaClient:
                                 C2BAckResponse)
 
     def c2b_simulate(self, req: C2BSimulateRequest) -> C2BAckResponse:
-        """Fake an inbound payment -- SANDBOX ONLY (docs/apis/c2b.md).
+        """Fake an inbound payment -- SANDBOX ONLY (docs/apis/c2b.md);
         ShortCode <- cfg.shortcode when empty.
 
         Example::
 
-            ack = client.c2b_simulate(C2BSimulateRequest(
-                command_id=CommandID.C2B_PAYBILL_ONLINE, amount=10,
-                msisdn="0712345678", bill_ref_number="acct-1"))
+            ack = client.c2b_simulate(C2BSimulateRequest(...))
         """
+        req = dataclasses.replace(req)
         if not req.short_code:
             req.short_code = self._cfg.shortcode
         req.validate()
@@ -304,15 +328,12 @@ class MpesaClient:
                                 C2BAckResponse)
 
     def generate_qr_code(self, req: QRCodeRequest) -> QRCodeResponse:
-        """Create a dynamic QR image payload, fully synchronous
+        """Create a dynamic QR payload, fully synchronous
         (docs/apis/dynamic-qr.md).
 
         Example::
 
-            qr = client.generate_qr_code(QRCodeRequest(
-                merchant_name="TEST SUPERMARKET", ref_no="Invoice Test",
-                amount=1, trx_code=QRTrxCode.BUY_GOODS,
-                cpi="174379", size="300"))
+            qr = client.generate_qr_code(QRCodeRequest(...))
         """
         req.validate()
         return self._post_model(QR_CODE_PATH, req.to_payload(),

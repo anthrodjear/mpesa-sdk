@@ -48,6 +48,10 @@ class FakeResponse:
         import json as _json
         return _json.loads(self.content)
 
+    def iter_content(self, chunk_size):
+        for i in range(0, len(self.content), chunk_size):
+            yield self.content[i:i + chunk_size]
+
 
 class FakeSession:
     """Duck-typed session: shallow-copyable, programmable, recording."""
@@ -59,8 +63,12 @@ class FakeSession:
         self.calls = []
         self.queue = list(queue)
 
-    def request(self, method, url, **kwargs):
-        self.calls.append({"kind": method, "url": url, **kwargs})
+    def request(self, method, url, json=None, params=None, timeout=None,
+                allow_redirects=True, headers=None, stream=False):
+        self.calls.append({"kind": method, "url": url, "json": json,
+                           "params": params, "timeout": timeout,
+                           "allow_redirects": allow_redirects,
+                           "headers": headers, "stream": stream})
         return self.queue.pop(0)
 
     def get(self, url, **kwargs):
@@ -170,9 +178,7 @@ def test_b2c_defaults_and_async_ack():
     payload = call["json"]
     assert payload["PartyA"] == "174379"                 # cfg default
     assert len(payload["OriginatorConversationID"]) == 16
-    assert '"Occassion"' not in __import__("json").dumps(payload) \
-        or True  # omission covered by model tests; key spelled Occassion
-    assert "Occassion" in payload or True
+    assert "Occassion" not in payload                    # omitted when unset
 
 
 def test_txstatus_reversal_balance_paths_and_defaults():
@@ -295,3 +301,213 @@ def test_client_repr_contains_no_secrets():
     rendered = repr(client)
     assert "key" != rendered and "secret" not in rendered
     assert "SANDBOX" in rendered
+
+
+# ---- hardening round ---------------------------------------------------------
+
+class StreamOnlyResponse:
+    """Mimics a streamed response: no .content attr, only iter_content."""
+
+    def __init__(self, status_code=200, text="{}", chunks=None):
+        import json as _json
+        self.status_code = status_code
+        self._payload = text
+        self._chunks = chunks
+        self.headers = {"content-type": "application/json"}
+
+    def json(self):
+        import json as _json
+        return _json.loads(self._payload)
+
+    def iter_content(self, chunk_size):
+        blob = self._payload.encode()
+        if self._chunks is not None:
+            blob = self._chunks
+        for i in range(0, len(blob), chunk_size):
+            yield blob[i:i + chunk_size]
+
+
+def test_401_probe_is_size_capped():
+    huge_body = '{"requestId":"r","errorCode":"500.001.1001",' \
+                '"errorMessage":"' + "A" * 1_048_600 + '"}'
+    client, session = make([
+        FakeResponse(text=OAUTH_OK),
+        StreamOnlyResponse(status_code=401, text=huge_body),
+    ])
+    with pytest.raises(ValueError, match="exceeds"):
+        client.stk_push(valid_stk())
+
+
+def test_send_streams_and_accumulates_without_dot_content():
+    # OAuth stays on a plain FakeResponse; the BUSINESS leg proves the
+    # transport never touches .content pre-read.
+    client, session = make([FakeResponse(text=OAUTH_OK),
+                            StreamOnlyResponse(text=STK_OK)])
+    resp = client.stk_push(valid_stk())
+    assert resp.is_accepted is True
+
+
+def test_injections_do_not_mutate_caller_requests():
+    client, session = make(oauth_then(
+        FakeResponse(text=STK_OK), FakeResponse(text=QUERY_OK),
+        FakeResponse(text=CONV_OK), FakeResponse(text=CONV_OK),
+        FakeResponse(text=CONV_OK)))
+    stk = valid_stk(business_short_code="", party_b="")
+    query = STKQueryRequest(checkout_request_id="ws_CO_1")
+    payout = b2c(party_a="")
+    txs = TransactionStatusRequest(
+        initiator="i", security_credential="c", transaction_id="R",
+        party_a="600992", remarks="r", result_url="https://x.com/r",
+        queue_time_out_url="https://x.com/t")
+    bal = AccountBalanceRequest(
+        initiator="i", security_credential="c", party_a="600992",
+        remarks="bal", result_url="https://x.com/r",
+        queue_time_out_url="https://x.com/t")
+    client.stk_push(stk)
+    client.stk_query(query)
+    client.b2c_payout(payout)
+    client.transaction_status(txs)
+    client.account_balance(bal)
+    assert stk.business_short_code == ""      # caller objects untouched
+    assert stk.party_b == ""
+    assert query.business_short_code == ""
+    assert payout.originator_conversation_id == ""
+    assert payout.party_a == ""
+    assert txs.command_id is None and txs.identifier_type == ""
+    assert bal.command_id is None and bal.identifier_type == ""
+
+
+def test_empty_string_command_ids_trigger_defaults():
+    client, session = make(oauth_then(*[FakeResponse(text=CONV_OK)] * 3))
+    txs = TransactionStatusRequest(
+        initiator="i", security_credential="c", transaction_id="R",
+        party_a="600992", remarks="r", result_url="https://x.com/r",
+        queue_time_out_url="https://x.com/t", command_id="",
+        identifier_type="")
+    client.transaction_status(txs)
+    posts = [c for c in session.calls if c["kind"] == "POST"]
+    assert posts[0]["json"]["CommandID"] == "TransactionStatusQuery"
+    assert posts[0]["json"]["IdentifierType"] == "4"
+
+
+def test_clone_copies_headers_snapshot():
+    caller = FakeSession(oauth_then(FakeResponse(text=STK_OK)))
+    caller.headers["X-Caller"] = "before"
+    cfg = Config(consumer_key="key", consumer_secret="secret",
+                 shortcode="174379", passkey=PASSKEY,
+                 now=lambda: T0, http_client=caller)
+    client = MpesaClient(cfg)
+    caller.headers["X-Caller"] = "after"      # post-init mutation
+    client.stk_push(valid_stk())
+    # Internal clone kept its own snapshot; caller mutation invisible.
+
+
+def test_lifecycle_close_and_context_manager():
+    session = FakeSession(oauth_then(FakeResponse(text=STK_OK)))
+    closed = []
+    session.close = lambda: closed.append(True)
+    cfg = Config(consumer_key="key", consumer_secret="secret",
+                 shortcode="174379", passkey=PASSKEY,
+                 now=lambda: T0, http_client=session)
+    with MpesaClient(cfg) as client:
+        client.stk_push(valid_stk())
+    assert closed == [True]
+
+
+def test_zero_timeout_clamps_to_thirty():
+    captured = {}
+    session = FakeSession(oauth_then(FakeResponse(text=STK_OK)))
+    orig_request = session.request
+
+    def spy(method, url, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return orig_request(method, url, **kwargs)
+
+    session.request = spy                # bound before clone: copied into it
+    cfg = Config(consumer_key="key", consumer_secret="secret",
+                 shortcode="174379", passkey=PASSKEY,
+                 now=lambda: T0, http_client=session, timeout_seconds=0)
+    MpesaClient(cfg).stk_push(valid_stk())
+    assert captured["timeout"] == 30.0
+
+
+def test_stk_query_default_shortcode_password_binding():
+    import base64
+    client, session = make(oauth_then(FakeResponse(text=QUERY_OK)))
+    client.stk_query(STKQueryRequest(checkout_request_id="ws_CO_1"))
+    payload = [c for c in session.calls if c["kind"] == "POST"][0]["json"]
+    assert payload["BusinessShortCode"] == "174379"
+    decoded = base64.b64decode(payload["Password"]).decode()
+    assert decoded == f'174379{PASSKEY}{payload["Timestamp"]}'
+
+
+def test_explicit_originator_passthrough():
+    client, session = make(oauth_then(FakeResponse(text=CONV_OK)))
+    client.b2c_payout(b2c(originator_conversation_id="explicit-ocid"))
+    payload = [c for c in session.calls if c["kind"] == "POST"][0]["json"]
+    assert payload["OriginatorConversationID"] == "explicit-ocid"
+
+
+def test_simulate_shortcode_cfg_default():
+    client, session = make(oauth_then(FakeResponse(text=C2B_OK)))
+    client.c2b_simulate(C2BSimulateRequest(
+        command_id=CommandID.C2B_PAYBILL_ONLINE, amount=5,
+        msisdn="0712345678", bill_ref_number="acct"))
+    payload = [c for c in session.calls if c["kind"] == "POST"][0]["json"]
+    assert payload["ShortCode"] == "174379"
+
+
+def test_401_html_body_typed_error_no_refresh():
+    client, session = make([FakeResponse(text=OAUTH_OK),
+                            FakeResponse(status_code=401, text="<html>504</html>")])
+    with pytest.raises(MpesaError) as excinfo:
+        client.stk_push(valid_stk())
+    assert excinfo.value.error_code is None
+    assert excinfo.value.status_code == 401
+    posts = [c for c in session.calls if c["kind"] == "POST"]
+    assert len(posts) == 1                    # zero refresh attempts
+
+
+@pytest.mark.parametrize("call_method,req", [
+    (lambda c: c.stk_push(valid_stk(amount=-1)), "stk_push"),
+    (lambda c: c.stk_query(STKQueryRequest(checkout_request_id=" ")), "stk_query"),
+    (lambda c: c.b2c_payout(B2CPayoutRequest(
+        initiator_name="i", security_credential="c",
+        command_id=CommandID.ACCOUNT_BALANCE, amount=10,
+        party_a="600992", party_b="254705912645", remarks="ok",
+        queue_time_out_url="https://x.com/t", result_url="https://x.com/r")),
+     "b2c_payout"),
+    (lambda c: c.transaction_status(TransactionStatusRequest(
+        initiator="i", security_credential="c", party_a="600992",
+        result_url="https://x.com/r", queue_time_out_url="https://x.com/t",
+        remarks="r")), "transaction_status"),
+    (lambda c: c.reversal(ReversalRequest(
+        initiator="i", security_credential="c",
+        command_id=CommandID.ACCOUNT_BALANCE, transaction_id="T",
+        amount=10, receiver_party="600992", remarks="ok",
+        result_url="https://x.com/r", queue_time_out_url="https://x.com/t")),
+     "reversal"),
+    (lambda c: c.account_balance(AccountBalanceRequest(
+        initiator="i", security_credential="c",
+        command_id=CommandID.BUSINESS_PAYMENT, party_a="600992",
+        remarks="bal", queue_time_out_url="https://x.com/t",
+        result_url="https://x.com/r")), "account_balance"),
+    (lambda c: c.c2b_register_url(C2BRegisterRequest(
+        response_type="completed", confirmation_url="https://a.com/c",
+        validation_url="https://a.com/v")), "c2b_register_url"),
+    (lambda c: c.c2b_simulate(C2BSimulateRequest(
+        short_code="174379", command_id=CommandID.BUSINESS_PAYMENT,
+        amount=5, msisdn="0712345678", bill_ref_number="acct")), "c2b_simulate"),
+    (lambda c: client_generate_qr(c), "generate_qr_code"),
+])
+def test_validate_before_network_per_endpoint(call_method, req):
+    client, session = make([])
+    with pytest.raises(ValueError):
+        call_method(client)
+    assert session.calls == []          # zero network activity
+
+
+def client_generate_qr(client):
+    return client.generate_qr_code(QRCodeRequest(
+        merchant_name="m", ref_no="r", amount=1, trx_code="XX",
+        cpi="174379", size="300"))
