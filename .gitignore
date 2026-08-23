@@ -1,0 +1,7 @@
+.playwright-mcp/
+node_modules/
+dist/
+__pycache__/
+*.pyc
+*.egg-info/
+.python_history
