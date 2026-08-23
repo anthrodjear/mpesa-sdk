@@ -29,6 +29,16 @@
 // causes intermittent 500.001.1001). Callbacks carry no HMAC signature: bind
 // on CheckoutRequestID, validate fields, and cap ingestion body size.
 //
+// # Token caching across replicas
+//
+// Refresh holds the write lock across the OAuth round-trip — a deliberate
+// ~once-per-refresh-window stall traded for strict single-flight, since any
+// new token request invalidates every previously issued token. Across
+// replicas, treat ONE process as the logical token owner per credential per
+// deployment: sibling refreshes invalidate each other's cached tokens by
+// design (docs/apis/oauth.md). The SDK's 401.003.01 generation guard absorbs
+// cross-owner invalidations with a single coordinated refresh and one retry.
+//
 // # Secrets
 //
 // Config and every request type carrying SecurityCredential print a redacted

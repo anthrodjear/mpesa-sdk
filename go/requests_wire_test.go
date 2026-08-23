@@ -92,6 +92,14 @@ func TestExportedValidateGuardrails(t *testing.T) {
 	if err := good.Validate(); err != nil {
 		t.Fatalf("valid fixture rejected: %v", err)
 	}
+	// K1: no invented default — empty TransactionType must be rejected with
+	// both enum values named.
+	noTT := good
+	noTT.TransactionType = ""
+	err := noTT.Validate()
+	if err == nil || !strings.Contains(err.Error(), "(CustomerPayBillOnline | CustomerBuyGoodsOnline)") {
+		t.Fatalf("empty TransactionType err = %v, want required-with-enums message", err)
+	}
 	qr := QRCodeRequest{MerchantName: "m", RefNo: "r", Amount: 1, TrxCode: QRTrxSendMoney, CPI: "254712345678", Size: "300"}
 	if err := qr.Validate(); err != nil {
 		t.Fatalf("valid QR fixture rejected: %v", err)
