@@ -1,15 +1,18 @@
 """Callbacks Safaricom POSTs to CallBackURL -- STK family
 (mirrors go/callbacks.go).
 
-SECURITY POSTURE: these payloads carry NO HMAC signature. Anyone who can
-reach your endpoint can POST a forged callback, so ingestion must:
+SECURITY POSTURE: these payloads carry NO HMAC signature -- anyone who
+can reach your endpoint can forge one. Ingestion must: cap request
+bodies in the web framework (chars; >=1 MiB analogue of Go's
+``http.MaxBytesReader``) before :meth:`from_json`; bind on
+``checkout_request_id`` against YOUR original request record; treat all
+metadata values as ADVISORY ONLY (a forged first item is
+indistinguishable from genuine -- confirm via STK Query before any
+irreversible fulfillment); classify per ADR-010-m-pesa-adapter.md
+(INDETERMINATE outcomes may still settle minutes later).
 
-* cap request bodies in your web framework (>=1 MiB analogue of Go's
-  ``http.MaxBytesReader``) BEFORE handing bytes to :meth:`from_json`;
-* bind on ``checkout_request_id`` against YOUR original request record;
-* re-validate amount/phone against that record -- never trust metadata;
-* treat classification via ADR-010-m-pesa-adapter.md (INDETERMINATE
-  outcomes may still settle minutes later).
+Go-divergence footnote: stdlib ``json.loads`` ACCEPTS NaN/Infinity
+literals Go's encoder rejects; typed helpers refuse them by gate.
 
 Usage::
 
@@ -22,23 +25,41 @@ Usage::
 from __future__ import annotations
 
 import json
+import math
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from .classification import ResultClass, classify_result_code
-from .coercion import coerce_str
+from .coercion import coerce_int, coerce_str
 
 __all__ = ["StkCallbackResult", "MetadataItem"]
 
-_MAX_BODY_CHARS = 1_048_576
+_MAX_BODY_CHARS = 1_048_576  # characters, mirroring the framework body cap
+_AMOUNT_RE = re.compile(r"[+-]?[0-9]{1,12}(\.[0-9]{1,6})?", re.ASCII)
+
+
+def _item_name(entry: dict[str, Any]) -> str:
+    """Name extraction surviving hostile values (unnameable -> "")."""
+    value = entry.get("Name", "")
+    if value is None or isinstance(value, str):
+        return value if isinstance(value, str) else ""
+    try:
+        return str(value)
+    except (ValueError, TypeError):
+        return ""
+
+
+def _safe_json_int(digits: str) -> Any:
+    """parse_int hook: >19-digit JSON integers decode as explicit absence
+    instead of tripping CPython's digit guard and killing the callback."""
+    return int(digits) if len(digits) <= 19 else None
 
 
 @dataclass(frozen=True)
 class MetadataItem:
-    """One named entry of ``CallbackMetadata.Item``; the Value is kept as
-    the already-decoded JSON value (int/float/str/bool/None) because
-    stdlib decoding preserves integral magnitudes exactly where Go needs
-    RawMessage gymnastics to avoid float corruption."""
+    """One ``CallbackMetadata.Item`` entry; Value kept as the decoded
+    JSON value (int/float/str/bool/None)."""
 
     name: str
     value_raw: Any = None
@@ -46,12 +67,8 @@ class MetadataItem:
 
 @dataclass(frozen=True)
 class StkCallbackResult:
-    """The ``Body.stkCallback`` transaction outcome. ``CallbackMetadata``
-    is absent on failures -- every metadata accessor tolerates that.
-
-    Attributes mirror the wire names snake-cased; ``result_code`` is
-    normalized to str ("0"/"1032"/...) regardless of wire encoding.
-    """
+    """The ``Body.stkCallback`` outcome; metadata accessors tolerate its
+    absence on failures. ``result_code`` normalized to str."""
 
     merchant_request_id: str = ""
     checkout_request_id: str = ""
@@ -61,12 +78,9 @@ class StkCallbackResult:
 
     @classmethod
     def from_json(cls, data: "dict | bytes | str") -> "StkCallbackResult":
-        """Parse the full ``{"Body": {"stkCallback": {...}}}`` envelope.
-
-        Loud about SHAPE (missing Body/stkCallback/scalars raise ValueError
-        naming the path -- Go zero-fills silently, hiding drift); tolerant
-        about TYPES (coercion) and absent CallbackMetadata.
-        """
+        """Parse the full envelope. Loud about SHAPE (missing keys raise
+        ValueError naming them), tolerant about TYPES and about absent
+        CallbackMetadata."""
         if isinstance(data, (bytes, bytearray)):
             data = data.decode("utf-8", errors="replace")
         if isinstance(data, str):
@@ -74,63 +88,50 @@ class StkCallbackResult:
                 raise ValueError(
                     f"mpesa: callback body exceeds {_MAX_BODY_CHARS} chars")
             try:
-                data = json.loads(data)
-            except (json.JSONDecodeError, RecursionError) as exc:
-                raise ValueError(f"mpesa: unparseable callback body "
-                                 f"({type(exc).__name__})") from None
+                data = json.loads(data, parse_int=_safe_json_int)
+            except (ValueError, RecursionError) as exc:
+                raise ValueError(
+                    f"mpesa: unparseable callback body "
+                    f"({type(exc).__name__})") from None
         if not isinstance(data, dict):
             raise ValueError("mpesa: unexpected STK callback shape: "
-                             "expected a JSON object")
+                             "missing or malformed Body")
         body = data.get("Body")
-        if not isinstance(body, dict):
-            raise ValueError("mpesa: unexpected STK callback shape: "
-                             "missing Body")
-        inner = body.get("stkCallback")
+        inner = body.get("stkCallback") if isinstance(body, dict) else None
         if not isinstance(inner, dict):
             raise ValueError("mpesa: unexpected STK callback shape: "
-                             "missing Body.stkCallback")
-        kwargs: dict[str, Any] = {}
-        for attr, key in (("merchant_request_id", "MerchantRequestID"),
-                          ("checkout_request_id", "CheckoutRequestID"),
-                          ("result_code", "ResultCode"),
-                          ("result_desc", "ResultDesc")):
-            if key not in inner:
-                raise ValueError(f"mpesa: unexpected STK callback shape: "
-                                 f"missing Body.stkCallback.{key}")
-            kwargs[attr] = (coerce_str(inner[key]) or "") \
-                if attr != "result_code" else (coerce_str(inner[key]) or "")
+                             "missing or malformed Body.stkCallback")
+        wire_keys = (("merchant_request_id", "MerchantRequestID"),
+                     ("checkout_request_id", "CheckoutRequestID"),
+                     ("result_code", "ResultCode"),
+                     ("result_desc", "ResultDesc"))
+        missing = [key for _, key in wire_keys if key not in inner]
+        if missing:
+            raise ValueError(f"mpesa: unexpected STK callback shape: "
+                             f"missing {', '.join(missing)}")
         meta = inner.get("CallbackMetadata") or {}
         item_list = meta.get("Item") if isinstance(meta, dict) else None
-        items = tuple(
-            MetadataItem(name=str(entry.get("Name", "")),
-                         value_raw=entry.get("Value"))
-            for entry in (item_list or []) if isinstance(entry, dict)
-        )
-        return cls(_items=items, **kwargs)
+        items = tuple(MetadataItem(name=_item_name(e),
+                                   value_raw=e.get("Value"))
+                      for e in (item_list or []) if isinstance(e, dict))
+        return cls(_items=items,
+                   **{attr: coerce_str(inner[key]) or ""
+                      for attr, key in wire_keys})
 
-    def _lookup(self, name: str) -> Any:
-        """First-wins scan over raw items (Go MetadataMap semantics)."""
-        for item in self._items:
-            if item.name == name:
-                return item.value_raw
-        return None
+    def items(self) -> tuple[MetadataItem, ...]:
+        """Raw metadata items, duplicates included, order preserved."""
+        return self._items
 
     def duplicate_keys(self) -> int:
-        """Count of items shadowed by an earlier same-named item
-        (duplicates observed on Safaricom retries)."""
+        """Count of items shadowed by an earlier same-named item."""
         seen: set[str] = set()
-        dupes = 0
-        for item in self._items:
-            if item.name in seen:
-                dupes += 1
-            else:
-                seen.add(item.name)
-        return dupes
+        return sum(1 for item in self._items
+                   if item.name in seen or seen.add(item.name))
 
     def metadata(self) -> dict[str, Any]:
         """Flatten items FIRST-WINS; absent metadata yields {}. Example::
 
-            md = result.metadata()          # {'Amount': 1.0, ...}
+            md = result.metadata()   # {'Amount': 1.0, ...}
         """
         out: dict[str, Any] = {}
         for item in self._items:
@@ -142,10 +143,24 @@ class StkCallbackResult:
         return classify_result_code(self.result_code)
 
     def amount(self) -> float | None:
-        """Amount as float, or None when absent/non-numeric."""
+        """Amount as float; bools, >2**53 ints (precision), non-finite
+        floats and non-decimal strings all yield None."""
         value = self._lookup("Amount")
-        return float(value) if isinstance(value, (int, float)) \
-            and not isinstance(value, bool) else None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return float(value) if abs(value) <= 2 ** 53 else None
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+        if isinstance(value, str):
+            text = value.strip()
+            if not _AMOUNT_RE.fullmatch(text):
+                return None
+            try:
+                return float(text)
+            except (ValueError, OverflowError):
+                return None
+        return None
 
     def mpesa_receipt(self) -> str | None:
         """M-PESA receipt string, or None when absent."""
@@ -153,17 +168,29 @@ class StkCallbackResult:
         return coerce_str(value)
 
     def transaction_date(self) -> int | None:
-        """YYYYMMDDHHMMSS completion stamp preserved as int, or None."""
+        """YYYYMMDDHHMMSS stamp as int; string-encoded accepted via
+        strict coercion; bools rejected."""
         value = self._lookup("TransactionDate")
-        return value if isinstance(value, int) \
-            and not isinstance(value, bool) else None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        return coerce_int(value) if isinstance(value, str) else None
 
     def phone_number(self) -> str | None:
-        """Payer MSISDN as ASCII digits string, or None. Numeric wire
-        encodings are stringified; non-ASCII content is refused."""
+        """Payer MSISDN as ASCII-digit string; numeric encodings are
+        stringified, hostile magnitudes decode to None via the parse_int
+        hook, non-digit/non-ASCII refused."""
         value = self._lookup("PhoneNumber")
         if isinstance(value, bool):
             return None
-        text = str(value) if isinstance(value, int) else (
-            value.strip() if isinstance(value, str) else "")
-        return text if text and text.isascii() else None
+        text = value.strip() if isinstance(value, str) else (
+            str(value) if isinstance(value, int) else "")
+        return text if text.isascii() and text.isdigit() else None
+
+    def _lookup(self, name: str) -> Any:
+        """First raw item value under *name*, else None."""
+        for item in self._items:
+            if item.name == name:
+                return item.value_raw
+        return None
