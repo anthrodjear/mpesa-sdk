@@ -1,0 +1,692 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - banner [ref=e5]:
+        - generic [ref=e7]:
+          - link "safaricom logo" [ref=e9] [cursor=pointer]:
+            - /url: /
+            - img "safaricom logo" [ref=e10]
+          - generic [ref=e11]:
+            - button "Home" [ref=e12] [cursor=pointer]
+            - button "APIs" [ref=e13] [cursor=pointer]
+            - button "Dashboard" [ref=e14] [cursor=pointer]
+            - button "Marketplace" [ref=e15] [cursor=pointer]
+            - button "FAQs" [ref=e16] [cursor=pointer]
+            - button "MiniApps" [ref=e17] [cursor=pointer]
+          - generic [ref=e18]:
+            - button "Sign Up" [ref=e19] [cursor=pointer]: Sign Up
+            - button "Log In" [ref=e20] [cursor=pointer]
+      - generic [ref=e344]:
+        - generic [ref=e346]:
+          - navigation [ref=e347]:
+            - list [ref=e348]:
+              - listitem [ref=e349]:
+                - button "Discover APIs" [ref=e350] [cursor=pointer]:
+                  - img [ref=e351]
+                  - generic [ref=e353]: Discover APIs
+              - listitem [ref=e354]: /
+              - listitem [ref=e355]:
+                - paragraph [ref=e356]: Customer To Business (C2B)
+          - generic [ref=e360]:
+            - heading "Customer To Business (C2B)" [level=6] [ref=e361]
+            - generic [ref=e362]: By Safaricom
+          - paragraph [ref=e363]: Enables businesses to receive real-time API notifications for Lipa na M-Pesa or B2B payments.
+          - generic [ref=e364]:
+            - generic [ref=e365]:
+              - button "POST" [ref=e366]
+              - paragraph [ref=e368]: https://sandbox.safaricom.co.ke/mpesa/c2b/v2/registerurl
+            - img [ref=e370] [cursor=pointer]
+        - generic [ref=e372]:
+          - generic [ref=e374]:
+            - heading "DOCUMENTATION" [level=6] [ref=e375]
+            - navigation [ref=e376]:
+              - listitem [ref=e378] [cursor=pointer]:
+                - generic [ref=e380]: Overview
+              - listitem [ref=e382] [cursor=pointer]:
+                - generic [ref=e384]: How It Works
+              - listitem [ref=e386] [cursor=pointer]:
+                - img [ref=e387]
+                - generic [ref=e390]: Getting Started
+              - listitem [ref=e392] [cursor=pointer]:
+                - img [ref=e393]
+                - generic [ref=e396]: Integration Steps
+              - listitem [ref=e398] [cursor=pointer]:
+                - generic [ref=e400]: Go live
+              - listitem [ref=e402] [cursor=pointer]:
+                - generic [ref=e404]: How To
+              - listitem [ref=e406] [cursor=pointer]:
+                - img [ref=e407]
+                - generic [ref=e410]: Support
+          - generic [ref=e413]:
+            - heading "Overview" [level=2] [ref=e414]
+            - paragraph [ref=e415]: The Customer to Business (C2B) API, also known as the Register URL API, enables merchants to receive notifications for successful payments to their Paybill or Till numbers. Funds originate from the customer wallet and are transferred to the merchant’s short code. Payments can be initiated via SIM Toolkit, Mpesa App, Safaricom App, USSD, NI Push API, or Dynamic QR Code API.
+            - paragraph [ref=e416]: "The C2B API allows you to register callback URLs for payment notifications:"
+            - list [ref=e417]:
+              - listitem [ref=e418]:
+                - strong [ref=e419]: Validation URL
+                - text: ": Used when a merchant needs to validate payment details before accepting (e.g., verifying an account number)."
+              - listitem [ref=e420]:
+                - strong [ref=e421]: Confirmation URL
+                - text: ": Receives payment notification after successful completion."
+            - blockquote [ref=e422]:
+              - paragraph [ref=e423]:
+                - strong [ref=e424]: "Note:"
+                - text: C2B Transaction Validation is optional and must be activated by emailing
+                - link "apisupport@safaricom.co.ke" [ref=e425] [cursor=pointer]:
+                  - /url: mailto:apisupport@safaricom.co.ke
+                - text: or
+                - link "M-pesabusiness@safaricom.co.ke" [ref=e426] [cursor=pointer]:
+                  - /url: mailto:M-pesabusiness@safaricom.co.ke
+                - text: .
+            - heading "How It Works" [level=2] [ref=e427]
+            - list [ref=e428]:
+              - listitem [ref=e429]: Customer initiates payment to a Paybill or Till number.
+              - listitem [ref=e430]: M-PESA validates the request internally.
+              - listitem [ref=e431]: M-PESA checks if External Validation is enabled for the Paybill.
+              - listitem [ref=e432]:
+                - text: "If enabled:"
+                - list [ref=e433]:
+                  - listitem [ref=e434]: Sends a Validation request to the registered Validation URL.
+                  - listitem [ref=e435]: Merchant system validates and responds (within ~8 seconds).
+                  - listitem [ref=e436]: M-PESA processes the transaction based on the response.
+                  - listitem [ref=e437]: If default action is "Completed", sends a Confirmation request to the Confirmation URL.
+                  - listitem [ref=e438]: If default action is "Cancelled", cancels the transaction.
+              - listitem [ref=e439]: If External Validation is disabled, M-PESA completes the transaction and sends a Confirmation request.
+              - listitem [ref=e440]: If unable to reach the merchant’s endpoint, M-PESA uses the default action value.
+              - listitem [ref=e441]: If no URLs are registered, M-PESA completes the request.
+              - listitem [ref=e442]: SMS notifications are sent to both customer and merchant.
+              - listitem [ref=e443]:
+                - text: For failed notifications, use Pull Transaction API or check the
+                - link "M-PESA Org portal" [ref=e444] [cursor=pointer]:
+                  - /url: https://org.ke.m-pesa.com/login.action
+                - text: .
+            - paragraph [ref=e445]:
+              - strong [ref=e446]: "URL Requirements:"
+            - list [ref=e447]:
+              - listitem [ref=e448]: Use publicly available IP addresses or domain names.
+              - listitem [ref=e449]: Production URLs must be HTTPS; Sandbox allows HTTP.
+              - listitem [ref=e450]: Avoid keywords like M-PESA, Safaricom, exe, exec, cmd, SQL, query, etc., in URLs.
+              - listitem [ref=e451]: Do not use public URL testers (e.g., ngrok, mockbin, requestbin) in production.
+            - blockquote [ref=e452]:
+              - paragraph [ref=e453]:
+                - strong [ref=e454]: "Note:"
+                - text: On the sandbox, you are free to register your URLs multiple times or even overwrite the existing ones. In the production environment, this is a one-time API call that registers your validation and confirmation URLs to have them changed you can delete them on the URL management tab under self-service and re-register using register URL API, you can also email us at
+                - link "apisupport@safaricom.co.ke" [ref=e455] [cursor=pointer]:
+                  - /url: mailto:apisupport@safaricom.co.ke
+                - text: for assistance.
+            - blockquote [ref=e456]:
+              - paragraph [ref=e457]:
+                - strong [ref=e458]: "Note:"
+                - text: As you set up the default value, the words "Cancelled/Completed" must be in sentence case and well-spelled.
+            - heading "Getting Started" [level=2] [ref=e459]
+            - heading "Prerequisites" [level=3] [ref=e460]
+            - list [ref=e461]:
+              - listitem [ref=e462]: Create a Daraja Account on Safaricom Developer Portal.
+              - listitem [ref=e463]: Create a sandbox app to get API credentials.
+              - listitem [ref=e464]: Retrieve Consumer Key & Consumer Secret.
+              - listitem [ref=e465]: Use test data from the simulator section.
+              - listitem [ref=e466]: Have a live M-PESA Paybill/Till number with Business Admin/Manager operators for Go Live.
+            - heading "Good to Know" [level=3] [ref=e467]
+            - list [ref=e468]:
+              - listitem [ref=e469]: The API is asynchronous.
+              - listitem [ref=e470]: Can be consumed over the internet, VPN, or Multiprotocol Switch.
+            - heading "Get Auth Token" [level=4] [ref=e471]
+            - paragraph [ref=e472]:
+              - text: Generate an access token to authenticate API calls. See
+              - link "Authorization API" [ref=e473] [cursor=pointer]:
+                - /url: https://daraja.safaricom.co.ke/dashboard/apis?api=Authorization
+              - text: .
+            - heading "Integration Steps" [level=2] [ref=e474]
+            - heading "Sequence Diagram" [level=3] [ref=e475]
+            - paragraph [ref=e476]:
+              - img "customer-to-business-register-urls-sequence-diagram" [ref=e477]
+              - img "customer-to-business-sequence-diagram" [ref=e478]
+            - heading "Use Cases" [level=3] [ref=e479]
+            - paragraph [ref=e480]: Automate delivery of M-PESA payment notifications to applications, websites, and ERP systems for real-time updates.
+            - heading "Request Body" [level=3] [ref=e481]
+            - paragraph [ref=e482]:
+              - strong [ref=e483]: Register URLs
+            - code [ref=e485]: "{ \"ShortCode\": \"600984\", \"ResponseType\": \"Either Cancelled or Completed\", \"ConfirmationURL\": \"your confirmation URL\", \"ValidationURL\": \"your validation URL\" }"
+            - paragraph [ref=e486]:
+              - strong [ref=e487]: Simulate Transactions
+            - code [ref=e489]: "{ \"ShortCode\": 600984, \"CommandID\": \"Either CustomerBuyGoodsOnline or CustomerPayBillOnline\", \"Amount\": 1, \"Msisdn\": 254708374149, \"BillRefNumber\": \"Account reference for Customer paybills and null for customer buy goods\" }"
+            - heading "Request Parameter Definition" [level=3] [ref=e490]
+            - table [ref=e491]:
+              - rowgroup [ref=e492]:
+                - row "Name Description Type Sample Values" [ref=e493]:
+                  - columnheader "Name" [ref=e494]
+                  - columnheader "Description" [ref=e495]
+                  - columnheader "Type" [ref=e496]
+                  - columnheader "Sample Values" [ref=e497]
+              - rowgroup [ref=e498]:
+                - row "ValidationURL This is the URL that receives the validation request from the API upon payment submission. The validation URL is only called if the external validation on the registered shortcode is enabled. (By default External Validation is disabled). URL https://ip/domain:port/path" [ref=e499]:
+                  - cell "ValidationURL" [ref=e500]
+                  - cell "This is the URL that receives the validation request from the API upon payment submission. The validation URL is only called if the external validation on the registered shortcode is enabled. (By default External Validation is disabled)." [ref=e501]
+                  - cell "URL" [ref=e502]
+                  - cell "https://ip/domain:port/path" [ref=e503]:
+                    - link "https://ip/domain:port/path" [ref=e504] [cursor=pointer]:
+                      - /url: https://ip/domain:port/path
+                - row "ConfirmationURL This is the URL that receives the confirmation request from API upon payment completion. URL https://ip/domain:port/path" [ref=e505]:
+                  - cell "ConfirmationURL" [ref=e506]
+                  - cell "This is the URL that receives the confirmation request from API upon payment completion." [ref=e507]
+                  - cell "URL" [ref=e508]
+                  - cell "https://ip/domain:port/path" [ref=e509]:
+                    - link "https://ip/domain:port/path" [ref=e510] [cursor=pointer]:
+                      - /url: https://ip/domain:port/path
+                - 'row "ResponseType This parameter specifies what is to happen if for any reason the validation URL is not reachable. Note that, this is the default action value that determines what M-PESA will do in the scenario that your endpoint is unreachable or is unable to respond on time. Only two values are allowed: Completed or Cancelled. Completed means M-PESA will automatically complete your transaction, whereas Cancelled means M-PESA will automatically cancel the transaction, in the event M-PESA is unable to reach your Validation URL. String Completed, Cancelled" [ref=e511]':
+                  - cell "ResponseType" [ref=e512]
+                  - 'cell "This parameter specifies what is to happen if for any reason the validation URL is not reachable. Note that, this is the default action value that determines what M-PESA will do in the scenario that your endpoint is unreachable or is unable to respond on time. Only two values are allowed: Completed or Cancelled. Completed means M-PESA will automatically complete your transaction, whereas Cancelled means M-PESA will automatically cancel the transaction, in the event M-PESA is unable to reach your Validation URL." [ref=e513]'
+                  - cell "String" [ref=e514]
+                  - cell "Completed, Cancelled" [ref=e515]
+                - row "ShortCode Usually, a unique number is tagged to an M-PESA pay bill/till number of the organization. Numeric 600996" [ref=e516]:
+                  - cell "ShortCode" [ref=e517]
+                  - cell "Usually, a unique number is tagged to an M-PESA pay bill/till number of the organization." [ref=e518]
+                  - cell "Numeric" [ref=e519]
+                  - cell "600996" [ref=e520]
+                - row "CommandID This is a field used to define the type of transaction being simulated. Either “CustomerBuyGoodsOnline” to signify a payment to a till number or “CustomerPayBillOnline” to signify a payment to a paybill number. String CustomerBuyGoodsOnlineCustomerPayBillOnline" [ref=e521]:
+                  - cell "CommandID" [ref=e522]
+                  - cell "This is a field used to define the type of transaction being simulated. Either “CustomerBuyGoodsOnline” to signify a payment to a till number or “CustomerPayBillOnline” to signify a payment to a paybill number." [ref=e523]
+                  - cell "String" [ref=e524]
+                  - cell "CustomerBuyGoodsOnlineCustomerPayBillOnline" [ref=e525]
+                - row "Amount This parameter is a number that indicates the amount to be transacted. Numeric 10" [ref=e526]:
+                  - cell "Amount" [ref=e527]
+                  - cell "This parameter is a number that indicates the amount to be transacted." [ref=e528]
+                  - cell "Numeric" [ref=e529]
+                  - cell "10" [ref=e530]
+                - row "Msisdn This is the phone number from which the funds will be debited. For testing use the provided number. Numeric 254708374149" [ref=e531]:
+                  - cell "Msisdn" [ref=e532]
+                  - cell "This is the phone number from which the funds will be debited. For testing use the provided number." [ref=e533]
+                  - cell "Numeric" [ref=e534]
+                  - cell "254708374149" [ref=e535]
+                - row "BillRefNumber This is the account reference number provided for payments to paybill numbers, usually null for till number. String \"Test Ref\"" [ref=e536]:
+                  - cell "BillRefNumber" [ref=e537]
+                  - cell "This is the account reference number provided for payments to paybill numbers, usually null for till number." [ref=e538]
+                  - cell "String" [ref=e539]
+                  - cell "\"Test Ref\"" [ref=e540]
+            - heading "Response Body" [level=3] [ref=e541]
+            - paragraph [ref=e542]:
+              - strong [ref=e543]: Simulate Response
+            - code [ref=e545]: "{ \"OriginatorCoversationID\": \"53e3-4aa8-9fe0-8fb5e4092cdd3405976\", \"ResponseCode\": \"0\", \"ResponseDescription\": \"Accept the service request successfully.\" }"
+            - paragraph [ref=e546]:
+              - strong [ref=e547]: Register URLs Response
+            - code [ref=e549]: "{ \"OriginatorCoversationID\": \"6e86-45dd-91ac-fd5d4178ab523408729\", \"ResponseCode\": \"0\", \"ResponseDescription\": \"Success\" }"
+            - heading "Response Parameter Definition" [level=3] [ref=e550]
+            - table [ref=e551]:
+              - rowgroup [ref=e552]:
+                - row "Name Description Type Sample Values" [ref=e553]:
+                  - columnheader "Name" [ref=e554]
+                  - columnheader "Description" [ref=e555]
+                  - columnheader "Type" [ref=e556]
+                  - columnheader "Sample Values" [ref=e557]
+              - rowgroup [ref=e558]:
+                - row "OriginatorCoversationID Global unique identifier for the transaction request returned by the API proxy upon successful request submission. Alphanumeric Alpha-numeric string, fewer than 20 characters" [ref=e559]:
+                  - cell "OriginatorCoversationID" [ref=e560]
+                  - cell "Global unique identifier for the transaction request returned by the API proxy upon successful request submission." [ref=e561]
+                  - cell "Alphanumeric" [ref=e562]
+                  - cell "Alpha-numeric string, fewer than 20 characters" [ref=e563]
+                - row "ResponseCode Indicates whether Mobile Money accepts the request or not. Alphanumeric 0" [ref=e564]:
+                  - cell "ResponseCode" [ref=e565]
+                  - cell "Indicates whether Mobile Money accepts the request or not." [ref=e566]
+                  - cell "Alphanumeric" [ref=e567]
+                  - cell "0" [ref=e568]
+                - row "ResponseDescription Status of the request. String Success" [ref=e569]:
+                  - cell "ResponseDescription" [ref=e570]
+                  - cell "Status of the request." [ref=e571]
+                  - cell "String" [ref=e572]
+                  - cell "Success" [ref=e573]
+            - blockquote [ref=e574]:
+              - paragraph [ref=e575]:
+                - strong [ref=e576]: "NB:"
+                - text: Before including any API request to register URLs, you must first generate an access token from the Authorization API. This token is required to successfully make API calls.
+            - paragraph [ref=e577]: Once you have registered your URLs as described above, a C2B API payment transaction is initiated by the customer during payment. You can use the simulator to preview how the request will look; no development is needed on your side for this part.
+            - paragraph [ref=e578]: Upon successful payment, M-PESA posts the payment details to your confirmation and validation URLs as described in the response body below.
+            - heading "Callback Payload" [level=2] [ref=e579]
+            - paragraph [ref=e580]:
+              - strong [ref=e581]: "Validation Request:"
+              - text: The validation request is received only by partners who have enabled the External Validation feature on their PayBill or BuyGoods (Till Number) and require payment validation before M-PESA completes the transaction. You will first receive a validation request at your Validation URL.
+            - paragraph [ref=e582]: "The confirmation and validation results posted to your URLs after payment will have one of the following structures:"
+            - paragraph [ref=e583]:
+              - strong [ref=e584]: "Masked version:"
+            - code [ref=e586]: "{ \"TransactionType\": \"Pay Bill\", \"TransID\": \"RKL51ZDR4F\", \"TransTime\": \"20231121121325\", \"TransAmount\": \"5.00\", \"BusinessShortCode\": \"600966\", \"BillRefNumber\": \"Sample Transaction\", \"InvoiceNumber\": \"\", \"OrgAccountBalance\": \"25.00\", \"ThirdPartyTransID\": \"\", \"MSISDN\": \"2547 ***** 126\", \"FirstName\": \"NICHOLAS\", \"MiddleName\": \"\", \"LastName\": \"\" }"
+            - heading "Callback Parameter Definition" [level=3] [ref=e587]
+            - table [ref=e588]:
+              - rowgroup [ref=e589]:
+                - row "Name Description Type Sample Values" [ref=e590]:
+                  - columnheader "Name" [ref=e591]
+                  - columnheader "Description" [ref=e592]
+                  - columnheader "Type" [ref=e593]
+                  - columnheader "Sample Values" [ref=e594]
+              - rowgroup [ref=e595]:
+                - row "TransactionType The transaction type specified during the payment request. String Buy Goods or Pay Bill" [ref=e596]:
+                  - cell "TransactionType" [ref=e597]
+                  - cell "The transaction type specified during the payment request." [ref=e598]
+                  - cell "String" [ref=e599]
+                  - cell "Buy Goods or Pay Bill" [ref=e600]
+                - row "TransID Unique M-Pesa transaction ID for every payment request. Sent in both callback messages and confirmation SMS to the customer. Alpha-numeric LHG31AA5TX" [ref=e601]:
+                  - cell "TransID" [ref=e602]
+                  - cell "Unique M-Pesa transaction ID for every payment request. Sent in both callback messages and confirmation SMS to the customer." [ref=e603]
+                  - cell "Alpha-numeric" [ref=e604]
+                  - cell "LHG31AA5TX" [ref=e605]
+                - row "TransTime Timestamp of the transaction in the format YEAR+MONTH+DATE+HOUR+MINUTE+SECOND (YYYYMMDDHHMMSS). Each part should be at least two digits except the year (four digits).e.g. 20170813154301 Time YYYYMMDDHHmmss" [ref=e606]:
+                  - cell "TransTime" [ref=e607]
+                  - cell "Timestamp of the transaction in the format YEAR+MONTH+DATE+HOUR+MINUTE+SECOND (YYYYMMDDHHMMSS). Each part should be at least two digits except the year (four digits).e.g. 20170813154301" [ref=e608]
+                  - cell "Time" [ref=e609]
+                  - cell "YYYYMMDDHHmmss" [ref=e610]
+                - row "TransAmount Amount transacted (numeric value), money paid by the customer to the Shortcode. Only whole numbers are supported. Numeric 100" [ref=e611]:
+                  - cell "TransAmount" [ref=e612]
+                  - cell "Amount transacted (numeric value), money paid by the customer to the Shortcode. Only whole numbers are supported." [ref=e613]
+                  - cell "Numeric" [ref=e614]
+                  - cell "100" [ref=e615]
+                - row "BusinessShortCode Organization's shortcode (Paybill or Buygoods - a 5 to 6-digit account number) used to identify an organization and receive the transaction.e.g. 654321 String Shortcode (5 to 6 digits)" [ref=e616]:
+                  - cell "BusinessShortCode" [ref=e617]
+                  - cell "Organization's shortcode (Paybill or Buygoods - a 5 to 6-digit account number) used to identify an organization and receive the transaction.e.g. 654321" [ref=e618]
+                  - cell "String" [ref=e619]
+                  - cell "Shortcode (5 to 6 digits)" [ref=e620]
+                - row "BillRefNumber Account number for which the customer is making the payment. Applicable only to Customer PayBill Transactions. String Alpha-numeric, up to 20 chars" [ref=e621]:
+                  - cell "BillRefNumber" [ref=e622]
+                  - cell "Account number for which the customer is making the payment. Applicable only to Customer PayBill Transactions." [ref=e623]
+                  - cell "String" [ref=e624]
+                  - cell "Alpha-numeric, up to 20 chars" [ref=e625]
+                - row "OrgAccountBalance Current utility account balance of the payment-receiving organization shortcode. Blank for validation requests; for confirmation, represents new balance after payment. Decimal 30671" [ref=e626]:
+                  - cell "OrgAccountBalance" [ref=e627]
+                  - cell "Current utility account balance of the payment-receiving organization shortcode. Blank for validation requests; for confirmation, represents new balance after payment." [ref=e628]
+                  - cell "Decimal" [ref=e629]
+                  - cell "30671" [ref=e630]
+                - row "ThirdPartyTransID Transaction ID that the partner can use to identify the transaction. For validation requests, partner can respond with ThirdPartyTransID, which is sent back with confirmation notification. String 1234567890" [ref=e631]:
+                  - cell "ThirdPartyTransID" [ref=e632]
+                  - cell "Transaction ID that the partner can use to identify the transaction. For validation requests, partner can respond with ThirdPartyTransID, which is sent back with confirmation notification." [ref=e633]
+                  - cell "String" [ref=e634]
+                  - cell "1234567890" [ref=e635]
+                - row "MSISDN Masked number of the customer making the payment. String 2547 * 126" [ref=e636]:
+                  - cell "MSISDN" [ref=e637]
+                  - cell "Masked number of the customer making the payment." [ref=e638]
+                  - cell "String" [ref=e639]
+                  - cell "2547 * 126" [ref=e640]:
+                    - text: "2547"
+                    - strong [ref=e641]: "*"
+                    - text: "126"
+                - row "FirstName Customer's first name as per the M-Pesa register. Can be empty. String John" [ref=e642]:
+                  - cell "FirstName" [ref=e643]
+                  - cell "Customer's first name as per the M-Pesa register. Can be empty." [ref=e644]
+                  - cell "String" [ref=e645]
+                  - cell "John" [ref=e646]
+                - row "MiddleName Customer's middle name as per the M-Pesa register. Can be empty. String null" [ref=e647]:
+                  - cell "MiddleName" [ref=e648]
+                  - cell "Customer's middle name as per the M-Pesa register. Can be empty." [ref=e649]
+                  - cell "String" [ref=e650]
+                  - cell "null" [ref=e651]
+                - row "LastName Customer's last name as per the M-Pesa register. Can be empty. String null" [ref=e652]:
+                  - cell "LastName" [ref=e653]
+                  - cell "Customer's last name as per the M-Pesa register. Can be empty." [ref=e654]
+                  - cell "String" [ref=e655]
+                  - cell "null" [ref=e656]
+            - heading "Response Codes" [level=2] [ref=e657]
+            - paragraph [ref=e658]:
+              - strong [ref=e659]: Validation Response
+            - list [ref=e660]:
+              - listitem [ref=e661]:
+                - text: After receiving the validation request, you are required to process it and respond to the API call and inform M-PESA either to accept or reject the payment. To accept, you send the below JSON making sure the value of ResultCode is 0 (zero), but the value of ResultDesc is Accepted.
+                - code [ref=e663]: "{ \"ResultCode\": \"0\", \"ResultDesc\": \"Accepted\" }"
+              - listitem [ref=e664]:
+                - text: "To reject a transaction, you send the same JSON above, but with the ResultCode set as C2B00011 (or any other value from the error table below), BUT NOT 0. The ResultDesc should be set as Rejected as shown below:"
+                - code [ref=e666]: "{ \"ResultCode\": \"C2B00011\", \"ResultDesc\": \"Rejected\" }"
+            - paragraph [ref=e667]:
+              - strong [ref=e668]: Result Codes
+            - list [ref=e669]:
+              - listitem [ref=e670]: When rejecting transactions, responding with the ResultCodes below to the validation callback ensure that the customers receive a more appropriate message.
+            - table [ref=e671]:
+              - rowgroup [ref=e672]:
+                - row "ResultCode ResultDesc" [ref=e673]:
+                  - columnheader "ResultCode" [ref=e674]
+                  - columnheader "ResultDesc" [ref=e675]
+              - rowgroup [ref=e676]:
+                - row "C2B00011 Invalid MSISDN" [ref=e677]:
+                  - cell "C2B00011" [ref=e678]
+                  - cell "Invalid MSISDN" [ref=e679]
+                - row "C2B00012 Invalid Account Number" [ref=e680]:
+                  - cell "C2B00012" [ref=e681]
+                  - cell "Invalid Account Number" [ref=e682]
+                - row "C2B00013 Invalid Amount" [ref=e683]:
+                  - cell "C2B00013" [ref=e684]
+                  - cell "Invalid Amount" [ref=e685]
+                - row "C2B00014 Invalid KYC Details" [ref=e686]:
+                  - cell "C2B00014" [ref=e687]
+                  - cell "Invalid KYC Details" [ref=e688]
+                - row "C2B00015 Invalid Short code" [ref=e689]:
+                  - cell "C2B00015" [ref=e690]
+                  - cell "Invalid Short code" [ref=e691]
+                - row "C2B00016 Other Error" [ref=e692]:
+                  - cell "C2B00016" [ref=e693]
+                  - cell "Other Error" [ref=e694]
+            - heading "Error Codes" [level=2] [ref=e695]
+            - table [ref=e696]:
+              - rowgroup [ref=e697]:
+                - row "HTTP Code Error Message Possible Cause Mitigation" [ref=e698]:
+                  - columnheader "HTTP Code" [ref=e699]
+                  - columnheader "Error Message" [ref=e700]
+                  - columnheader "Possible Cause" [ref=e701]
+                  - columnheader "Mitigation" [ref=e702]
+              - rowgroup [ref=e703]:
+                - row "500 500.003.1001 Internal Server Error Server failure. Make sure everything on your side is correctly set up as per the API and you are calling the correct endpoints plus your server is running as expected." [ref=e704]:
+                  - cell "500" [ref=e705]
+                  - cell "500.003.1001 Internal Server Error" [ref=e706]
+                  - cell "Server failure." [ref=e707]
+                  - cell "Make sure everything on your side is correctly set up as per the API and you are calling the correct endpoints plus your server is running as expected." [ref=e708]
+                - row "500 500.003.1001 Urls are already registered. There is an existing URL registered If you want to change, request for deletion of the existing and re-register." [ref=e709]:
+                  - cell "500" [ref=e710]
+                  - cell "500.003.1001 Urls are already registered." [ref=e711]
+                  - cell "There is an existing URL registered" [ref=e712]
+                  - cell "If you want to change, request for deletion of the existing and re-register." [ref=e713]
+                - row "400 400.003.01 Invalid Access Token Might be using a wrong or expired access token Regenerate a new token and use it before expiry, if you are copy-pasting manually make sure you’ve pasted the correct access token." [ref=e714]:
+                  - cell "400" [ref=e715]
+                  - cell "400.003.01 Invalid Access Token" [ref=e716]
+                  - cell "Might be using a wrong or expired access token" [ref=e717]
+                  - cell "Regenerate a new token and use it before expiry, if you are copy-pasting manually make sure you’ve pasted the correct access token." [ref=e718]
+                - row "400 400.003.02 Bad Request The server cannot process the request because something is missing Make sure everything on your side is correctly set up as per the API documentation" [ref=e719]:
+                  - cell "400" [ref=e720]
+                  - cell "400.003.02 Bad Request" [ref=e721]
+                  - cell "The server cannot process the request because something is missing" [ref=e722]
+                  - cell "Make sure everything on your side is correctly set up as per the API documentation" [ref=e723]
+                - 'row "500 500.003.03 Error Occurred: Quota Violation You are sending multiple requests that violate M-PESA transaction per second speed For testing, send a reasonable number of requests if possible one request at a time" [ref=e724]':
+                  - cell "500" [ref=e725]
+                  - 'cell "500.003.03 Error Occurred: Quota Violation" [ref=e726]'
+                  - cell "You are sending multiple requests that violate M-PESA transaction per second speed" [ref=e727]
+                  - cell "For testing, send a reasonable number of requests if possible one request at a time" [ref=e728]
+                - 'row "500 500.003.02 Error Occurred: Spike Arrest Violation Your endpoints constantly generate a lot of errors that lead to a spike that affects our M-PESA performance Make sure your endpoints/server is running and responding as expected by M-PESA and accessible over the internet" [ref=e729]':
+                  - cell "500" [ref=e730]
+                  - 'cell "500.003.02 Error Occurred: Spike Arrest Violation" [ref=e731]'
+                  - cell "Your endpoints constantly generate a lot of errors that lead to a spike that affects our M-PESA performance" [ref=e732]
+                  - cell "Make sure your endpoints/server is running and responding as expected by M-PESA and accessible over the internet" [ref=e733]
+                - row "404 404.003.01 Resource not found The requested resource could not be found but may be available in the future. Subsequent requests by the client are permissible. Make sure you are calling the correct M-PESA API endpoint." [ref=e734]:
+                  - cell "404" [ref=e735]
+                  - cell "404.003.01 Resource not found" [ref=e736]
+                  - cell "The requested resource could not be found but may be available in the future. Subsequent requests by the client are permissible." [ref=e737]
+                  - cell "Make sure you are calling the correct M-PESA API endpoint." [ref=e738]
+                - row "404 404.001.04 Invalid Authenticator Header All M-PESA APIs on the Daraja platform are POST except Authorization API, which is GET if you’ve possibly misplaced the headers, you will get the error All M-PESA API requests on the Daraja platform are POST requests except Authorization API which is GET." [ref=e739]:
+                  - cell "404" [ref=e740]
+                  - cell "404.001.04 Invalid Authenticator Header" [ref=e741]
+                  - cell "All M-PESA APIs on the Daraja platform are POST except Authorization API, which is GET if you’ve possibly misplaced the headers, you will get the error" [ref=e742]
+                  - cell "All M-PESA API requests on the Daraja platform are POST requests except Authorization API which is GET." [ref=e743]
+                - row "400 400.002.05 Invalid Request Payload Your request body is not properly drafted. Make sure you are submitting the correct request payload as shown in the sample request body for all the APIs, to avoid typo errors." [ref=e744]:
+                  - cell "400" [ref=e745]
+                  - cell "400.002.05 Invalid Request Payload" [ref=e746]
+                  - cell "Your request body is not properly drafted." [ref=e747]
+                  - cell "Make sure you are submitting the correct request payload as shown in the sample request body for all the APIs, to avoid typo errors." [ref=e748]
+                - 'row "500 Errorcode: 500.003.1001Errormessage: Duplicate notification info, SP ID is xxxxx, correlator is xxxxxx You have existing URLs registered on our other API platform that uses VPN/MPLS called aggregator platform (formerly Broker) thus you can’t register URLs on Daraja Send us a deletion of the URLs request from the aggregator platform, once that is done proceed to register on Daraja" [ref=e749]':
+                  - cell "500" [ref=e750]
+                  - 'cell "Errorcode: 500.003.1001Errormessage: Duplicate notification info, SP ID is xxxxx, correlator is xxxxxx" [ref=e751]'
+                  - cell "You have existing URLs registered on our other API platform that uses VPN/MPLS called aggregator platform (formerly Broker) thus you can’t register URLs on Daraja" [ref=e752]
+                  - cell "Send us a deletion of the URLs request from the aggregator platform, once that is done proceed to register on Daraja" [ref=e753]
+            - heading "Next Steps" [level=2] [ref=e754]
+            - heading "Testing" [level=3] [ref=e755]
+            - 'heading "Option 1: Daraja Simulator" [level=4] [ref=e756]'
+            - list [ref=e757]:
+              - listitem [ref=e758]: Create a test app, select C2B product.
+              - listitem [ref=e759]: Simulator uses app credentials and predefined test data.
+              - listitem [ref=e760]: Register URLs before each simulation.
+              - listitem [ref=e761]: Select "CustomerPayBillOnline" for Paybill or "CustomerBuyGoodsOnline" for Till.
+            - paragraph [ref=e762]:
+              - img "Create App" [ref=e763]
+            - 'heading "Note: The simulator can only be accessed when logged in. Please log in to your Daraja account to access the simulator." [level=3] [ref=e764]':
+              - text: "Note: The simulator can only be accessed when logged in. Please"
+              - link "log in" [ref=e765] [cursor=pointer]:
+                - /url: https://developer.safaricom.co.ke/account/login
+              - text: to your Daraja account to access the simulator.
+            - paragraph [ref=e766]:
+              - img "Simulator!" [ref=e767]
+            - 'heading "Option 2: Postman" [level=3] [ref=e768]'
+            - paragraph [ref=e769]: Use the credentials to generate access token using the below endpoint.
+            - list [ref=e770]:
+              - listitem [ref=e771]:
+                - text: "Sandbox:"
+                - link "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials" [ref=e772] [cursor=pointer]:
+                  - /url: https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials
+                - text: .
+              - listitem [ref=e773]:
+                - text: "Production:"
+                - link "https://api.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials" [ref=e774] [cursor=pointer]:
+                  - /url: https://api.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials
+                - text: .
+              - listitem [ref=e775]: "Production: (see production details) Initiate a transaction using the request body above."
+            - 'heading "Note: The Postman collection can only be accessed when logged in. Please log in to your Daraja account to access the collection." [level=3] [ref=e776]':
+              - text: "Note: The Postman collection can only be accessed when logged in. Please"
+              - link "log in" [ref=e777] [cursor=pointer]:
+                - /url: https://developer.safaricom.co.ke/account/login
+              - text: to your Daraja account to access the collection.
+            - paragraph [ref=e778]:
+              - text: Click the button named "Use API" to access the Postman collection with pre-built requests for all APIs.
+              - img "Postman Collection!" [ref=e779]
+            - paragraph [ref=e780]: Download the Postman collection and replace parameters with your credentials.
+            - blockquote [ref=e781]:
+              - paragraph [ref=e782]:
+                - strong [ref=e783]: "Note:"
+                - text: "\"Simulate C2B Request\" is only available in Sandbox."
+            - heading "Go Live" [level=3] [ref=e784]
+            - list [ref=e785]:
+              - listitem [ref=e786]: Attach integration to a live Paybill/Till number.
+              - listitem [ref=e787]: "Fill in live data: short code, organization name, M-PESA admin/manager username."
+              - listitem [ref=e788]: Visit "GO LIVE" tab for more info.
+            - paragraph [ref=e789]:
+              - img "Go Live" [ref=e790]
+            - paragraph [ref=e791]: Upon successful go live, production endpoints are sent to developer email.
+            - heading "How To" [level=2] [ref=e792]
+            - heading "Access M-PESA Organization Portal and Create Users" [level=3] [ref=e793]
+            - paragraph [ref=e794]: The portal allows businesses to manage transactions, accounts, bulk payments, and user roles.
+            - paragraph [ref=e795]:
+              - img "org-portal" [ref=e796]
+            - list [ref=e797]:
+              - listitem [ref=e798]:
+                - text: "Access:"
+                - link "https://org.ke.m-pesa.com/orglogin.action" [ref=e799] [cursor=pointer]:
+                  - /url: https://org.ke.m-pesa.com/orglogin.action
+              - listitem [ref=e800]: Business Administrator role required.
+            - heading "First-Time Login Steps" [level=4] [ref=e801]
+            - list [ref=e802]:
+              - listitem [ref=e803]:
+                - text: Launch
+                - link "https://org.ke.m-pesa.com" [ref=e804] [cursor=pointer]:
+                  - /url: https://org.ke.m-pesa.com
+                - text: .
+              - listitem [ref=e805]: Enter Short code (Bulk payment number).
+              - listitem [ref=e806]: Enter Business Administrator username.
+              - listitem [ref=e807]: Enter first-time password (case-sensitive).
+              - listitem [ref=e808]: Enter Verification Code and login.
+              - listitem [ref=e809]: Enter OTP, set new password, security questions, and activate account.
+            - heading "Account Types in C2B Organization" [level=2] [ref=e810]
+            - list [ref=e811]:
+              - listitem [ref=e812]:
+                - strong [ref=e813]: MMF/Working/M-PESA Account
+                - text: ": For business withdrawals."
+              - listitem [ref=e814]:
+                - strong [ref=e815]: Utility Account
+                - text: ": Receives customer payments."
+              - listitem [ref=e816]:
+                - strong [ref=e817]: Charges Paid Account
+                - text: ": Debited for transaction charges."
+              - listitem [ref=e818]:
+                - strong [ref=e819]: Organization Settlement Account
+                - text: ": Settles charges and moves balance."
+            - heading "Portal Roles" [level=2] [ref=e820]
+            - heading "Business Administrator" [level=3] [ref=e821]
+            - list [ref=e822]:
+              - listitem [ref=e823]: Creates system users and assigns roles.
+              - listitem [ref=e824]: Cannot view transactions.
+              - listitem [ref=e825]: Created by Safaricom.
+            - heading "Business Manager" [level=3] [ref=e826]
+            - list [ref=e827]:
+              - listitem [ref=e828]: Approves transactions, checks balances, views statements, withdraws funds.
+            - paragraph [ref=e829]:
+              - strong [ref=e830]: "Steps to Create Business Manager:"
+            - list [ref=e831]:
+              - listitem [ref=e832]: Log in as Business Administrator.
+              - listitem [ref=e833]: Select operators.
+              - listitem [ref=e834]: Click "Add".
+              - listitem [ref=e835]: Enter username, select access channel as Web.
+              - listitem [ref=e836]: Assign role, set password, submit KYC info.
+            - paragraph [ref=e837]:
+              - img "select-operator" [ref=e838]
+              - img "access-channel" [ref=e839]
+              - img "assign-role" [ref=e840]
+            - heading "API User Creation" [level=3] [ref=e841]
+            - paragraph [ref=e842]:
+              - strong [ref=e843]: "Steps:"
+            - list [ref=e844]:
+              - listitem [ref=e845]: Log in as Business Administrator.
+              - listitem [ref=e846]: Select operators.
+              - listitem [ref=e847]: Click "Add".
+              - listitem [ref=e848]: Enter API initiator username, select access channel as API.
+              - listitem [ref=e849]: Assign API roles, submit KYC info.
+            - paragraph [ref=e850]:
+              - img "assign-api-role" [ref=e851]
+            - paragraph [ref=e852]:
+              - strong [ref=e853]: "Set API User Password:"
+            - list [ref=e854]:
+              - listitem [ref=e855]: Log in as Business Manager.
+              - listitem [ref=e856]: Go to Operator Management.
+              - listitem [ref=e857]: Search API user, click operations, set password.
+            - paragraph [ref=e858]:
+              - img "Operator Management" [ref=e859]
+              - img "set-password" [ref=e860]
+            - heading "API Roles" [level=3] [ref=e861]
+            - table [ref=e862]:
+              - rowgroup [ref=e863]:
+                - row "API Role Assignment" [ref=e864]:
+                  - columnheader "API" [ref=e865]
+                  - columnheader "Role Assignment" [ref=e866]
+              - rowgroup [ref=e867]:
+                - row "B2C ORG B2C API Initiator" [ref=e868]:
+                  - cell "B2C" [ref=e869]
+                  - cell "ORG B2C API Initiator" [ref=e870]
+                - row "Business Pay Bill Business Paybill Org API initiator" [ref=e871]:
+                  - cell "Business Pay Bill" [ref=e872]
+                  - cell "Business Paybill Org API initiator" [ref=e873]
+                - row "Business Buy Goods Business Buy Goods Org API initiator" [ref=e874]:
+                  - cell "Business Buy Goods" [ref=e875]
+                  - cell "Business Buy Goods Org API initiator" [ref=e876]
+                - row "Transaction Status Transaction Status query ORG API" [ref=e877]:
+                  - cell "Transaction Status" [ref=e878]
+                  - cell "Transaction Status query ORG API" [ref=e879]
+                - row "Reversals Org Reversals Initiator" [ref=e880]:
+                  - cell "Reversals" [ref=e881]
+                  - cell "Org Reversals Initiator" [ref=e882]
+                - row "Tax Remittance Tax Remittance to KRA API" [ref=e883]:
+                  - cell "Tax Remittance" [ref=e884]
+                  - cell "Tax Remittance to KRA API" [ref=e885]
+                - row "Set Password role Set Restricted ORG API PASSWORD" [ref=e886]:
+                  - cell "Set Password role" [ref=e887]
+                  - cell "Set Restricted ORG API PASSWORD" [ref=e888]
+            - heading "Apply for Live Paybill/Till/B2C Account" [level=2] [ref=e889]
+            - paragraph [ref=e890]:
+              - text: "Email:"
+              - link "M-PESABusiness@Safaricom.co.ke" [ref=e891] [cursor=pointer]:
+                - /url: mailto:M-PESABusiness@Safaricom.co.ke
+            - heading "Support" [level=2] [ref=e892]
+            - heading "Chatbot" [level=3] [ref=e893]
+            - paragraph [ref=e894]: Use Daraja Chatbot for instant development and production support.
+            - heading "Production Issues & Incident Management" [level=3] [ref=e895]
+            - list [ref=e896]:
+              - listitem [ref=e897]:
+                - link "Incident Management Page" [ref=e898] [cursor=pointer]:
+                  - /url: https://daraja.safaricom.co.ke/dashboard/incidentmanagement
+              - listitem [ref=e899]:
+                - text: "Email:"
+                - link "apisupport@safaricom.co.ke" [ref=e900] [cursor=pointer]:
+                  - /url: mailto:apisupport@safaricom.co.ke
+            - heading "FAQs" [level=2] [ref=e901]
+            - heading "1. What is a short code?" [level=4] [ref=e902]
+            - paragraph [ref=e903]: A short code is the unique number allocated to a pay bill or buy goods organization through which they receive customer payments. It could be a Pay bill, Buy Goods, or Till Number.
+            - heading "2. What is C2B?" [level=4] [ref=e904]
+            - paragraph [ref=e905]: C2B, also referred to as Customer to Business payment, is a payment from a customer wallet to the merchant’s short code.
+            - heading "3. What is the difference between C2B v1 and C2B v2?" [level=4] [ref=e906]
+            - list [ref=e907]:
+              - listitem [ref=e908]:
+                - strong [ref=e909]: "C2B v1:"
+                - text: The result sent to the Confirmation and Validation URL includes a SHA 256 hashed MSISDN (e.g., 94c2c311d522da950619227b3361752a42042db7e1e699b26e628305c68a88).
+              - listitem [ref=e910]:
+                - strong [ref=e911]: "C2B v2:"
+                - text: The result includes a masked MSISDN (e.g., 2547
+                - strong [ref=e912]: "*"
+                - text: 126).
+              - listitem [ref=e913]: The result is posted with a POST request method in application/json format.
+            - heading "4. How often should I register URLs?" [level=4] [ref=e914]
+            - list [ref=e915]:
+              - listitem [ref=e916]:
+                - strong [ref=e917]: "Sandbox:"
+                - text: Register URLs before each simulation.
+              - listitem [ref=e918]:
+                - strong [ref=e919]: "Production:"
+                - text: Register once and re-register after deletion of the already registered URLs.
+            - heading "5. How do I delete URLs?" [level=4] [ref=e920]
+            - paragraph [ref=e921]:
+              - text: URL deletion is self-managed on the Daraja portal under
+              - strong [ref=e922]: SELF SERVICES
+              - text: tab >
+              - strong [ref=e923]: URL Management
+              - text: "button:"
+              - link "https://developer.safaricom.co.ke/SelfServices?tab=urlmanagement" [ref=e924] [cursor=pointer]:
+                - /url: https://developer.safaricom.co.ke/SelfServices?tab=urlmanagement
+              - text: "You need two operators assigned either Business Manager or Business Administrator role on the M-PESA portal:"
+              - link "https://org.ke.m-pesa.com/orglogin.action" [ref=e925] [cursor=pointer]:
+                - /url: https://org.ke.m-pesa.com/orglogin.action
+              - text: to validate the deletion request.
+            - heading "6. Am a merchant, how can I enable validation on my short code?" [level=4] [ref=e926]
+            - paragraph [ref=e927]:
+              - text: To get external validation, send an email request via
+              - link "APISupport@safaricom.co.ke" [ref=e928] [cursor=pointer]:
+                - /url: mailto:APISupport@safaricom.co.ke
+              - text: .
+            - heading "7. How long does it take to enable validation?" [level=4] [ref=e929]
+            - paragraph [ref=e930]: It takes approximately 6 hours.
+            - heading "8. Why am I not receiving notifications to my confirmation and validation URLs?" [level=4] [ref=e931]
+            - paragraph [ref=e932]: The URL you are using could be invalid. Create a valid URL and consider the information below.
+            - paragraph [ref=e933]:
+              - strong [ref=e934]: "URL Requirements:"
+            - list [ref=e935]:
+              - listitem [ref=e936]: Use publicly available (Internet-accessible) IP addresses or domain names.
+              - listitem [ref=e937]: All Production URLs must be HTTPS; on Sandbox, you can use HTTP.
+              - listitem [ref=e938]: Avoid using keywords such as M-PESA, M-Pesa, mpesa, Safaricom, exe, exec, cmd, sql, query, or any of their variants in your URLs.
+              - listitem [ref=e939]: Do not use public URL testers (e.g., ngrok, mockbin, requestbin), especially on production. These are usually blocked by the API. Use your own application URLs and do not make them public or share with peers.
+            - heading "9. What is validation URL?" [level=4] [ref=e940]
+            - paragraph [ref=e941]:
+              - text: Validation URL is the URL that receives the validation request from API upon payment submission. The validation URL is only called if external validation on the registered short code is enabled.
+              - text: (By default, External Validation is disabled)
+              - strong [ref=e942]: "URL format:"
+              - link "https://ip" [ref=e943] [cursor=pointer]:
+                - /url: https://ip
+              - text: or domain:port/path
+            - heading "10. What is Confirmation URL?" [level=4] [ref=e944]
+            - paragraph [ref=e945]:
+              - text: Confirmation URL is the URL that receives the confirmation request from API upon payment completion.
+              - strong [ref=e946]: "URL format:"
+              - link "https://ip" [ref=e947] [cursor=pointer]:
+                - /url: https://ip
+              - text: or domain:port/path
+            - heading "11. How do I get my Mpesa username or Business Administrator username?" [level=4] [ref=e948]
+            - paragraph [ref=e949]: "For an administrator to be created on the M-PESA Organization Portal, the following details are required:"
+            - list [ref=e950]:
+              - listitem [ref=e951]: An official request letter on company letterhead signed and stamped by authorized signatories.
+              - listitem [ref=e952]:
+                - text: "The letter should include:"
+                - list [ref=e953]:
+                  - listitem [ref=e954]: Organization Short code
+                  - listitem [ref=e955]: Organization name
+                  - listitem [ref=e956]: Administrator's Username
+                  - listitem [ref=e957]: First name
+                  - listitem [ref=e958]: Middle name (not mandatory)
+                  - listitem [ref=e959]: Last name
+                  - listitem [ref=e960]: ID type (National ID, Passport, etc.) scanned front and back
+                  - listitem [ref=e961]: ID number
+                  - listitem [ref=e962]: Nationality
+                  - listitem [ref=e963]: Date of Birth
+                  - listitem [ref=e964]: Email address
+                  - listitem [ref=e965]: Administrator phone number
+            - paragraph [ref=e966]:
+              - text: Send the letter to
+              - link "M-PESABusiness@Safaricom.co.ke" [ref=e967] [cursor=pointer]:
+                - /url: mailto:M-PESABusiness@Safaricom.co.ke
+      - generic [ref=e127]:
+        - paragraph [ref=e128]: Daraja 3.0
+        - paragraph [ref=e129]: Daraja 3.0 is a web platform that offers access to Safaricom and M-PESA APIs that creates a bridge for payment integration to web and mobile apps. By connecting to our APIs, you open a world of possibilities to you and your clients. Together, we can transform lives.
+    - button "chatbot icon" [ref=e131] [cursor=pointer]:
+      - img "chatbot icon" [ref=e132]
+  - alert [ref=e133]: Safaricom Developers Portal
