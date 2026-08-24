@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // Error is the typed surface for non-2xx Daraja responses carrying the
@@ -63,13 +64,17 @@ func parseError(status int, contentType string, body []byte) error {
 	return e
 }
 
-// sanitizeWireString strips control runes (<0x20 and DEL) and truncates to
-// limit bytes on a rune boundary.
+// sanitizeWireString strips control runes — the C0 range and DEL, plus the
+// C1 range (U+0080–U+009F) — and Unicode Cf format characters (zero-width
+// spaces, BOM, directional marks), then truncates to limit bytes on a rune
+// boundary. Tri-language parity with the Python/TypeScript sanitizer engines:
+// hostile gateway output cannot smuggle invisible or log-injecting characters
+// into diagnostics through any binding.
 func sanitizeWireString(s string, limit int) string {
 	var b strings.Builder
 	n := 0
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			continue
 		}
 		size := len(string(r))

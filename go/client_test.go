@@ -1,6 +1,7 @@
 package mpesa
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -996,6 +997,35 @@ func TestHTTPClientInjection(t *testing.T) {
 
 // Test gap: raw misspelled ACK bytes straight off the wire decode through the
 // HTTP path into the clean Go field name.
+// Test gap: a 200 response whose body exceeds the 1MiB LimitReader cap must
+// fail loudly — never buffer 2MiB whole or silently truncate into the decoder.
+func TestOversizedResponseBodyRejected(t *testing.T) {
+	oauthHits := 0
+	mux := http.NewServeMux()
+	mux.Handle("/oauth/v1/generate", oauthHandler(t, &oauthHits))
+	mux.HandleFunc(b2cPath, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(bytes.Repeat([]byte("A"), 2<<20)) // 2MiB > maxResponseLen
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	b2c := B2CPayoutRequest{
+		InitiatorName: "testapi", SecurityCredential: strings.Repeat("x", 344), CommandID: CommandBusinessPayment,
+		Amount: 100, PartyA: "600992", PartyB: "254705912645", Remarks: "cap check",
+		QueueTimeOutURL: "https://mydomain.com/timeout", ResultURL: "https://mydomain.com/result",
+	}
+	_, err := testClient(t, srv.URL).B2CPayout(context.Background(), b2c)
+	if err == nil {
+		t.Fatal("expected oversized-response cap error")
+	}
+	want := fmt.Sprintf("response exceeds %d bytes", maxResponseLen)
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want substring %q", err, want)
+	}
+}
+
 func TestC2BAckRawMisspelledBytesThroughHTTP(t *testing.T) {
 	mux := http.NewServeMux()
 	oauthHits := 0
