@@ -302,6 +302,7 @@ export class TokenManager {
     try {
       resp = await fetch(url, {
         method: "GET",
+        redirect: "error",
         headers: {
           Authorization: `Basic ${auth}`,
         },

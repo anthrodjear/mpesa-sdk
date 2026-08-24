@@ -200,6 +200,26 @@ describe("TokenManager.getToken", () => {
     const [, init] = fetchMock.mock.calls[0]!;
     expect(init.method).toBe("GET");
   });
+
+  it("passes redirect:\"error\" to prevent Basic auth leak on 3xx", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(VALID_TOKEN_RESPONSE));
+    const tm = makeManager();
+
+    await tm.getToken();
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(init.redirect).toBe("error");
+  });
+
+  it("wires AbortController.signal to fetch", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(VALID_TOKEN_RESPONSE));
+    const tm = makeManager();
+
+    await tm.getToken();
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -505,6 +525,30 @@ describe("TokenManager HTTP errors", () => {
     const tm = makeManager({ timeoutMs: 1 });
 
     await expect(tm.getToken()).rejects.toThrow("mpesa: oauth request");
+  });
+
+  it("non-retryable 401 (not 401.003.01) surfaces error without refresh", async () => {
+    fetchMock.mockImplementation(jsonResponseFactory(
+      { requestId: "r-1", errorCode: "401.001.01", errorMessage: "Invalid credentials" },
+      401,
+    ));
+    const tm = makeManager();
+
+    await expect(tm.getToken()).rejects.toThrow(MpesaError);
+    // Only one fetch — no refresh attempted for non-401.003.01 codes
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retry exhaustion: 401.003.01 twice surfaces typed error, no infinite loop", async () => {
+    fetchMock.mockImplementation(jsonResponseFactory(
+      { requestId: "r-2", errorCode: "401.003.01", errorMessage: "Token revoked" },
+      401,
+    ));
+    const tm = makeManager();
+
+    await expect(tm.getToken()).rejects.toThrow(MpesaError);
+    // Single-flight: only one fetch per getToken() call — no infinite loop
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
