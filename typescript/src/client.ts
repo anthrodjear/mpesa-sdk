@@ -201,7 +201,9 @@ export class MpesaClient {
   constructor(opts: MpesaClientOptions) {
     this._config = opts.config;
     this._baseUrl = opts.config.environment.baseUrl.replace(/\/+$/, "");
-    this._timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this._timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs! > 0
+      ? opts.timeoutMs!
+      : DEFAULT_TIMEOUT_MS;
     this._now = opts.now ?? (() => Date.now());
     this._tokens = new TokenManager({
       baseUrl: this._baseUrl,
@@ -338,6 +340,21 @@ export class MpesaClient {
       }
 
       const ct = resp.headers.get("content-type") ?? "";
+
+      // Pre-read guard: if Content-Length is present and exceeds the cap,
+      // cancel immediately without consuming the body (decompression bomb
+      // mitigation). Still keep the post-read byte check as second guard.
+      const contentLength = resp.headers.get("content-length");
+      if (contentLength !== null) {
+        const claimed = parseInt(contentLength, 10);
+        if (Number.isFinite(claimed) && claimed > MAX_RESPONSE_LEN) {
+          resp.body?.cancel();
+          throw new Error(
+            `mpesa: ${path} response exceeds ${MAX_RESPONSE_LEN} bytes (Content-Length: ${claimed})`,
+          );
+        }
+      }
+
       const text = await resp.text();
       const bodyBytes = new TextEncoder().encode(text);
 

@@ -1327,3 +1327,191 @@ describe("QR Code validation", () => {
     ).rejects.toThrow("Size");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Occassion wire key (double-s, Safaricom misspelling)
+// ---------------------------------------------------------------------------
+
+describe("Occassion wire key", () => {
+  it("STK Push sends Occassion (double-s) not Occasion", async () => {
+    let capturedBody: Record<string, unknown> = {};
+
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return jsonResponse({
+        MerchantRequestID: "mr",
+        CheckoutRequestID: "ws_CO_1",
+        ResponseCode: "0",
+        ResponseDescription: "ok",
+        CustomerMessage: "ok",
+      });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await client.stkPush({
+      ...validSTKPushRequest(),
+      occassion: "Project Alice",
+    });
+
+    // Wire key must be double-s "Occassion" — NOT "Occasion"
+    expect(capturedBody["Occassion"]).toBe("Project Alice");
+    expect(capturedBody["Occasion"]).toBeUndefined();
+  });
+
+  it("STK Push omits Occassion when not provided", async () => {
+    let capturedBody: Record<string, unknown> = {};
+
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return jsonResponse({
+        MerchantRequestID: "mr",
+        CheckoutRequestID: "ws_CO_1",
+        ResponseCode: "0",
+        ResponseDescription: "ok",
+        CustomerMessage: "ok",
+      });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await client.stkPush(validSTKPushRequest());
+
+    // Neither key should be present when occasion is not provided
+    expect(capturedBody["Occassion"]).toBeUndefined();
+    expect(capturedBody["Occasion"]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Content-Length pre-check (decompression bomb mitigation)
+// ---------------------------------------------------------------------------
+
+describe("Content-Length pre-check", () => {
+  it("rejects response when Content-Length exceeds MAX_RESPONSE_LEN", async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      // Return a response with huge Content-Length but tiny actual body
+      return new Response("tiny", {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": String(2 * 1024 * 1024), // 2 MiB
+        },
+      });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+
+    await expect(
+      client.stkPush(validSTKPushRequest()),
+    ).rejects.toThrow("exceeds");
+    await expect(
+      client.stkPush(validSTKPushRequest()),
+    ).rejects.toThrow("Content-Length");
+  });
+
+  it("passes when Content-Length is within limit", async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      return jsonResponse({
+        MerchantRequestID: "mr",
+        CheckoutRequestID: "ws_CO_1",
+        ResponseCode: "0",
+        ResponseDescription: "ok",
+        CustomerMessage: "ok",
+      });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    const resp = await client.stkPush(validSTKPushRequest());
+    expect(resp.ResponseCode).toBe("0");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Timeout clamp
+// ---------------------------------------------------------------------------
+
+describe("Timeout clamp", () => {
+  it("clamps zero timeoutMs to DEFAULT_TIMEOUT_MS", () => {
+    const client = new MpesaClient({
+      config: new Config({
+        consumerKey: CONSUMER_KEY,
+        consumerSecret: CONSUMER_SECRET,
+        shortcode: SHORTCODE,
+        passkey: PASSKEY,
+      }),
+      timeoutMs: 0,
+    });
+    expect(client.toJSON().timeout).toBe(30_000);
+  });
+
+  it("clamps negative timeoutMs to DEFAULT_TIMEOUT_MS", () => {
+    const client = new MpesaClient({
+      config: new Config({
+        consumerKey: CONSUMER_KEY,
+        consumerSecret: CONSUMER_SECRET,
+        shortcode: SHORTCODE,
+        passkey: PASSKEY,
+      }),
+      timeoutMs: -100,
+    });
+    expect(client.toJSON().timeout).toBe(30_000);
+  });
+
+  it("clamps NaN timeoutMs to DEFAULT_TIMEOUT_MS", () => {
+    const client = new MpesaClient({
+      config: new Config({
+        consumerKey: CONSUMER_KEY,
+        consumerSecret: CONSUMER_SECRET,
+        shortcode: SHORTCODE,
+        passkey: PASSKEY,
+      }),
+      timeoutMs: NaN,
+    });
+    expect(client.toJSON().timeout).toBe(30_000);
+  });
+
+  it("clamps Infinity timeoutMs to DEFAULT_TIMEOUT_MS", () => {
+    const client = new MpesaClient({
+      config: new Config({
+        consumerKey: CONSUMER_KEY,
+        consumerSecret: CONSUMER_SECRET,
+        shortcode: SHORTCODE,
+        passkey: PASSKEY,
+      }),
+      timeoutMs: Infinity,
+    });
+    expect(client.toJSON().timeout).toBe(30_000);
+  });
+
+  it("preserves valid positive timeoutMs", () => {
+    const client = new MpesaClient({
+      config: new Config({
+        consumerKey: CONSUMER_KEY,
+        consumerSecret: CONSUMER_SECRET,
+        shortcode: SHORTCODE,
+        passkey: PASSKEY,
+      }),
+      timeoutMs: 5000,
+    });
+    expect(client.toJSON().timeout).toBe(5000);
+  });
+});

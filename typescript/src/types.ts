@@ -30,13 +30,26 @@ export { TransactionType, CommandID, ResponseType, QRTrxCode };
 
 /** STK Push (Lipa Na M-Pesa Online) request body. */
 export interface STKPushRequest {
-  readonly businessShortCode: string;
-  readonly password: string;
-  readonly timestamp: string;
+  /**
+   * Client-injected — defaults to config shortcode when empty.
+   * Callers typically omit this.
+   */
+  readonly businessShortCode?: string;
+  /**
+   * Client-injected — derived from shortcode + passkey + EAT timestamp.
+   * Callers must never set this directly.
+   */
+  readonly password?: string;
+  /**
+   * Client-injected — EAT timestamp derived from a single clock instant.
+   * Callers must never set this directly.
+   */
+  readonly timestamp?: string;
   readonly transactionType: TransactionType;
   readonly amount: number;
   readonly partyA: string;
-  readonly partyB: string;
+  /** Defaults to `businessShortCode` when empty. */
+  readonly partyB?: string;
   readonly phoneNumber: string;
   readonly callBackURL: string;
   readonly accountReference: string;
@@ -50,9 +63,21 @@ export interface STKPushRequest {
 
 /** STK Push query status request body. */
 export interface STKQueryRequest {
-  readonly businessShortCode: string;
-  readonly password: string;
-  readonly timestamp: string;
+  /**
+   * Client-injected — defaults to config shortcode when empty.
+   * Callers typically omit this.
+   */
+  readonly businessShortCode?: string;
+  /**
+   * Client-injected — derived from shortcode + passkey + EAT timestamp.
+   * Callers must never set this directly.
+   */
+  readonly password?: string;
+  /**
+   * Client-injected — EAT timestamp derived from a single clock instant.
+   * Callers must never set this directly.
+   */
+  readonly timestamp?: string;
   readonly checkoutRequestID: string;
 }
 

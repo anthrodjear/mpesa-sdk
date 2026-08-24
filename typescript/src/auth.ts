@@ -144,7 +144,9 @@ export class TokenManager {
     this._baseUrl = opts.baseUrl.replace(/\/+$/, "");
     this._consumerKey = key;
     this._consumerSecret = secret;
-    this._timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this._timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs! > 0
+      ? opts.timeoutMs!
+      : DEFAULT_TIMEOUT_MS;
     this._now = opts.now ?? (() => Date.now());
   }
 
