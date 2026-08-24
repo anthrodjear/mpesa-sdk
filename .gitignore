@@ -10,3 +10,7 @@ __pycache__/
 *.key
 *.p12
 coverage/
+
+# local workflow memory — never publish
+project-map.md
+session-log.md
