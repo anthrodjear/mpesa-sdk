@@ -3,8 +3,8 @@
  *
  * Mirrors go/classification.go (parseResultCode + ClassifyResultCode) and
  * python/mpesa/classification.py (ResultClass enum + classify_result_code)
- * translated to TypeScript with ASCII-gate regex instead of lenient float
- * fallback.
+ * translated to TypeScript with ASCII-gate regex and lenient float fallback
+ * (matching Go's ParseFloat and Python's float() behavior).
  */
 import { describe, expect, it } from "vitest";
 import { classifyResultCode, ResultClass } from "../src/classification.js";
@@ -17,6 +17,10 @@ describe("classifyResultCode", () => {
 
     it("classifies numeric 0 as SUCCESS", () => {
       expect(classifyResultCode(0)).toBe(ResultClass.SUCCESS);
+    });
+
+    it("classifies integral float string \"0.0\" as SUCCESS (lenient)", () => {
+      expect(classifyResultCode("0.0")).toBe(ResultClass.SUCCESS);
     });
   });
 
@@ -75,6 +79,8 @@ describe("classifyResultCode", () => {
       expect(classifyResultCode("1037")).toBe(ResultClass.INCONCLUSIVE);
       expect(classifyResultCode("4999")).toBe(ResultClass.INCONCLUSIVE);
       expect(classifyResultCode("26")).toBe(ResultClass.INCONCLUSIVE);
+      expect(classifyResultCode("-5")).toBe(ResultClass.INCONCLUSIVE);
+      expect(classifyResultCode("123456")).toBe(ResultClass.INCONCLUSIVE);
     });
 
     it("returns INCONCLUSIVE for non-numeric strings", () => {

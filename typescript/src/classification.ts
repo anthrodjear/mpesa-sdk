@@ -9,6 +9,10 @@
  * result-code-section). Never auto-fail, never auto-refund, never auto-retry
  * on INCONCLUSIVE — keep querying.
  *
+ * Enum values are UPPER_CASE — a deliberate TypeScript idiom. Go and Python
+ * use lowercase (`"success"`, `"failure"`, `"indeterminate"`) per their
+ * language conventions; TS uses `"SUCCESS"`, `"FAILURE"`, `"INCONCLUSIVE"`.
+ *
  * @packageDocumentation
  */
 
@@ -45,15 +49,19 @@ const FAILURE_CODES = Object.freeze(
   new Set([...STK_FAILURE, ...B2C_FAILURE, ...ACCOUNT_BALANCE_FAILURE]),
 );
 
-// ASCII digits 0x30–0x39 only; rejects Unicode-ND ("٠٢٣"), commas, spaces, signs.
-const ASCII_DIGITS = /^[\x30-\x39]*$/;
+// ASCII gate: allows digits, decimal point, and sign; rejects Unicode-ND ("٠٢٣"),
+// commas, spaces, and other non-ASCII characters.
+const ASCII_GATE = /^[+\-.\d]*$/;
 
 /**
  * Map any raw result-code shape to its {@link ResultClass} bucket.
  *
  * Accepts every observed wire variant: `"0"`, `0`, `"0.0"`, `0.0`. An ASCII
- * gate (`/^[\x30-\x39]*$/`) rejects Unicode-ND digits and non-numeric garbage
- * before numeric parsing, landing them in INCONCLUSIVE.
+ * gate (`/^[+\-.\d]*$/`) rejects Unicode-ND digits and non-ASCII garbage
+ * before numeric parsing. Integral floats (e.g. `"0.0"`) are accepted via
+ * lenient `Number()` conversion with `Math.trunc` check — matching Go's
+ * `strconv.ParseFloat` and Python's `float()` fallback. Non-integral floats
+ * (e.g. `"1.5"`) land in INCONCLUSIVE.
  *
  * @param code - Raw ResultCode from callback or sync response.
  * @returns The classified {@link ResultClass}.
@@ -61,6 +69,7 @@ const ASCII_DIGITS = /^[\x30-\x39]*$/;
  * @example
  * ```ts
  * classifyResultCode("0");      // ResultClass.SUCCESS
+ * classifyResultCode("0.0");    // ResultClass.SUCCESS (lenient float)
  * classifyResultCode(0);        // ResultClass.SUCCESS
  * classifyResultCode("1");      // ResultClass.FAILURE
  * classifyResultCode("٠١");    // ResultClass.INCONCLUSIVE (Unicode-ND)
@@ -74,12 +83,12 @@ export function classifyResultCode(
 
   const raw = typeof code === "string" ? code.trim() : String(code);
 
-  // ASCII gate: reject non-ASCII digits (e.g. Unicode-ND "٠١").
-  if (!ASCII_DIGITS.test(raw)) return ResultClass.INCONCLUSIVE;
-  if (raw === "") return ResultClass.INCONCLUSIVE;
+  // ASCII gate: reject non-ASCII characters (Unicode-ND "٠١", etc.).
+  if (!ASCII_GATE.test(raw) || raw === "") return ResultClass.INCONCLUSIVE;
 
   const n = Number(raw);
-  if (!Number.isFinite(n)) return ResultClass.INCONCLUSIVE; // defensive
+  if (!Number.isFinite(n)) return ResultClass.INCONCLUSIVE;
+  if (Math.trunc(n) !== n) return ResultClass.INCONCLUSIVE; // reject non-integral
 
   if (n === 0) return ResultClass.SUCCESS;
   if (FAILURE_CODES.has(n)) return ResultClass.FAILURE;
