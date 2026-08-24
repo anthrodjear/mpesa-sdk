@@ -4,24 +4,18 @@
 // Threat model — read before wiring any Daraja callback endpoint. Safaricom
 // sends NO signature of any kind on callback traffic (no HMAC, no signed
 // header): anyone who learns or guesses your CallBackURL can forge a body
-// that parses cleanly into STKCallback. The URL path is the only channel
-// you control end to end, so treat it as a bearer capability — generate an
-// unguessable token and embed it in the registered path:
+// that parses cleanly into STKCallback. Treat the registered URL path as a
+// bearer capability — generate an unguessable token and embed it there:
 //
 //	https://api.example.com/mpesa/callback/<token>
 //
-// Be precise about what this buys: the token authenticates the ENDPOINT —
-// proof the caller knows the URL — NOT payload content. A hit never
-// replaces settlement, and the capability's lifetime carries obligations:
-//
-//   - ALWAYS settle via STKQuery (or the async result) ResultCode == 0,
-//     bound to your own CheckoutRequestID record, before marking anything
-//     paid; forged hits parse just fine.
-//   - Scrub access logs, proxy and APM traces: the token travels in the URL
-//     and leaks wherever URLs are logged, cached or shared.
-//   - Rotate long-lived C2B registrations through an overlap window that
-//     accepts old and new tokens simultaneously until traffic migrates,
-//     then retire the old one.
+// The token authenticates the ENDPOINT — proof the caller knows the URL —
+// NOT payload content; a hit never replaces settlement. ALWAYS settle via
+// STKQuery ResultCode==0 bound to your CheckoutRequestID record — forged
+// callbacks parse just fine. Scrub access logs, proxy and APM traces: the
+// token travels in the URL and leaks wherever URLs are logged or shared.
+// Rotate long-lived C2B registrations via an overlap window accepting old
+// and new tokens until traffic migrates, then retire the old one.
 //
 // Shape of the whole flow:
 //
@@ -34,7 +28,9 @@
 //	    http.NotFound(w, r) // identical answer for wrong and unknown paths
 //	    return
 //	}
-//	res, err := client.STKQuery(ctx, checkoutRequestID)
+//	res, err := client.STKQuery(ctx, mpesa.STKQueryRequest{
+//	    CheckoutRequestID: checkoutRequestID,
+//	})
 //	if err == nil && res.Classify() == mpesa.ResultClassSuccess {
 //	    markPaid(orderID) // settled by query, never by the bare hit
 //	}
