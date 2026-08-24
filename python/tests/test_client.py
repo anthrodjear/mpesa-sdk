@@ -43,6 +43,7 @@ class FakeResponse:
         self.status_code = status_code
         self.content = text.encode()
         self.headers = {"content-type": "application/json"}
+        self.closed_calls = 0
 
     def json(self):
         import json as _json
@@ -51,6 +52,9 @@ class FakeResponse:
     def iter_content(self, chunk_size):
         for i in range(0, len(self.content), chunk_size):
             yield self.content[i:i + chunk_size]
+
+    def close(self):
+        self.closed_calls += 1
 
 
 class FakeSession:
@@ -314,6 +318,7 @@ class StreamOnlyResponse:
         self._payload = text
         self._chunks = chunks
         self.headers = {"content-type": "application/json"}
+        self.closed_calls = 0
 
     def json(self):
         import json as _json
@@ -325,6 +330,9 @@ class StreamOnlyResponse:
             blob = self._chunks
         for i in range(0, len(blob), chunk_size):
             yield blob[i:i + chunk_size]
+
+    def close(self):
+        self.closed_calls += 1
 
 
 def test_401_probe_is_size_capped():

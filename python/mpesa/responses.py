@@ -148,7 +148,8 @@ class ConversationResponse(_Response):
     (docs/apis/b2c.md et al.). Usage::
 
         ack = ConversationResponse.from_json(raw)
-        enqueue_poll(ack.originator_conversation_id)    """
+        enqueue_poll(ack.originator_conversation_id)
+    """
 
     originator_conversation_id: str = ""
     conversation_id: str = ""
@@ -206,7 +207,9 @@ class QRCodeResponse(_Response):
     OPAQUE alphanumeric tracking string (e.g. "AG_20191219_000043f...")
     preserved verbatim here. Usage::
 
-        qr = QRCodeResponse.from_json(raw); render(qr.qr_code)    """
+        qr = QRCodeResponse.from_json(raw)
+        render(qr.qr_code)
+    """
 
     response_code: str = ""
     request_id: str = ""
@@ -228,7 +231,8 @@ class OAuthToken(_Response):
     None means TTL unknown, so refresh defensively. Usage::
 
         token = OAuthToken.from_json(raw)
-        cache(token.access_token, ttl=token.expires_in_seconds)    """
+        cache(token.access_token, ttl=token.expires_in_seconds)
+    """
 
     access_token: str = ""
     expires_in_seconds: int | None = None

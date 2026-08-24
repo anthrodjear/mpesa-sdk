@@ -114,7 +114,8 @@ class TransactionStatusRequest:
                                        transaction_id="NLJ7RT61SV",
                                        party_a="600992", remarks="status check",
                                        result_url="https://x.com/r",
-                                       queue_time_out_url="https://x.com/t")        req.validate()
+                                       queue_time_out_url="https://x.com/t")
+        req.validate()
     """
 
     initiator: str = _secret()
@@ -183,9 +184,10 @@ class ReversalRequest:
         req = ReversalRequest(initiator="testapi", security_credential=cred,
                               transaction_id="NLJ7RT61SV", amount=10,
                               receiver_party="600992", remarks="duplicate charge",
-                              result_url="https://x.com/r",
-                              queue_time_out_url="https://x.com/t")
-        req.validate()    """
+                               result_url="https://x.com/r",
+                               queue_time_out_url="https://x.com/t")
+        req.validate()
+    """
 
     initiator: str = _secret()
     security_credential: str = _secret()

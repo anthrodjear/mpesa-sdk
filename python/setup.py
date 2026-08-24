@@ -15,16 +15,20 @@ LONG_DESCRIPTION = """mpesa-sdk - Python SDK for the Safaricom M-Pesa Daraja API
 
 A Python engine for integrating M-Pesa payments via the Daraja platform,
 mirroring the semantics of the Go reference implementation in this
-monorepo. Covers OAuth token generation, STK Push (M-Pesa Express),
-STK Query and related flows against sandbox and production endpoints.
+monorepo. Covers OAuth token generation, STK Push (M-Pesa Express) and
+STK Query, B2C v3 payouts, C2B URL registration and payment simulation,
+Transaction Status queries, Reversal, Account Balance and Dynamic QR
+generation against sandbox and production endpoints.
 
-Requirements: Python >= 3.9.
+Requirements: Python >= 3.11.
 """
 
 setup(
     name="mpesa-sdk",
     version="0.1.0",
-    description="Python SDK for the Safaricom M-Pesa Daraja API (STK Push, STK Query, OAuth)",
+    description=("Python SDK for the Safaricom M-Pesa Daraja API "
+                 "(OAuth, STK Push/Query, B2C v3, C2B register/simulate, "
+                 "Transaction Status, Reversal, Account Balance, Dynamic QR)"),
     long_description=LONG_DESCRIPTION,
     long_description_content_type="text/plain",
     author="mpesa-sdk maintainers",
@@ -36,7 +40,7 @@ setup(
     },
     license="MIT",
     packages=find_packages(exclude=["tests", "tests.*"]),
-    python_requires=">=3.9",
+    python_requires=">=3.11",
     install_requires=[
         # >=2.32.4 fixes CVE-2024-35195 (verify=False persistence) and
         # CVE-2024-47081 (netrc credential leak).
@@ -56,8 +60,6 @@ setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.9",
-        "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
         "Topic :: Office/Business :: Financial",

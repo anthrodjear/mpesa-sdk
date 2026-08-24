@@ -32,7 +32,7 @@ A production-grade SDK for the Safaricom **M-Pesa Daraja API** in three language
 | `MPESA_CONSUMER_SECRET`| OAuth basic-auth password                             | secret — never log                        |
 | `MPESA_SHORTCODE`      | Default business shortcode                            | injected into requests when you omit it   |
 | `MPESA_PASSKEY`        | STK Push/Query password derivation                    | secret — never log                        |
-| `MPESA_ENVIRONMENT`    | `sandbox` (default) · `production` / `prod`           | honored by Python `Environment.from_config` and TS `MpesaClient.fromEnv()`; in Go set `Config.Environment` yourself |
+| `MPESA_ENVIRONMENT`    | `sandbox` (default) · `production` / `prod` (Python)  | honored by Python `Environment.from_config`; in Go set `Config.Environment` yourself. TypeScript: `MPESA_ENVIRONMENT` accepts exactly `"sandbox"` or `"production"` — any other value throws a `ConfigError`; when unset it defaults to sandbox |
 
 ```dotenv
 # .env.example
@@ -188,7 +188,7 @@ classifyResultCode("1037") === ResultClass.INCONCLUSIVE // member name; serializ
 Daraja POSTs the push outcome to your `CallBackURL`. Callbacks are **unsigned** — see [Security](docs/apis/getting-started.md#callback-source-ip-whitelist) — so bind every payload on `CheckoutRequestID` against your own records and ACK `200` immediately. Python has the most convenient parser:
 
 ```python
-# from mpesa import ResultClass, StkCallbackResult
+from mpesa import ResultClass, StkCallbackResult
 from flask import Flask, request
 
 app = Flask(__name__)
@@ -212,7 +212,7 @@ def stk_callback():
     return "", 200                                            # ACK immediately
 ```
 
-(`settle`/`mark_failed` are your functions.) Typed metadata helpers: `amount()`, `mpesa_receipt()`, `phone_number()`, `transaction_date()`, plus `metadata()` for the raw first-wins map — Go exposes `StkCallbackResult.MetadataMap()`, TypeScript `new MetadataMap(items)` with `.get(key)`. Cap request bodies at your framework level too; `from_json` refuses bodies over 1 MiB characters regardless. Callbacks late or missing? Poll synchronously: `stk_query(STKQueryRequest(checkout_request_id=…))` returns the outcome directly (`resp.result_code`, string-normalized) — back off between polls (+30s/+60s/+120s), classify each result, and only settle on terminal codes.
+(`settle`/`mark_failed` are your functions.) Typed metadata helpers: `amount()`, `mpesa_receipt()`, `phone_number()`, `transaction_date()`, plus `metadata()` for the raw first-wins map — Go exposes `STKCallbackResult.MetadataMap()`, TypeScript `new MetadataMap(items)` with `.get(key)`. Go also offers `mpesa.ParseSTKCallback(body)` accepting the full envelope or a bare result object, and `STKQueryResponse.Classify()` mirroring Python's `resp.classify()`. Cap request bodies at your framework level too; `from_json` refuses bodies over 1 MiB characters regardless. Callbacks late or missing? Poll synchronously: `stk_query(STKQueryRequest(checkout_request_id=…))` returns the outcome directly (`resp.result_code`, string-normalized) — back off between polls (+30s/+60s/+120s), classify each result, and only settle on terminal codes.
 
 ### Async results (B2C / Transaction Status / Reversal / Account Balance)
 

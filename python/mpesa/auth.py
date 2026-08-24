@@ -147,16 +147,20 @@ class TokenManager:
         # Bounded streaming read (Go LimitReader parity with
         # client._send): cap the DECOMPRESSED byte count during transfer
         # via iter_content(MAX+1) so a gzip bomb aborts mid-stream instead
-        # of being fully materialised by a pre-read .content.
+        # of being fully materialised by a pre-read .content. The socket
+        # is released in ``finally`` so abort paths never leak it.
         chunks: list[bytes] = []
         total = 0
-        for chunk in response.iter_content(_MAX_BODY_CHARS + 1):
-            chunks.append(chunk)
-            total += len(chunk)
-            if total > _MAX_BODY_CHARS:
-                raise ValueError(
-                    f"mpesa: oauth/v1/generate response exceeds "
-                    f"{_MAX_BODY_CHARS} bytes")
+        try:
+            for chunk in response.iter_content(_MAX_BODY_CHARS + 1):
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > _MAX_BODY_CHARS:
+                    raise ValueError(
+                        f"mpesa: oauth/v1/generate response exceeds "
+                        f"{_MAX_BODY_CHARS} bytes")
+        finally:
+            response.close()
         body = b"".join(chunks)
         if not 200 <= response.status_code <= 299:
             content_type = response.headers.get("content-type", "")

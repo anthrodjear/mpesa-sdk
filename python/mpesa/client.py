@@ -31,7 +31,8 @@ from __future__ import annotations
 import copy
 import dataclasses
 from datetime import datetime, timezone
-from typing import Any
+from types import TracebackType
+from typing import Any, TypeVar
 
 import requests
 
@@ -76,6 +77,8 @@ QR_CODE_PATH = "/mpesa/qrcode/v1/generate"
 
 _ERR_INVALID_TOKEN = "401.003.01"
 _MAX_RESPONSE_BYTES = 1_048_576
+
+_ModelT = TypeVar("_ModelT")
 
 
 class _OAuthOnlySession:
@@ -136,7 +139,9 @@ class MpesaClient:
     def __enter__(self) -> "MpesaClient":
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, exc_type: type[BaseException] | None,
+                 exc: BaseException | None,
+                 tb: TracebackType | None) -> None:
         self.close()
 
     # ---- transport --------------------------------------------------------
@@ -145,44 +150,58 @@ class MpesaClient:
         return (self._cfg.now or (lambda: datetime.now(timezone.utc)))()
 
     def _send(self, token: str, method: str, path: str,
-              json_body: Any, params: Any) -> requests.Response:
-        """True streaming cap: read at most _MAX_RESPONSE_BYTES+1 via
-        iter_content (Go LimitReader parity), never trusting .content."""
+              json_body: Any, params: Any) -> tuple[int, str, bytes]:
+        """Authenticated round-trip returning ``(status_code,
+        content_type, body)``.
+
+        True streaming cap: reads at most _MAX_RESPONSE_BYTES+1 via
+        iter_content (Go LimitReader parity). Plain values are returned
+        instead of the Response because ``Response.content`` is a
+        getter-only property -- writing it raises AttributeError on
+        every real request (duck-typed fakes allowed attribute writes
+        and masked the crash historically). The connection is released
+        in ``finally``, so aborts mid-read never leak sockets.
+        """
         response = self._session.request(
             method, self._base_url + path, json=json_body, params=params,
             timeout=self._timeout, allow_redirects=False, stream=True,
             headers={"Authorization": f"Bearer {token}",
                      "Content-Type": "application/json"})
-        chunks = []
-        total = 0
-        for chunk in response.iter_content(_MAX_RESPONSE_BYTES + 1):
-            chunks.append(chunk)
-            total += len(chunk)
-            if total > _MAX_RESPONSE_BYTES:
-                raise ValueError(f"mpesa: {path} response exceeds "
-                                 f"{_MAX_RESPONSE_BYTES} bytes")
-        response.content = b"".join(chunks)
-        return response
+        try:
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in response.iter_content(_MAX_RESPONSE_BYTES + 1):
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > _MAX_RESPONSE_BYTES:
+                    raise ValueError(f"mpesa: {path} response exceeds "
+                                     f"{_MAX_RESPONSE_BYTES} bytes")
+            body = b"".join(chunks)
+        finally:
+            response.close()
+        content_type = response.headers.get("content-type", "")
+        return response.status_code, content_type, body
 
-    def _post_model(self, path: str, payload: dict, model: type):
-        """Authenticated POST -> parsed sync-response model, with the
-        documented retry-once on 401.003.01. The 401 probe itself is
-        size-capped before any parsing."""
+    def _post_model(self, path: str, payload: dict[str, Any],
+                    model: type[_ModelT]) -> _ModelT:
+        """Authenticated POST -> parsed sync-response model, consuming the
+        ``(status_code, content_type, body)`` tuple from :meth:`_send`,
+        with the documented retry-once on 401.003.01. Every size cap is
+        enforced inside :meth:`_send` (the tuple body can never exceed
+        the accumulation bound), so the 401 probe and final parse are
+        size-capped by construction."""
         token, gen = self._tokens.get_token_with_gen()
-        response = self._send(token, "POST", path, payload, None)
-        if response.status_code == 401 and \
-                len(response.content) <= _MAX_RESPONSE_BYTES:
-            probe = MpesaError.from_response(401, response.content)
+        status_code, content_type, body = self._send(
+            token, "POST", path, payload, None)
+        if status_code == 401:
+            probe = MpesaError.from_response(401, body, content_type)
             if probe.error_code == _ERR_INVALID_TOKEN:
                 fresh = self._tokens.refresh_after_invalid_token(gen)
-                response = self._send(fresh, "POST", path, payload, None)
-        if len(response.content) > _MAX_RESPONSE_BYTES:
-            raise ValueError(f"mpesa: {path} response exceeds "
-                             f"{_MAX_RESPONSE_BYTES} bytes")
-        if not 200 <= response.status_code <= 299:
-            raise MpesaError.from_response(
-                response.status_code, response.content)
-        return model.from_json(response.content)
+                status_code, content_type, body = self._send(
+                    fresh, "POST", path, payload, None)
+        if not 200 <= status_code <= 299:
+            raise MpesaError.from_response(status_code, body, content_type)
+        return model.from_json(body)
 
     # ---- endpoints --------------------------------------------------------
 

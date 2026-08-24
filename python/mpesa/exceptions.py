@@ -56,7 +56,11 @@ class MpesaError(Exception):
     Example::
 
         try:
-            client.stk_push(amount=1, phone="2547XXXXXXXX")
+            client.stk_push(STKPushRequest(
+                transaction_type="CustomerPayBillOnline", amount=100,
+                party_a="2547XXXXXXXX", phone_number="2547XXXXXXXX",
+                call_back_url="https://example.com/callback",
+                account_reference="Order42", transaction_desc="pay"))
         except MpesaError as exc:
             if exc.error_code == "401.003.01":
                 refresh_token()

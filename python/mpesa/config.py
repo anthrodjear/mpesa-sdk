@@ -37,7 +37,7 @@ __all__ = ["Config"]
 
 @dataclass(frozen=True)
 class Config:
-    """Immutable settings for a Daraja :class:`~mpesa.client.Client`.
+    """Immutable settings for a Daraja :class:`~mpesa.client.MpesaClient`.
 
     Attributes mirror go/config.go: ``now`` injects a clock for tests
     (clients fall back to ``datetime.now(timezone.utc)`` when None);

@@ -23,6 +23,7 @@ class FakeResponse:
             __import__("json").dumps(payload).encode() if payload is not None
             else b"")
         self.headers = {"content-type": "application/json"}
+        self.closed_calls = 0
 
     def json(self):
         import json as _json
@@ -32,6 +33,9 @@ class FakeResponse:
         blob = self.content
         for i in range(0, len(blob), chunk_size):
             yield blob[i:i + chunk_size]
+
+    def close(self):
+        self.closed_calls += 1
 
 
 class FakeSession:
@@ -251,6 +255,7 @@ class StreamOnlyResponse:
         self._chunks = chunks
         self.headers = {"content-type": "application/json"}
         self.parse_attempts = 0
+        self.closed_calls = 0
 
     def json(self):
         self.parse_attempts += 1
@@ -264,6 +269,9 @@ class StreamOnlyResponse:
         for i in range(0, len(blob), chunk_size):
             yield blob[i:i + chunk_size]
 
+    def close(self):
+        self.closed_calls += 1
+
 
 def test_oauth_refresh_streams_bounded_read_without_dot_content():
     resp = StreamOnlyResponse(
@@ -274,6 +282,7 @@ def test_oauth_refresh_streams_bounded_read_without_dot_content():
     assert session.calls[0]["stream"] is True
     assert session.calls[0]["allow_redirects"] is False
     assert not hasattr(resp, "content")   # fake itself never had one
+    assert resp.closed_calls == 1         # connection released after read
 
 
 def test_oauth_oversize_aborts_midstream_before_parse():
@@ -284,6 +293,7 @@ def test_oauth_oversize_aborts_midstream_before_parse():
     with pytest.raises(ValueError, match=r"exceeds 1048576"):
         tm.get_token()
     assert resp.parse_attempts == 0       # cap fired mid-stream; no parse
+    assert resp.closed_calls == 1         # finally released the socket
 
 
 def test_decode_error_wrapped_as_value_error():

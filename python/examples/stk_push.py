@@ -15,10 +15,8 @@ from mpesa import (
     Config,
     MpesaClient,
     MpesaError,
-    ResultClass,
     STKPushRequest,
     TransactionType,
-    classify_result_code,
 )
 
 
