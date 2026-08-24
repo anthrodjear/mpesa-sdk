@@ -66,6 +66,7 @@ export interface B2CRequest {
   readonly partyB: string;
   readonly remarks: string;
   readonly queueTimeOutURL: string;
+  readonly resultURL: string;
   readonly occasion?: string;
 }
 
@@ -74,11 +75,14 @@ export interface TransactionStatusRequest {
   readonly initiator: string;
   readonly securityCredential: string;
   readonly commandID: CommandID;
-  readonly transactionID: string;
+  readonly transactionID?: string;
+  readonly originalConversationID?: string;
   readonly partyA: string;
   readonly identifierType?: string;
+  readonly resultURL: string;
+  readonly queueTimeOutURL: string;
   readonly remarks?: string;
-  readonly occassion?: string;
+  readonly occasion?: string;
 }
 
 /** Account balance query request body. */
@@ -90,6 +94,7 @@ export interface AccountBalanceRequest {
   readonly identifierType?: string;
   readonly remarks?: string;
   readonly queueTimeOutURL: string;
+  readonly resultURL: string;
 }
 
 /**
@@ -103,12 +108,12 @@ export interface ReversalRequest {
   readonly securityCredential: string;
   readonly commandID: CommandID;
   readonly transactionID: string;
+  readonly amount: number;
   readonly receiverParty: string;
   readonly recieverIdentifierType?: string;
-  readonly receiverIdentifierType?: string;
+  readonly resultURL: string;
+  readonly queueTimeOutURL: string;
   readonly remarks: string;
-  readonly queueTimeOutURL?: string;
-  readonly occasion?: string;
 }
 
 /** C2B URL registration request body. */
@@ -158,6 +163,11 @@ export interface STKQueryResponse {
   readonly ResponseDescription: string;
   readonly MerchantRequestID: string;
   readonly CheckoutRequestID: string;
+  /**
+   * @warning Wire sends both `"1032"` (string) and `1032` (number) for this
+   * field depending on the gateway version. Always `parseInt()` before
+   * numeric comparison — never `===` against a number literal.
+   */
   readonly ResultCode: string;
   readonly ResultDesc: string;
 }
@@ -264,6 +274,10 @@ export class MetadataMap {
   /**
    * Set a key-value pair. **No-op** if the key already exists
    * (first-wins semantics).
+   *
+   * @security PII warning — values may contain MSISDN, receipt numbers, or
+   * account references. Never log raw MetadataMap contents in production;
+   * redact or hash before writing to structured logs.
    */
   set(key: string, value: unknown): void {
     if (!this.index.has(key)) {
@@ -351,16 +365,33 @@ export function parseBalanceSegments(text: string): BalanceSegment[] {
     if (trimmed.length === 0) continue;
     const fields = trimmed.split("|");
     if (fields.length < 6) continue;
-    // Length guard above ensures indices 0–5 exist; noUncheckedIndexedAccess
-    // cannot infer this from .length, so we access explicitly.
-    const accountName = fields[0]!.trim();
-    const currency = fields[1]!.trim();
-    const available = parseFloat(fields[2]!);
-    const uncleared = parseFloat(fields[3]!);
-    const reserved = parseFloat(fields[4]!);
-    const min = parseFloat(fields[5]!);
-    if (Number.isFinite(available)) {
-      segments.push({ accountName, currency, available, uncleared, reserved, min });
+    const accountName = fields[0];
+    const currency = fields[1];
+    const availStr = fields[2];
+    const unclearedStr = fields[3];
+    const reservedStr = fields[4];
+    const minStr = fields[5];
+    if (
+      accountName === undefined || currency === undefined ||
+      availStr === undefined || unclearedStr === undefined ||
+      reservedStr === undefined || minStr === undefined
+    ) continue;
+    const available = parseFloat(availStr);
+    const uncleared = parseFloat(unclearedStr);
+    const reserved = parseFloat(reservedStr);
+    const min = parseFloat(minStr);
+    if (
+      Number.isFinite(available) && Number.isFinite(uncleared) &&
+      Number.isFinite(reserved) && Number.isFinite(min)
+    ) {
+      segments.push({
+        accountName: accountName.trim(),
+        currency: currency.trim(),
+        available,
+        uncleared,
+        reserved,
+        min,
+      });
     }
   }
   return segments;

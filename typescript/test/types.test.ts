@@ -80,7 +80,7 @@ describe("Request interfaces compile", () => {
     expect(req.checkoutRequestID).toBe("ws_CO_1234");
   });
 
-  it("B2CRequest constructs", () => {
+  it("B2CRequest constructs with resultURL", () => {
     const req: B2CRequest = {
       initiatorName: "test",
       securityCredential: "encrypted",
@@ -90,43 +90,56 @@ describe("Request interfaces compile", () => {
       partyB: "254712345678",
       remarks: "salary",
       queueTimeOutURL: "https://example.com/timeout",
+      resultURL: "https://example.com/result",
     };
     expect(req.commandID.value).toBe("BusinessPayment");
+    expect(req.resultURL).toBe("https://example.com/result");
   });
 
-  it("TransactionStatusRequest constructs", () => {
+  it("TransactionStatusRequest constructs with resultURL and queueTimeOutURL", () => {
     const req: TransactionStatusRequest = {
       initiator: "test",
       securityCredential: "encrypted",
       commandID: CommandID.TransactionStatusQuery,
       transactionID: "QKH7BDX10S",
       partyA: "174379",
+      resultURL: "https://example.com/result",
+      queueTimeOutURL: "https://example.com/timeout",
     };
     expect(req.transactionID).toBe("QKH7BDX10S");
+    expect(req.resultURL).toBe("https://example.com/result");
+    expect(req.queueTimeOutURL).toBe("https://example.com/timeout");
   });
 
-  it("AccountBalanceRequest constructs", () => {
+  it("AccountBalanceRequest constructs with resultURL", () => {
     const req: AccountBalanceRequest = {
       initiator: "test",
       securityCredential: "encrypted",
       commandID: CommandID.AccountBalance,
       partyA: "174379",
       queueTimeOutURL: "https://example.com/timeout",
+      resultURL: "https://example.com/result",
     };
     expect(req.commandID.value).toBe("AccountBalance");
+    expect(req.resultURL).toBe("https://example.com/result");
   });
 
-  it("ReversalRequest constructs with recieverIdentifierType misspelling", () => {
+  it("ReversalRequest constructs with amount, resultURL, and recieverIdentifierType misspelling", () => {
     const req: ReversalRequest = {
       initiator: "test",
       securityCredential: "encrypted",
       commandID: CommandID.ReverseTransaction,
       transactionID: "QKH7BDX10S",
+      amount: 1000,
       receiverParty: "174379",
       recieverIdentifierType: "11",
+      resultURL: "https://example.com/result",
+      queueTimeOutURL: "https://example.com/timeout",
       remarks: "refund",
     };
     expect(req.recieverIdentifierType).toBe("11");
+    expect(req.amount).toBe(1000);
+    expect(req.resultURL).toBe("https://example.com/result");
   });
 
   it("C2BRegisterRequest constructs", () => {
@@ -359,6 +372,13 @@ describe("parseBalanceSegments", () => {
   it("returns empty array for empty string", () => {
     expect(parseBalanceSegments("")).toEqual([]);
   });
+
+  it("handles trailing & gracefully", () => {
+    const text = "Available Account Balance|KES|100|0|0|0&";
+    const segments = parseBalanceSegments(text);
+    expect(segments).toHaveLength(1);
+    expect(segments[0].available).toBe(100);
+  });
 });
 
 // ─── Section 6: AsyncResult compiles ─────────────────────────────────────────
@@ -439,8 +459,11 @@ describe("Wire-trap annotations", () => {
       securityCredential: "enc",
       commandID: CommandID.ReverseTransaction,
       transactionID: "TX1",
+      amount: 500,
       receiverParty: "174379",
       recieverIdentifierType: "11",
+      resultURL: "https://example.com/result",
+      queueTimeOutURL: "https://example.com/timeout",
       remarks: "refund",
     };
     expect(req.recieverIdentifierType).toBe("11");
@@ -465,12 +488,61 @@ describe("Wire-trap annotations", () => {
       partyB: "254712345678",
       remarks: "test",
       queueTimeOutURL: "https://example.com/timeout",
+      resultURL: "https://example.com/result",
     };
     expect(req.queueTimeOutURL).toBe("https://example.com/timeout");
   });
 });
 
 // ─── Section 9: MetadataItem compiles ────────────────────────────────────────
+
+describe("ResultURL present on async request interfaces", () => {
+  it("B2CRequest has resultURL", () => {
+    const req: B2CRequest = {
+      initiatorName: "test", securityCredential: "enc",
+      commandID: CommandID.BusinessPayment, amount: 100,
+      partyA: "174379", partyB: "254712345678", remarks: "t",
+      queueTimeOutURL: "https://example.com/to",
+      resultURL: "https://example.com/res",
+    };
+    expect(typeof req.resultURL).toBe("string");
+  });
+
+  it("ReversalRequest has resultURL", () => {
+    const req: ReversalRequest = {
+      initiator: "test", securityCredential: "enc",
+      commandID: CommandID.ReverseTransaction, transactionID: "TX1",
+      amount: 100, receiverParty: "174379", remarks: "t",
+      resultURL: "https://example.com/res",
+      queueTimeOutURL: "https://example.com/to",
+    };
+    expect(typeof req.resultURL).toBe("string");
+  });
+
+  it("TransactionStatusRequest has resultURL and queueTimeOutURL", () => {
+    const req: TransactionStatusRequest = {
+      initiator: "test", securityCredential: "enc",
+      commandID: CommandID.TransactionStatusQuery,
+      transactionID: "TX1", partyA: "174379",
+      resultURL: "https://example.com/res",
+      queueTimeOutURL: "https://example.com/to",
+    };
+    expect(typeof req.resultURL).toBe("string");
+    expect(typeof req.queueTimeOutURL).toBe("string");
+  });
+
+  it("AccountBalanceRequest has resultURL", () => {
+    const req: AccountBalanceRequest = {
+      initiator: "test", securityCredential: "enc",
+      commandID: CommandID.AccountBalance, partyA: "174379",
+      queueTimeOutURL: "https://example.com/to",
+      resultURL: "https://example.com/res",
+    };
+    expect(typeof req.resultURL).toBe("string");
+  });
+});
+
+// ─── Section 10: MetadataItem compiles ───────────────────────────────────────
 
 describe("MetadataItem compiles", () => {
   it("constructs with string and number values", () => {
