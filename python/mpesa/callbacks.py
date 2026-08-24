@@ -20,9 +20,16 @@ literals Go's encoder rejects; typed helpers refuse them by gate.
 Usage::
 
     result = StkCallbackResult.from_json(raw_body)
-    order = repo.by_checkout(result.checkout_request_id)   # bind first!
-    if result.classify() is ResultClass.SUCCESS and result.mpesa_receipt():
-        settle(order, receipt=result.mpesa_receipt(), amt=result.amount())
+    order = repo.by_checkout(result.checkout_request_id)   # dedup FIRST
+    if order is None:
+        return                                             # unknown: ACK, ignore
+    if result.classify() is ResultClass.SUCCESS:           # HINT only --
+        resp = client.stk_query(STKQueryRequest(           # settle via the query
+            checkout_request_id=result.checkout_request_id))
+        if resp.result_code == "0":
+            settle(order, receipt=result.mpesa_receipt(), amount=result.amount())
+    else:
+        mark_pending_reconcile(order)   # stk_query decides; never refund on a hit
 """
 
 from __future__ import annotations

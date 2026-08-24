@@ -226,6 +226,7 @@ def stk_callback():
         resp = client.stk_query(STKQueryRequest(              # …settle via the query round-trip
             checkout_request_id=result.checkout_request_id))
         if resp.result_code == "0":
+            # NB: receipt/amount come from the advisory body — display-grade, not audit-grade
             settle(order, receipt=result.mpesa_receipt(), amount=result.amount())
     else:
         mark_pending_reconcile(order)   # failure/indeterminate → stk_query decides, never refund here
@@ -233,7 +234,7 @@ def stk_callback():
     return "", 200                                            # ACK immediately
 ```
 
-(`client`, `settle`, `mark_pending_reconcile` are your functions.) Typed metadata helpers: `amount()`, `mpesa_receipt()`, `phone_number()`, `transaction_date()`, plus `metadata()` for the raw first-wins map — Go exposes `STKCallbackResult.MetadataMap()`, TypeScript `new MetadataMap(items)` with `.get(key)`. Go also offers `mpesa.ParseSTKCallback(body)` accepting the full envelope or a bare result object, and `STKQueryResponse.Classify()` mirroring Python's `resp.classify()`. Cap request bodies at your framework level too; `from_json` refuses bodies over 1 MiB characters regardless. Callbacks late or missing? Poll synchronously: `stk_query(STKQueryRequest(checkout_request_id=…))` returns the outcome directly (`resp.result_code`, string-normalized) — back off between polls (+30s/+60s/+120s), classify each result, and only settle on terminal codes.
+(`client`, `settle`, `mark_pending_reconcile` are your functions.) Typed metadata helpers: `amount()`, `mpesa_receipt()`, `phone_number()`, `transaction_date()`, plus `metadata()` for the raw first-wins map — Go exposes `STKCallbackResult.MetadataMap()`, TypeScript `new MetadataMap(items)` with `.get(key)`. Go also offers `mpesa.ParseSTKCallback(body)` accepting the full envelope or a bare result object, and `STKQueryResponse.Classify()` mirroring Python's `classify_result_code(resp.result_code)`. Cap request bodies at your framework level too; `from_json` refuses bodies over 1 MiB characters regardless. Callbacks late or missing? Poll synchronously: `stk_query(STKQueryRequest(checkout_request_id=…))` returns the outcome directly (`resp.result_code`, string-normalized) — back off between polls (+30s/+60s/+120s), classify each result, and only settle on terminal codes.
 
 ### Async results (B2C / Transaction Status / Reversal / Account Balance)
 
