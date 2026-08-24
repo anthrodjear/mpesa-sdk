@@ -4,28 +4,29 @@ package mpesa
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 )
 
-// StkCallback is the top-level envelope POSTed to CallBackURL.
+// STKCallback is the top-level envelope POSTed to CallBackURL.
 //
 // Safaricom callbacks carry NO HMAC signature, so ingestion endpoints must
 // harden themselves: bind on CheckoutRequestID, validate amount/phone against
 // the original request, and wrap request bodies in http.MaxBytesReader
 // (recommend >=1 MiB cap) before unmarshalling into this type.
-type StkCallback struct {
-	Body StkCallbackBody `json:"Body"`
+type STKCallback struct {
+	Body STKCallbackBody `json:"Body"`
 }
 
-// StkCallbackBody wraps the inner stkCallback object.
-type StkCallbackBody struct {
-	StkCallback StkCallbackResult `json:"stkCallback"`
+// STKCallbackBody wraps the inner stkCallback object.
+type STKCallbackBody struct {
+	STKCallback STKCallbackResult `json:"stkCallback"`
 }
 
-// StkCallbackResult is the transaction outcome. CallbackMetadata is absent on
+// STKCallbackResult is the transaction outcome. CallbackMetadata is absent on
 // failures — parse defensively via MetadataMap.
-type StkCallbackResult struct {
+type STKCallbackResult struct {
 	MerchantRequestID string            `json:"MerchantRequestID"`
 	CheckoutRequestID string            `json:"CheckoutRequestID"`
 	ResultCode        FlexString        `json:"ResultCode"`
@@ -33,7 +34,7 @@ type StkCallbackResult struct {
 	CallbackMetadata  *CallbackMetadata `json:"CallbackMetadata,omitempty"`
 }
 
-func (r StkCallbackResult) metadataItems() []MetadataItem {
+func (r STKCallbackResult) metadataItems() []MetadataItem {
 	if r.CallbackMetadata == nil {
 		return nil
 	}
@@ -43,7 +44,7 @@ func (r StkCallbackResult) metadataItems() []MetadataItem {
 // MetadataMap flattens callback metadata items, tolerating absent metadata;
 // integral values decode as int64, decimals as float64. On duplicate names
 // the FIRST item wins — check DuplicateKeys to detect lossy collisions.
-func (r StkCallbackResult) MetadataMap() map[string]any {
+func (r STKCallbackResult) MetadataMap() map[string]any {
 	out := make(map[string]any)
 	for _, item := range r.metadataItems() {
 		if _, exists := out[item.Name]; !exists {
@@ -55,7 +56,7 @@ func (r StkCallbackResult) MetadataMap() map[string]any {
 
 // DuplicateKeys reports how many metadata items were shadowed by an earlier
 // same-named item (Safaricom duplicates have been observed on retries).
-func (r StkCallbackResult) DuplicateKeys() int {
+func (r STKCallbackResult) DuplicateKeys() int {
 	seen := make(map[string]bool)
 	dupes := 0
 	for _, item := range r.metadataItems() {
@@ -66,6 +67,38 @@ func (r StkCallbackResult) DuplicateKeys() int {
 		seen[item.Name] = true
 	}
 	return dupes
+}
+
+// ParseSTKCallback decodes a raw callback POST body into its outcome,
+// accepting EITHER Safaricom's full envelope {"Body":{"stkCallback":…}}
+// OR a bare stkCallback result object (fixtures, replayed captures).
+// Shape problems are loud errors; absent CallbackMetadata stays tolerated —
+// read values defensively via MetadataMap. Bodies carry NO signature: cap
+// them upstream (http.MaxBytesReader ≥ 1 MiB) and bind on
+// CheckoutRequestID against your own request record before acting.
+func ParseSTKCallback(body []byte) (*STKCallbackResult, error) {
+	var envelope struct {
+		Body *struct {
+			StkCallback *STKCallbackResult `json:"stkCallback"`
+		} `json:"Body"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, fmt.Errorf("mpesa: parse stk callback body: %w", err)
+	}
+	if envelope.Body != nil && envelope.Body.StkCallback != nil {
+		return envelope.Body.StkCallback, nil
+	}
+	var bare STKCallbackResult
+	if err := json.Unmarshal(body, &bare); err != nil {
+		return nil, fmt.Errorf("mpesa: unexpected stk callback shape: "+
+			"want {\"Body\":{\"stkCallback\":{…}}} or a bare result object: %w", err)
+	}
+	if bare.ResultCode.String() == "" && bare.MerchantRequestID == "" &&
+		bare.CheckoutRequestID == "" {
+		return nil, fmt.Errorf("mpesa: unexpected stk callback shape: " +
+			"missing Body.stkCallback")
+	}
+	return &bare, nil
 }
 
 // CallbackMetadata holds the Item list Safaricom sends on success.

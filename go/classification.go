@@ -67,11 +67,18 @@ func ClassifyResultCode(code string) ResultClass {
 }
 
 // Classify buckets the callback outcome per ADR-010 safety rules.
-func (r StkCallbackResult) Classify() ResultClass {
+func (r STKCallbackResult) Classify() ResultClass {
 	return ClassifyResultCode(r.ResultCode.String())
 }
 
 // Classify buckets the async result outcome per ADR-010 safety rules.
 func (r AsyncResultBody) Classify() ResultClass {
+	return ClassifyResultCode(r.ResultCode.String())
+}
+
+// Classify buckets the synchronous STK Query outcome per ADR-010 safety
+// rules — same catalog as callbacks: only 0 is success; unknown codes are
+// indeterminate and must never be auto-failed.
+func (r STKQueryResponse) Classify() ResultClass {
 	return ClassifyResultCode(r.ResultCode.String())
 }

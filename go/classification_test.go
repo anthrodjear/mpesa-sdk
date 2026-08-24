@@ -1,6 +1,9 @@
 package mpesa
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // Matrix beside ClassifyResultCode: success only ever 0; terminal failures
 // per stk-push.md/b2c.md/account-balance.md; everything else indeterminate.
@@ -73,5 +76,33 @@ func TestAsyncTerminalFailureCatalogs(t *testing.T) {
 				t.Errorf("catalog code %q classified %q, want %q", code, got, want)
 			}
 		}
+	}
+}
+
+// STKQueryResponse.Classify mirrors the callback/async receivers: decode via
+// FlexString so both string and numeric wire encodings are exercised.
+func TestSTKQueryResponseClassifyRows(t *testing.T) {
+	cases := []struct {
+		name       string
+		resultCode string // raw JSON value encoding
+		want       ResultClass
+	}{
+		{"string success", `"0"`, ResultClassSuccess},
+		{"numeric success", `0`, ResultClassSuccess},
+		{"terminal failure", `"1032"`, ResultClassFailure},
+		{"unknown indeterminate", `1001`, ResultClassIndeterminate},
+		{"non-numeric indeterminate", `"SFC_IC0003"`, ResultClassIndeterminate},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var resp STKQueryResponse
+			if err := json.Unmarshal([]byte(`{"ResultCode":`+tc.resultCode+`}`), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if got := resp.Classify(); got != tc.want {
+				t.Errorf("STKQueryResponse{ResultCode:%s}.Classify() = %q, want %q",
+					tc.resultCode, got, tc.want)
+			}
+		})
 	}
 }

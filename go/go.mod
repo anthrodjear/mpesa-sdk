@@ -1,3 +1,3 @@
 module github.com/mpesa-sdk/go
 
-go 1.26
+go 1.22

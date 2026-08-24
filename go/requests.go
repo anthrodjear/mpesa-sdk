@@ -179,7 +179,7 @@ func requireNonEmpty(field, v string) error {
 
 func requireMaxLen(field string, v string, max int) error {
 	if len(v) > max {
-		return fmt.Errorf("mpesa: %s exceeds %d characters (got %d)", field, max, len(v))
+		return fmt.Errorf("mpesa: %s exceeds %d bytes (got %d)", field, max, len(v))
 	}
 	return nil
 }
@@ -212,9 +212,6 @@ var b2cCommands = map[CommandID]bool{
 func (r *STKPushRequest) Validate() error {
 	if err := requireNonEmpty("BusinessShortCode", r.BusinessShortCode); err != nil {
 		return err
-	}
-	if r.TransactionType == "" {
-		return fmt.Errorf("mpesa: TransactionType is required (CustomerPayBillOnline | CustomerBuyGoodsOnline)")
 	}
 	if r.TransactionType == "" {
 		return fmt.Errorf("mpesa: TransactionType is required (CustomerPayBillOnline | CustomerBuyGoodsOnline)")
