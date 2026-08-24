@@ -14,7 +14,8 @@ import (
 // Safaricom callbacks carry NO HMAC signature, so ingestion endpoints must
 // harden themselves: bind on CheckoutRequestID, validate amount/phone against
 // the original request, and wrap request bodies in http.MaxBytesReader
-// (recommend >=1 MiB cap) before unmarshalling into this type.
+// (recommend >=1 MiB cap) before unmarshalling into this type — see
+// callbacktoken.go for bearer-capability URL tokens that gate the endpoint.
 type STKCallback struct {
 	Body STKCallbackBody `json:"Body"`
 }
