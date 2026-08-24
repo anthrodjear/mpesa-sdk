@@ -32,9 +32,6 @@ import { X509Certificate, publicEncrypt } from "node:crypto";
 /** EAT offset in milliseconds (UTC+3, no DST). */
 const EAT_OFFSET_MS = 3 * 60 * 60 * 1000;
 
-/** Safaricom timestamp format: YYYYMMDDHHmmss (no separators). */
-const EAT_LAYOUT = "YYYYMMDDHHmmss";
-
 // ---------------------------------------------------------------------------
 // generatePassword
 // ---------------------------------------------------------------------------

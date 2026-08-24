@@ -77,10 +77,13 @@ function renderMessage(
  *
  * @example Raise/catch around a client call:
  * ```ts
- * try { await client.stkPush({ amount: 1, phone: "2547XXXXXXXX" }); }
+ * try { await client.stkPush(req); }
  * catch (exc) {
- *   if (exc instanceof MpesaError && exc.errorCode === "401.003.01") await client.refreshToken();
- *   else throw exc;
+ *   if (exc instanceof MpesaError) {
+ *     console.error(exc.statusCode, exc.requestId, exc.errorCode, exc.errorMessage);
+ *   } else {
+ *     throw exc;
+ *   }
  * }
  * ```
  */

@@ -4,8 +4,8 @@
  * Nine endpoints covered:
  * {@link MpesaClient.stkPush | STK Push},
  * {@link MpesaClient.stkQuery | STK Query},
- * {@link MpesaClient.b2c | B2C},
- * {@link MpesaClient.c2bRegister | C2B Register},
+ * {@link MpesaClient.b2cPayout | B2C},
+ * {@link MpesaClient.c2bRegisterURL | C2B Register},
  * {@link MpesaClient.c2bSimulate | C2B Simulate},
  * {@link MpesaClient.transactionStatus | Transaction Status},
  * {@link MpesaClient.reversal | Reversal},
@@ -14,7 +14,7 @@
  *
  * Quick-start:
  * ```ts
- * import { Config, MpesaClient } from "@mpesa-sdk/core";
+ * import { Config, MpesaClient, TransactionType } from "@mpesa-sdk/core";
  *
  * const config = new Config({
  *   consumerKey:    process.env.MPESA_CONSUMER_KEY   !,
@@ -32,7 +32,7 @@
  *   amount:      100,
  *   accountReference: "Order 42",
  *   transactionDesc:  "test",
- *   transactionType: TransactionType.CustomerPayBillOnline,
+ *   transactionType: TransactionType.BillPayGoods, // wire "CustomerPayBillOnline"
  *   partyA: "+254712345678",
  *   callBackURL: "https://example.com/callback",
  * });

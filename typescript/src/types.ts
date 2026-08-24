@@ -34,22 +34,22 @@ export interface STKPushRequest {
    * Client-injected — defaults to config shortcode when empty.
    * Callers typically omit this.
    */
-  readonly businessShortCode?: string;
+  readonly businessShortCode?: string | undefined;
   /**
    * Client-injected — derived from shortcode + passkey + EAT timestamp.
    * Callers must never set this directly.
    */
-  readonly password?: string;
+  readonly password?: string | undefined;
   /**
    * Client-injected — EAT timestamp derived from a single clock instant.
    * Callers must never set this directly.
    */
-  readonly timestamp?: string;
+  readonly timestamp?: string | undefined;
   readonly transactionType: TransactionType;
   readonly amount: number;
   readonly partyA: string;
   /** Defaults to `businessShortCode` when empty. */
-  readonly partyB?: string;
+  readonly partyB?: string | undefined;
   readonly phoneNumber: string;
   readonly callBackURL: string;
   readonly accountReference: string;
@@ -59,20 +59,21 @@ export interface STKPushRequest {
 /** STK Push query status request body. */
 export interface STKQueryRequest {
   /**
-   * Client-injected — defaults to config shortcode when empty.
+   * Client-injected — defaults to config shortcode when empty; when set,
+   * the injected Password binds to THIS shortcode.
    * Callers typically omit this.
    */
-  readonly businessShortCode?: string;
+  readonly businessShortCode?: string | undefined;
   /**
    * Client-injected — derived from shortcode + passkey + EAT timestamp.
    * Callers must never set this directly.
    */
-  readonly password?: string;
+  readonly password?: string | undefined;
   /**
    * Client-injected — EAT timestamp derived from a single clock instant.
    * Callers must never set this directly.
    */
-  readonly timestamp?: string;
+  readonly timestamp?: string | undefined;
   readonly checkoutRequestID: string;
 }
 
@@ -82,42 +83,57 @@ export interface B2CRequest {
    * Auto-generated when empty — 16 lowercase hex chars (≤20 per Daraja
    * constraint). Serves as the idempotency key for retries.
    */
-  readonly originatorConversationID?: string;
+  readonly originatorConversationID?: string | undefined;
   readonly initiatorName: string;
   readonly securityCredential: string;
   readonly commandID: CommandID;
   readonly amount: number;
-  readonly partyA: string;
+  /** Defaults to config shortcode when empty. */
+  readonly partyA?: string | undefined;
   readonly partyB: string;
   readonly remarks: string;
   readonly queueTimeOutURL: string;
   readonly resultURL: string;
-  readonly occasion?: string;
+  readonly occasion?: string | undefined;
 }
 
-/** Transaction status query request body. */
-export interface TransactionStatusRequest {
+/**
+ * Common fields shared by both XOR variants of {@link TransactionStatusRequest}.
+ * `commandID` and `identifierType` are client-defaulted when omitted.
+ */
+interface TransactionStatusBase {
   readonly initiator: string;
   readonly securityCredential: string;
-  readonly commandID: CommandID;
-  readonly transactionID?: string;
-  readonly originalConversationID?: string;
+  readonly commandID?: CommandID | undefined;
   readonly partyA: string;
-  readonly identifierType?: string;
+  readonly identifierType?: string | undefined;
   readonly resultURL: string;
   readonly queueTimeOutURL: string;
-  readonly remarks?: string;
-  readonly occasion?: string;
+  readonly remarks: string;
+  readonly occasion?: string | undefined;
 }
+
+/**
+ * Transaction status query request body — receipt XOR conversation ID,
+ * enforced at TYPE level: exactly one of `transactionID` /
+ * `originalConversationID` must be present. Passing both (or neither) is a
+ * compile error; the runtime check remains as defense for JS callers.
+ */
+export type TransactionStatusRequest = TransactionStatusBase &
+  (
+    | { readonly transactionID: string; readonly originalConversationID?: never }
+    | { readonly transactionID?: never; readonly originalConversationID: string }
+  );
 
 /** Account balance query request body. */
 export interface AccountBalanceRequest {
   readonly initiator: string;
   readonly securityCredential: string;
-  readonly commandID: CommandID;
+  /** Defaults to AccountBalance when omitted. */
+  readonly commandID?: CommandID | undefined;
   readonly partyA: string;
-  readonly identifierType?: string;
-  readonly remarks?: string;
+  readonly identifierType?: string | undefined;
+  readonly remarks: string;
   readonly queueTimeOutURL: string;
   readonly resultURL: string;
 }
@@ -131,11 +147,12 @@ export interface AccountBalanceRequest {
 export interface ReversalRequest {
   readonly initiator: string;
   readonly securityCredential: string;
-  readonly commandID: CommandID;
+  /** Defaults to TransactionReversal when omitted. */
+  readonly commandID?: CommandID | undefined;
   readonly transactionID: string;
   readonly amount: number;
   readonly receiverParty: string;
-  readonly recieverIdentifierType?: string;
+  readonly recieverIdentifierType?: string | undefined;
   readonly resultURL: string;
   readonly queueTimeOutURL: string;
   readonly remarks: string;
@@ -155,7 +172,11 @@ export interface C2BSimulateRequest {
   readonly commandID: CommandID;
   readonly amount: number;
   readonly msisdn: string;
-  readonly billRefNumber: string;
+  /**
+   * Required for `CustomerPayBillOnline` simulations; omit (or pass
+   * `undefined`) for `CustomerBuyGoodsOnline`.
+   */
+  readonly billRefNumber?: string | undefined;
 }
 
 /**
@@ -341,9 +362,9 @@ export interface AsyncResult {
   readonly ResultDesc: string;
   readonly OriginatorConversationID: string;
   readonly ConversationID: string;
-  /** Unparsed JSON payload for advanced callers. */
+  /** M-Pesa receipt number when present. */
   readonly TransactionReceipt?: string;
-  readonly B2CUtilityAccountAvailableFunds?: string;
+readonly B2CUtilityAccountAvailableFunds?: string;
   readonly B2CUtilityAccountPaidFunds?: string;
   readonly B2CWorkingAccountAvailableFunds?: string;
   readonly B2CWorkingAccountPaidFunds?: string;

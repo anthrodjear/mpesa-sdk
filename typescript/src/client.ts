@@ -39,7 +39,7 @@
  * @packageDocumentation
  */
 
-import { Config, Environment } from "./config.js";
+import { Config, ConfigError, Environment } from "./config.js";
 import { MpesaError } from "./errors.js";
 import {
   generatePassword,
@@ -47,6 +47,7 @@ import {
   newOriginatorID,
 } from "./helpers.js";
 import { TokenManager } from "./auth.js";
+import { readBodyBounded } from "./_bounded-read.js";
 import type {
   STKPushRequest,
   STKQueryRequest,
@@ -157,46 +158,9 @@ function requireLengthRange(field: string, value: string, min: number, max: numb
 }
 
 /**
- * Bounded response-body reader (parity: go `io.ReadAll(io.LimitReader(
- * resp.Body, maxResponseLen+1))`). Accumulates stream chunks and aborts the
- * moment the running byte total exceeds `maxBytes` — an oversized body is
- * never fully materialized, even when no honest Content-Length header is
- * present. The Content-Length precheck at call sites remains the first,
- * cheapest guard; this loop is the second.
+ * Bounded response-body reader lives in `./_bounded-read.js` (shared with
+ * auth.ts — single implementation, tree-shake friendly).
  */
-async function readBodyBounded(
-  body: ReadableStream<Uint8Array> | null,
-  label: string,
-  maxBytes: number,
-): Promise<string> {
-  if (body === null) return "";
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value && value.byteLength > 0) {
-        total += value.byteLength;
-        if (total > maxBytes) {
-          await reader.cancel();
-          throw new Error(`mpesa: ${label} response exceeds ${maxBytes} bytes`);
-        }
-        chunks.push(value);
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder("utf-8").decode(merged);
-}
 
 // ─── MpesaClient ──────────────────────────────────────────────────────────────
 
@@ -279,8 +243,10 @@ export class MpesaClient {
   /**
    * Create a MpesaClient from environment variables. Reads
    * `MPESA_CONSUMER_KEY`, `MPESA_CONSUMER_SECRET`, `MPESA_SHORTCODE`,
-   * `MPESA_PASSKEY`, and optionally `MPESA_ENVIRONMENT`.
+   * `MPESA_PASSKEY`, and optionally `MPESA_ENVIRONMENT` (accepted values:
+   * exactly `"sandbox"` or `"production"`; unset defaults to sandbox).
    *
+   * @throws {ConfigError} When `MPESA_ENVIRONMENT` is set to anything else.
    * @throws {Error} When required environment variables are missing.
    *
    * @example
@@ -293,10 +259,19 @@ export class MpesaClient {
     const secret = process.env.MPESA_CONSUMER_SECRET ?? "";
     const shortcode = process.env.MPESA_SHORTCODE ?? "";
     const passkey = process.env.MPESA_PASSKEY ?? "";
-    const envName = (process.env.MPESA_ENVIRONMENT ?? "sandbox").toLowerCase();
-    const environment = envName === "production"
-      ? Environment.PRODUCTION
-      : Environment.SANDBOX;
+    const envName = process.env.MPESA_ENVIRONMENT;
+    let environment: Environment;
+    if (envName === undefined) {
+      environment = Environment.SANDBOX;
+    } else if (envName === "sandbox") {
+      environment = Environment.SANDBOX;
+    } else if (envName === "production") {
+      environment = Environment.PRODUCTION;
+    } else {
+      throw new ConfigError(
+        `mpesa: MPESA_ENVIRONMENT must be "sandbox" or "production", got ${JSON.stringify(envName)}`,
+      );
+    }
     return new MpesaClient({
       config: new Config({ consumerKey: key, consumerSecret: secret, shortcode, passkey, environment }),
     });
@@ -652,27 +627,28 @@ export class MpesaClient {
    * ```
    */
   async transactionStatus(req: TransactionStatusRequest): Promise<ConversationResponse> {
-    // Value copy
+    // Value copy (spread of the XOR union stays non-mutating)
     const r = { ...req };
 
-    // Inject defaults
-    if (!r.commandID) r.commandID = CommandID.TransactionStatusQuery;
-    if (!r.identifierType) r.identifierType = "4";
+    // Injected defaults via locals — never mutate the caller's view
+    const commandID = r.commandID ?? CommandID.TransactionStatusQuery;
+    const identifierType = r.identifierType ?? "4";
 
     // Validate — exactly one of TransactionID or OriginalConversationID
+    // (ALSO enforced at the type level; these checks guard JS callers)
     if (!r.transactionID && !r.originalConversationID) {
       throw new Error("mpesa: exactly one of TransactionID or OriginalConversationID is required");
     }
     if (r.transactionID && r.originalConversationID) {
       throw new Error("mpesa: exactly one of TransactionID or OriginalConversationID must be set, got both");
     }
-    if (r.commandID.value !== CommandID.TransactionStatusQuery.value) {
+    if (commandID.value !== CommandID.TransactionStatusQuery.value) {
       throw new Error("mpesa: TransactionStatus CommandID must be TransactionStatusQuery");
     }
     requireNonEmpty("Initiator", r.initiator);
     requireNonEmpty("SecurityCredential", r.securityCredential);
     requireNonEmpty("PartyA", r.partyA);
-    requireLengthRange("Remarks", r.remarks ?? "", 1, 100);
+    requireLengthRange("Remarks", r.remarks, 1, 100);
     requireURL("ResultURL", r.resultURL);
     requireURL("QueueTimeOutURL", r.queueTimeOutURL);
 
@@ -680,12 +656,12 @@ export class MpesaClient {
     const payload: Record<string, unknown> = {
       Initiator: r.initiator,
       SecurityCredential: r.securityCredential,
-      CommandID: r.commandID,
+      CommandID: commandID,
       PartyA: r.partyA,
-      IdentifierType: r.identifierType,
+      IdentifierType: identifierType,
       ResultURL: r.resultURL,
       QueueTimeOutURL: r.queueTimeOutURL,
-      Remarks: r.remarks ?? "",
+      Remarks: r.remarks,
     };
     if (r.transactionID !== undefined) {
       payload["TransactionID"] = r.transactionID;
@@ -797,7 +773,7 @@ export class MpesaClient {
     requireNonEmpty("Initiator", r.initiator);
     requireNonEmpty("SecurityCredential", r.securityCredential);
     requireNonEmpty("PartyA", r.partyA);
-    requireLengthRange("Remarks", r.remarks ?? "", 1, 100);
+    requireLengthRange("Remarks", r.remarks, 1, 100);
     requireURL("QueueTimeOutURL", r.queueTimeOutURL);
     requireURL("ResultURL", r.resultURL);
 
@@ -808,7 +784,7 @@ export class MpesaClient {
       CommandID: r.commandID,
       PartyA: r.partyA,
       IdentifierType: r.identifierType,
-      Remarks: r.remarks ?? "",
+      Remarks: r.remarks,
       QueueTimeOutURL: r.queueTimeOutURL,
       ResultURL: r.resultURL,
     };

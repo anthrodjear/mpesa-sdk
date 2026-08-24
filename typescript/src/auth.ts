@@ -32,6 +32,7 @@
  */
 
 import { MpesaError } from "./errors.js";
+import { readBodyBounded } from "./_bounded-read.js";
 import type { OAuthToken } from "./types.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -50,45 +51,9 @@ const MAX_BODY_BYTES = 1 << 20;
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 /**
- * Bounded response-body reader (parity: go `io.ReadAll(io.LimitReader(
- * resp.Body, _MAX_BODY_BYTES+1))`). Accumulates stream chunks and aborts the
- * moment the running byte total exceeds `maxBytes` — an oversized body is
- * never fully materialized, even when no honest Content-Length header is
- * present.
+ * Bounded response-body reader lives in `./_bounded-read.js` (shared with
+ * client.ts — single implementation, tree-shake friendly).
  */
-async function readBodyBounded(
-  body: ReadableStream<Uint8Array> | null,
-  label: string,
-  maxBytes: number,
-): Promise<string> {
-  if (body === null) return "";
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value && value.byteLength > 0) {
-        total += value.byteLength;
-        if (total > maxBytes) {
-          await reader.cancel();
-          throw new Error(`mpesa: ${label} response exceeds ${maxBytes} bytes`);
-        }
-        chunks.push(value);
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder("utf-8").decode(merged);
-}
 
 // ─── Refresh cadence ──────────────────────────────────────────────────────────
 

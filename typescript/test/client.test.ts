@@ -7,7 +7,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MpesaClient, createClient, createClientFromEnv } from "../src/client.js";
-import { Config, Environment } from "../src/config.js";
+import { Config, ConfigError, Environment } from "../src/config.js";
 import { MpesaError } from "../src/errors.js";
 import {
   TransactionType,
@@ -132,6 +132,48 @@ describe("MpesaClient construction", () => {
     vi.stubEnv("MPESA_ENVIRONMENT", "sandbox");
     const client = createClientFromEnv();
     expect(client).toBeInstanceOf(MpesaClient);
+  });
+
+  it("throws ConfigError on unknown MPESA_ENVIRONMENT (typo 'prod')", () => {
+    vi.stubEnv("MPESA_CONSUMER_KEY", "env-key");
+    vi.stubEnv("MPESA_CONSUMER_SECRET", "env-secret");
+    vi.stubEnv("MPESA_SHORTCODE", "12345");
+    vi.stubEnv("MPESA_PASSKEY", "env-passkey");
+    vi.stubEnv("MPESA_ENVIRONMENT", "prod");
+    let caught: unknown;
+    try {
+      createClientFromEnv();
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConfigError);
+    expect((caught as Error).message).toBe(
+      'mpesa: MPESA_ENVIRONMENT must be "sandbox" or "production", got "prod"',
+    );
+  });
+
+  it("accepts exactly 'production' for MPESA_ENVIRONMENT", () => {
+    vi.stubEnv("MPESA_CONSUMER_KEY", "env-key");
+    vi.stubEnv("MPESA_CONSUMER_SECRET", "env-secret");
+    vi.stubEnv("MPESA_SHORTCODE", "12345");
+    vi.stubEnv("MPESA_PASSKEY", "env-passkey");
+    vi.stubEnv("MPESA_ENVIRONMENT", "production");
+    expect(createClientFromEnv().toString()).toContain("production");
+  });
+
+  it("defaults MPESA_ENVIRONMENT to sandbox when the variable is absent", () => {
+    vi.stubEnv("MPESA_CONSUMER_KEY", "env-key");
+    vi.stubEnv("MPESA_CONSUMER_SECRET", "env-secret");
+    vi.stubEnv("MPESA_SHORTCODE", "12345");
+    vi.stubEnv("MPESA_PASSKEY", "env-passkey");
+    const had = process.env.MPESA_ENVIRONMENT;
+    delete process.env.MPESA_ENVIRONMENT;
+    try {
+      const client = createClientFromEnv();
+      expect(client.toString()).toContain("sandbox");
+    } finally {
+      if (had !== undefined) process.env.MPESA_ENVIRONMENT = had;
+    }
   });
 
   it("toString is credential-safe", () => {
