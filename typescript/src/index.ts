@@ -86,6 +86,9 @@ export {
   newOriginatorID,
 } from "./helpers.js";
 
+// ── Callback tokens ─────────────────────────────────────────────────────
+export { callbackTokenEqual, newCallbackToken } from "./callback-token.js";
+
 // ── Classification ──────────────────────────────────────────────────────
 export { ResultClass, classifyResultCode } from "./classification.js";
 
