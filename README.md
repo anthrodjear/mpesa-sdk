@@ -185,10 +185,30 @@ classifyResultCode("1037") === ResultClass.INCONCLUSIVE // member name; serializ
 
 ### Receiving payment callbacks (STK Push results)
 
-Daraja POSTs the push outcome to your `CallBackURL`. Callbacks are **unsigned** — see [Security](docs/apis/getting-started.md#callback-source-ip-whitelist) — so bind every payload on `CheckoutRequestID` against your own records and ACK `200` immediately. Python has the most convenient parser:
+Daraja POSTs the push outcome to your `CallBackURL`. Callbacks are **unsigned** — there is no signature to verify, so rank your controls: settle **only** via a query bound to your stored `CheckoutRequestID` (a forged body parses fine and never survives the round-trip); gate the endpoint with URL tokens (`new_callback_token()` / Go `NewCallbackToken()` / TS `newCallbackToken()`); bind on `CheckoutRequestID` for **dedup only — it authenticates nothing against forgery**; IP allowlists are defense-in-depth. Full threat model: [SECURITY.md](SECURITY.md). Settle-first in each language:
 
 ```python
-from mpesa import ResultClass, StkCallbackResult
+resp = client.stk_query(STKQueryRequest(checkout_request_id=crid))
+if resp.result_code == "0":
+    settle(order)   # settled by query, never by the bare hit
+```
+
+```go
+res, err := c.STKQuery(ctx, mpesa.STKQueryRequest{CheckoutRequestID: crid})
+if err == nil && res.Classify() == mpesa.ResultClassSuccess {
+    settle(order) // settled by query, never by the bare hit
+}
+```
+
+```ts
+const res = await client.stkQuery({ checkoutRequestID: crid });
+if (parseInt(res.ResultCode, 10) === 0) settle(order); // by query, never the bare hit
+```
+
+Python has the most convenient parser:
+
+```python
+from mpesa import ResultClass, STKQueryRequest, StkCallbackResult
 from flask import Flask, request
 
 app = Flask(__name__)
@@ -198,21 +218,22 @@ orders = {}  # checkout_request_id → your original order record
 def stk_callback():
     result = StkCallbackResult.from_json(request.get_data())  # raw body bytes
 
-    order = orders.get(result.checkout_request_id)            # bind FIRST
+    order = orders.get(result.checkout_request_id)            # dedup FIRST (not authentication)
     if order is None:
         return "", 200                                        # unknown: ACK, ignore
 
-    cls = result.classify()
-    if cls is ResultClass.SUCCESS:
-        settle(order, receipt=result.mpesa_receipt(), amount=result.amount())
-    elif cls is ResultClass.FAILURE:
-        mark_failed(order, reason=result.result_desc)
-    # else INDETERMINATE: schedule a stk_query reconciliation — never refund here.
+    if result.classify() is ResultClass.SUCCESS:              # callback = hint only…
+        resp = client.stk_query(STKQueryRequest(              # …settle via the query round-trip
+            checkout_request_id=result.checkout_request_id))
+        if resp.result_code == "0":
+            settle(order, receipt=result.mpesa_receipt(), amount=result.amount())
+    else:
+        mark_pending_reconcile(order)   # failure/indeterminate → stk_query decides, never refund here
 
     return "", 200                                            # ACK immediately
 ```
 
-(`settle`/`mark_failed` are your functions.) Typed metadata helpers: `amount()`, `mpesa_receipt()`, `phone_number()`, `transaction_date()`, plus `metadata()` for the raw first-wins map — Go exposes `STKCallbackResult.MetadataMap()`, TypeScript `new MetadataMap(items)` with `.get(key)`. Go also offers `mpesa.ParseSTKCallback(body)` accepting the full envelope or a bare result object, and `STKQueryResponse.Classify()` mirroring Python's `resp.classify()`. Cap request bodies at your framework level too; `from_json` refuses bodies over 1 MiB characters regardless. Callbacks late or missing? Poll synchronously: `stk_query(STKQueryRequest(checkout_request_id=…))` returns the outcome directly (`resp.result_code`, string-normalized) — back off between polls (+30s/+60s/+120s), classify each result, and only settle on terminal codes.
+(`client`, `settle`, `mark_pending_reconcile` are your functions.) Typed metadata helpers: `amount()`, `mpesa_receipt()`, `phone_number()`, `transaction_date()`, plus `metadata()` for the raw first-wins map — Go exposes `STKCallbackResult.MetadataMap()`, TypeScript `new MetadataMap(items)` with `.get(key)`. Go also offers `mpesa.ParseSTKCallback(body)` accepting the full envelope or a bare result object, and `STKQueryResponse.Classify()` mirroring Python's `resp.classify()`. Cap request bodies at your framework level too; `from_json` refuses bodies over 1 MiB characters regardless. Callbacks late or missing? Poll synchronously: `stk_query(STKQueryRequest(checkout_request_id=…))` returns the outcome directly (`resp.result_code`, string-normalized) — back off between polls (+30s/+60s/+120s), classify each result, and only settle on terminal codes.
 
 ### Async results (B2C / Transaction Status / Reversal / Account Balance)
 

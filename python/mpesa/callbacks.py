@@ -2,14 +2,17 @@
 (mirrors go/callbacks.go).
 
 SECURITY POSTURE: these payloads carry NO HMAC signature -- anyone who
-can reach your endpoint can forge one. Ingestion must: cap request
-bodies in the web framework (chars; >=1 MiB analogue of Go's
-``http.MaxBytesReader``) before :meth:`from_json`; bind on
-``checkout_request_id`` against YOUR original request record; treat all
-metadata values as ADVISORY ONLY (a forged first item is
-indistinguishable from genuine -- confirm via STK Query before any
-irreversible fulfillment); classify per ADR-010-m-pesa-adapter.md
-(INDETERMINATE outcomes may still settle minutes later).
+can reach your endpoint can forge one. Ranked controls: settle ONLY via
+STK Query (ResultCode == "0") bound to YOUR original request record --
+a body that parses is never proof of payment; cap request bodies in the
+web framework (chars; >=1 MiB analogue of Go's ``http.MaxBytesReader``)
+before :meth:`from_json`; gate the endpoint with callback_token.py's
+URL tokens; binding on ``checkout_request_id`` is a DEDUP/IDEMPOTENCY
+control, NOT origin authentication (a forged body carries whatever IDs
+its author likes); treat all metadata values as ADVISORY ONLY (a forged
+first item is indistinguishable from genuine); classify per
+ADR-010-m-pesa-adapter.md (INDETERMINATE outcomes may still settle
+minutes later).
 
 Go-divergence footnote: stdlib ``json.loads`` ACCEPTS NaN/Infinity
 literals Go's encoder rejects; typed helpers refuse them by gate.

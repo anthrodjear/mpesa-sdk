@@ -30,7 +30,12 @@ Please use GitHub's private vulnerability reporting — the **"Report a vulnerab
 
 Brief guidance when integrating this SDK:
 
-- **Callbacks are UNSIGNED.** Daraja C2B validation/confirmation callbacks carry no cryptographic signature. Enforce authenticity at your application layer: IP allowlisting against Safaricom's published ranges, an HMAC over your own callback contract, or binding results to the `CheckoutRequestID` you generated for the original request.
-- **Callback URLs are bearer capabilities.** Embed `newCallbackToken()` in your CallBackURL path and gate hits with `callbackTokenEqual()`; a hit proves URL knowledge only — never settle from a callback body. Reconcile via `stkQuery` bound to your CheckoutRequestID, and scrub tokens from access logs/APM.
+- **Callbacks are UNSIGNED — rank your controls.** Daraja callbacks carry no cryptographic signature: anyone who learns your endpoint URL can POST a body that parses cleanly. Defend in this order:
+  1. **PRIMARY — pull-verification.** Treat every callback as a *hint*. Settle only via `stkQuery`/`STKQuery` with `ResultCode == 0`, bound to the `CheckoutRequestID` record you persisted when you fired the push. A forged body cannot survive the round-trip — this kills forged-content attacks outright.
+  2. **ENDPOINT control — bearer-capability URL tokens.** Embed an unguessable token in your registered path and gate every hit on it: Go `NewCallbackToken()`/`CallbackTokenEqual()`, Python `new_callback_token()`/`callback_token_equal()`, TypeScript `newCallbackToken()`/`callbackTokenEqual()`. This proves the caller knows the URL — nothing more. Scrub tokens from access logs/APM traces.
+  3. **ANTI-REPLAY ONLY — `CheckoutRequestID` binding/dedup.** Matching an inbound ID against your records prevents duplicate processing of one event. It authenticates NOTHING against forgery: the ID rides inside the unsigned body, so a replayed or guessed ID passes any binding check.
+  4. **Defense-in-depth — IP allowlisting.** Restrict ingress to Safaricom's published gateway ranges (maintained by you; they can change without notice). Never the primary control.
+
+  Sign callback bodies yourself **only if you run your own signing relay** between Daraja and your service — Daraja signs nothing.
 - **Never commit consumer credentials.** Consumer Key/Secret must live in environment variables or a secrets manager — not in source control, logs, or client-side code.
 - **Indeterminate results must not auto-fail.** Timeouts or ambiguous Daraja responses should be recorded as *pending* and reconciled via the transaction status query — auto-marking them as failed risks double-charging customers.

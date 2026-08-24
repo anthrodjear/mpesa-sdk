@@ -48,6 +48,12 @@ These certs are for API security credentials only — NOT for the M-PESA Organiz
   LocalTunnel). Avoid literal keywords in paths: `mpesa`, `safaricom`, `exe`, `exec`, `cmd`,
   `sql`, `query`.
 
+A hit on these URLs is a **hint**, never proof of payment — Daraja signs nothing. Rank your
+controls: settle only via Transaction Status / `stk_query` (`ResultCode == 0`) bound to your
+stored `CheckoutRequestID`; gate the endpoint with unguessable URL-path tokens; treat ID
+matching as duplicate-suppression only (it authenticates nothing vs forgery). Full hierarchy:
+[SECURITY.md](../../SECURITY.md).
+
 ## Callback Source IP Whitelist
 
 Whitelist these gateway IPs so only Safaricom notifications are processed (official list):
@@ -58,8 +64,10 @@ Whitelist these gateway IPs so only Safaricom notifications are processed (offic
 196.201.212.129  196.201.212.136  196.201.212.74   196.201.212.69
 ```
 
-⚠️ Complement, don't replace, application-level verification: unsigned callbacks mean you also
-need CheckoutRequestID binding + field validation (ADR-010). IP lists can change without notice.
+⚠️ Allowlisting is **defense-in-depth, not authentication**: an IP identifies the network path,
+not payload truth — and this list can change without notice (keep yours configurable, never
+hardcoded). The primary control remains pull-verification via query bound to your own records;
+the full controls hierarchy lives in [SECURITY.md](../../SECURITY.md) (see also ADR-010).
 
 ## Going Live Checklist
 

@@ -12,10 +12,14 @@ import (
 // STKCallback is the top-level envelope POSTed to CallBackURL.
 //
 // Safaricom callbacks carry NO HMAC signature, so ingestion endpoints must
-// harden themselves: bind on CheckoutRequestID, validate amount/phone against
-// the original request, and wrap request bodies in http.MaxBytesReader
-// (recommend >=1 MiB cap) before unmarshalling into this type — see
-// callbacktoken.go for bearer-capability URL tokens that gate the endpoint.
+// harden themselves. Ranked controls: settle ONLY via STKQuery with
+// ResultCode==0 bound to YOUR CheckoutRequestID record (a body that parses
+// is never proof of payment — forged callbacks parse fine); gate the
+// endpoint with callbacktoken.go's bearer-capability URL tokens;
+// CheckoutRequestID binding is a DEDUP/IDEMPOTENCY control, not origin
+// authentication — a forged body carries whatever IDs its author likes.
+// Validate amount/phone against the original request and wrap bodies in
+// http.MaxBytesReader (recommend >=1 MiB cap) before unmarshalling.
 type STKCallback struct {
 	Body STKCallbackBody `json:"Body"`
 }
@@ -75,8 +79,10 @@ func (r STKCallbackResult) DuplicateKeys() int {
 // OR a bare stkCallback result object (fixtures, replayed captures).
 // Shape problems are loud errors; absent CallbackMetadata stays tolerated —
 // read values defensively via MetadataMap. Bodies carry NO signature: cap
-// them upstream (http.MaxBytesReader ≥ 1 MiB) and bind on
-// CheckoutRequestID against your own request record before acting.
+// them upstream (http.MaxBytesReader ≥ 1 MiB). Binding on CheckoutRequestID
+// against your own request record dedups/idempotency-guards processing —
+// it is NOT origin authentication; settle via STKQuery before any
+// irreversible action.
 func ParseSTKCallback(body []byte) (*STKCallbackResult, error) {
 	var envelope struct {
 		Body *struct {

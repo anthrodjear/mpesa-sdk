@@ -20,9 +20,10 @@ Quickstart (credentials via env vars, per client.py convention)::
     resp = client.stk_push(STKPushRequest(...))
 
 Safety notes: INDETERMINATE results may still settle minutes later --
-never auto-fail/auto-refund them; callbacks are UNSIGNED -- bind on
-CheckoutRequestID against your own records; secrets/tokens are redacted
-from every repr.
+never auto-fail/auto-refund them; callbacks are UNSIGNED -- settle only
+via stk_query bound to YOUR CheckoutRequestID record (binding dedups
+duplicate deliveries, it does not authenticate origin); secrets/tokens
+are redacted from every repr.
 """
 
 from .auth import TokenManager

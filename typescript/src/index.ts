@@ -44,9 +44,11 @@
  *   timeout, `ResultClass.INCONCLUSIVE`, or a callback status that is
  *   neither success nor failure, the SDK surfaces the raw result
  *   verbatim — callers must reconcile externally.
- * - **Callbacks are unsigned.** The SDK does not validate callback
- *   signatures; protect your callback endpoints with HMAC verification
- *   and IP allowlisting.
+ * - **Callbacks are unsigned.** Daraja sends NO signature to verify.
+ *   Binding on CheckoutRequestID is a dedup/idempotency control, not origin
+ *   authentication — settle only via {@link MpesaClient.stkQuery} bound to
+ *   your stored CheckoutRequestID; see the bearer-capability bullet below
+ *   for endpoint gating, and reserve IP allowlisting for defense-in-depth.
  * - **Callback URLs are bearer capabilities.** Embed
  *   {@link newCallbackToken} in your CallBackURL path and gate hits with
  *   {@link callbackTokenEqual}; a hit proves URL knowledge only — never

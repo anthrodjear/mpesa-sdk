@@ -26,8 +26,11 @@
 // indeterminate, never failed: debits have been observed landing minutes
 // later, and auto-failing risks refunding paid orders. STK Password and
 // Timestamp MUST derive from one shared EAT instant (the two-clock bug
-// causes intermittent 500.001.1001). Callbacks carry no HMAC signature: bind
-// on CheckoutRequestID, validate fields, and cap ingestion body size.
+// causes intermittent 500.001.1001). Callbacks carry no HMAC signature:
+// settle only via STKQuery bound to YOUR CheckoutRequestID record, gate
+// endpoints with callbacktoken.go URL tokens, and cap ingestion body size —
+// binding on CheckoutRequestID dedups deliveries, it does not authenticate
+// origin.
 //
 // # Token caching across replicas
 //
