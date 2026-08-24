@@ -1,5 +1,6 @@
 """Tests for mpesa.auth -- generation-guarded token cache semantics."""
 
+import json
 import sys
 import threading
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,11 @@ class FakeResponse:
         import json as _json
         return _json.loads(self.content)
 
+    def iter_content(self, chunk_size):
+        blob = self.content
+        for i in range(0, len(blob), chunk_size):
+            yield blob[i:i + chunk_size]
+
 
 class FakeSession:
     """Programmable session recording every OAuth call."""
@@ -35,10 +41,8 @@ class FakeSession:
         self.responses = list(responses)
         self.calls: list[dict] = []
 
-    def get(self, url, timeout=None, headers=None, allow_redirects=True):
-        self.calls.append({"url": url, "timeout": timeout,
-                           "headers": headers,
-                           "allow_redirects": allow_redirects})
+    def get(self, url, **kwargs):
+        self.calls.append({"url": url, **kwargs})
         return self.responses.pop(0)
 
 
@@ -234,6 +238,52 @@ def test_oauth_fetch_refuses_redirects_and_huge_body():
     tm2 = TokenManager(huge, "https://sandbox.safaricom.co.ke", "k", "s")
     with pytest.raises(ValueError, match="exceeds 1048576"):
         tm2.get_token()
+
+
+class StreamOnlyResponse:
+    """Mirrors test_client.StreamOnlyResponse: exposes ONLY iter_content
+    -- no .content attribute exists, so any pre-read .content access
+    inside _refresh_locked would blow up as AttributeError."""
+
+    def __init__(self, status_code=200, text="{}", chunks=None):
+        self.status_code = status_code
+        self._text = text
+        self._chunks = chunks
+        self.headers = {"content-type": "application/json"}
+        self.parse_attempts = 0
+
+    def json(self):
+        self.parse_attempts += 1
+        return json.loads(self._text)
+
+    def iter_content(self, chunk_size):
+        if self._chunks is not None:
+            yield from self._chunks   # pre-chunked wire stream, verbatim
+            return
+        blob = self._text.encode()
+        for i in range(0, len(blob), chunk_size):
+            yield blob[i:i + chunk_size]
+
+
+def test_oauth_refresh_streams_bounded_read_without_dot_content():
+    resp = StreamOnlyResponse(
+        text='{"access_token":"tok-stream","expires_in":"3599"}')
+    session = FakeSession([resp])
+    tm = TokenManager(session, "https://sandbox.safaricom.co.ke", "k", "s")
+    assert tm.get_token() == "tok-stream"
+    assert session.calls[0]["stream"] is True
+    assert session.calls[0]["allow_redirects"] is False
+    assert not hasattr(resp, "content")   # fake itself never had one
+
+
+def test_oauth_oversize_aborts_midstream_before_parse():
+    over = b'{"access_token":"' + b"A" * (1 << 20) + b'"}'
+    resp = StreamOnlyResponse(chunks=[over[:700_000], over[700_000:]])
+    session = FakeSession([resp])
+    tm = TokenManager(session, "https://sandbox.safaricom.co.ke", "k", "s")
+    with pytest.raises(ValueError, match=r"exceeds 1048576"):
+        tm.get_token()
+    assert resp.parse_attempts == 0       # cap fired mid-stream; no parse
 
 
 def test_decode_error_wrapped_as_value_error():

@@ -21,6 +21,7 @@ Example::
 from __future__ import annotations
 
 import base64
+import json
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Callable
@@ -35,6 +36,8 @@ __all__ = ["TokenManager"]
 _OAUTH_PATH = "/oauth/v1/generate?grant_type=client_credentials"
 _CREDENTIALS_MSG = ("mpesa: Config.consumer_key and Config.consumer_secret "
                     "are required before calling any endpoint")
+# Local mirror of client._MAX_RESPONSE_BYTES: importing it would create a
+# circular import (client.py already imports TokenManager from this module).
 _MAX_BODY_CHARS = 1_048_576
 
 
@@ -140,17 +143,27 @@ class TokenManager:
         response = self._session.get(
             f"{self._base_url}{_OAUTH_PATH}", timeout=self._timeout,
             headers={"Authorization": f"Basic {auth.decode('ascii')}"},
-            allow_redirects=False)
-        if len(response.content) > _MAX_BODY_CHARS:
-            raise ValueError(
-                f"mpesa: oauth/v1/generate response exceeds "
-                f"{_MAX_BODY_CHARS} bytes")
+            allow_redirects=False, stream=True)
+        # Bounded streaming read (Go LimitReader parity with
+        # client._send): cap the DECOMPRESSED byte count during transfer
+        # via iter_content(MAX+1) so a gzip bomb aborts mid-stream instead
+        # of being fully materialised by a pre-read .content.
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_content(_MAX_BODY_CHARS + 1):
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > _MAX_BODY_CHARS:
+                raise ValueError(
+                    f"mpesa: oauth/v1/generate response exceeds "
+                    f"{_MAX_BODY_CHARS} bytes")
+        body = b"".join(chunks)
         if not 200 <= response.status_code <= 299:
             content_type = response.headers.get("content-type", "")
             raise MpesaError.from_response(
-                response.status_code, response.content, content_type)
+                response.status_code, body, content_type)
         try:
-            payload = response.json()
+            payload = json.loads(body)
         except Exception as exc:  # noqa: BLE001 - wrap any decoder blow-up
             raise ValueError(f"mpesa: decode oauth response: {exc}") from exc
         token_response = OAuthToken.from_json(payload)
