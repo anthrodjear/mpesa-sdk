@@ -1,3 +1,3 @@
-module github.com/mpesa-sdk/go
+module github.com/anthrodjear/mpesa-sdk/go
 
 go 1.22

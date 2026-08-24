@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	mpesa "github.com/mpesa-sdk/go"
+	mpesa "github.com/anthrodjear/mpesa-sdk/go"
 )
 
 // stubTransport serves canned Daraja payloads so examples run offline.

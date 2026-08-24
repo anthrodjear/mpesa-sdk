@@ -14,7 +14,7 @@ import (
 	"os"
 	"time"
 
-	mpesa "github.com/mpesa-sdk/go"
+	mpesa "github.com/anthrodjear/mpesa-sdk/go"
 )
 
 func main() {
