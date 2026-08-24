@@ -26,6 +26,7 @@ from every repr.
 """
 
 from .auth import TokenManager
+from .callback_token import callback_token_equal, new_callback_token
 from .callbacks import MetadataItem, StkCallbackResult
 from .classification import ResultClass, classify_result_code
 from .client import MpesaClient
@@ -99,8 +100,10 @@ __all__ = [
     "TokenManager",
     "TransactionStatusRequest",
     "TransactionType",
+    "callback_token_equal",
     "classify_result_code",
     "generate_password",
+    "new_callback_token",
     "normalize_phone",
     "parse_balance_segments",
     "security_credential",
