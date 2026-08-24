@@ -99,15 +99,36 @@ describe("CommandID", () => {
     }
   });
 
-  it("convenience names map to expected wire values", () => {
+  // Values pinned against docs/apis/b2c.md, transaction-status.md,
+  // reversal.md and account-balance.md (== Go const block in go/enums.go).
+  it("B2C commands pin to the documented set {SalaryPayment, BusinessPayment, PromotionPayment}", () => {
+    expect(CommandID.SalaryPayment.value).toBe("SalaryPayment");
+    expect(CommandID.SalaryPayment.wireKey).toBe("SalaryPayment");
+    expect(CommandID.BusinessPayment.value).toBe("BusinessPayment");
+    expect(CommandID.BusinessPayment.wireKey).toBe("BusinessPayment");
+    expect(CommandID.PromotionPayment.value).toBe("PromotionPayment");
+    expect(CommandID.PromotionPayment.wireKey).toBe("PromotionPayment");
+  });
+
+  it("fabricated B2C values are not members", () => {
+    const names = CommandID.ALL.map((c) => c.value);
+    expect(names).not.toContain("MerchantPayment");
+    expect(names).not.toContain("B2C");
+  });
+
+  it("Reversal command pins to wire value TransactionReversal (docs/apis/reversal.md)", () => {
+    expect(CommandID.ReverseTransaction.value).toBe("TransactionReversal");
+    expect(CommandID.ReverseTransaction.wireKey).toBe("TransactionReversal");
+    expect(`${CommandID.ReverseTransaction}`).toBe("TransactionReversal");
+    expect(JSON.parse(JSON.stringify({ c: CommandID.ReverseTransaction })).c)
+      .toBe("TransactionReversal");
+  });
+
+  it("other endpoint commands pin their wire values", () => {
     expect(CommandID.PayBill.wireKey).toBe("CustomerPayBillOnline");
     expect(CommandID.PayGoods.wireKey).toBe("CustomerBuyGoodsOnline");
-    expect(CommandID.BusinessPayment.wireKey).toBe("BusinessPayment");
-    expect(CommandID.MerchantPayment.wireKey).toBe("MerchantPayment");
-    expect(CommandID.B2C.wireKey).toBe("B2C");
     expect(CommandID.TransactionStatusQuery.wireKey).toBe("TransactionStatusQuery");
     expect(CommandID.AccountBalance.wireKey).toBe("AccountBalance");
-    expect(CommandID.ReverseTransaction.wireKey).toBe("ReverseTransaction");
   });
 });
 
@@ -125,9 +146,31 @@ describe("ResponseType", () => {
 });
 
 describe("QRTrxCode", () => {
-  it("has a single DynamicQRCode member", () => {
-    expect(QRTrxCode.ALL).toHaveLength(1);
-    expect(QRTrxCode.DynamicQRCode.value).toBe("DynamicQRCode");
+  // Values pinned against docs/apis/dynamic-qr.md TrxCode enum
+  // (== go/enums.go QRTrxBuyGoods…QRTrxSendToBusiness).
+  it("has exactly the five documented members", () => {
+    expect(QRTrxCode.ALL).toHaveLength(5);
+    expect(QRTrxCode.ALL.map((c) => c.value)).toEqual(["BG", "WA", "PB", "SM", "SB"]);
+  });
+
+  it("pins each wire code to its documented meaning", () => {
+    expect(QRTrxCode.BuyGoods.value).toBe("BG"); // Pay Merchant (Buy Goods)
+    expect(QRTrxCode.WithdrawAtAgentTill.value).toBe("WA"); // Withdraw Cash at Agent Till
+    expect(QRTrxCode.Paybill.value).toBe("PB"); // Paybill/Business number
+    expect(QRTrxCode.SendMoney.value).toBe("SM"); // Send Money (mobile)
+    expect(QRTrxCode.SendToBusiness.value).toBe("SB"); // Sent to Business
+  });
+
+  it("every member renders its wire code via toString/toJSON", () => {
+    for (const trx of QRTrxCode.ALL) {
+      expect(trx.toString()).toBe(trx.wireKey);
+      expect(JSON.parse(JSON.stringify({ t: trx })).t).toBe(trx.wireKey);
+    }
+  });
+
+  it("coerce rejects fabricated codes like DynamicQRCode", () => {
+    const valid = QRTrxCode.ALL.map(e => e.value);
+    expect(() => MpesaEnum.coerce("DynamicQRCode", valid)).toThrow(TypeError);
   });
 });
 
@@ -149,6 +192,6 @@ describe("export styles", () => {
     expect(TransactionType.BillPayGoods).toBeInstanceOf(MpesaEnum);
     expect(CommandID.AccountBalance).toBeInstanceOf(MpesaEnum);
     expect(ResponseType.Success).toBeInstanceOf(MpesaEnum);
-    expect(QRTrxCode.DynamicQRCode).toBeInstanceOf(MpesaEnum);
+    expect(QRTrxCode.BuyGoods).toBeInstanceOf(MpesaEnum);
   });
 });

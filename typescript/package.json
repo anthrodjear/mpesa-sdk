@@ -27,6 +27,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:examples": "tsc -p tsconfig.examples.json --noEmit",
     "prepublishOnly": "npm run build && npm test"
   },
   "devDependencies": {

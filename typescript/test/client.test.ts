@@ -370,7 +370,7 @@ describe("All endpoints hit documented paths with Bearer", () => {
       merchantName: "TEST SUPERMARKET",
       refNo: "Invoice Test",
       amount: 1,
-      trxCode: QRTrxCode.DynamicQRCode,
+      trxCode: QRTrxCode.BuyGoods,
       cpi: "174379",
       size: "300",
     });
@@ -1153,7 +1153,7 @@ describe("Validation before network", () => {
         name: "qr zero amount",
         call: () => client.generateQRCode({
           merchantName: "m", refNo: "ref", amount: 0,
-          trxCode: QRTrxCode.DynamicQRCode, cpi: "174379", size: "300",
+          trxCode: QRTrxCode.BuyGoods, cpi: "174379", size: "300",
         }),
         want: "Amount",
       },
@@ -1286,7 +1286,7 @@ describe("QR Code validation", () => {
         merchantName: "m",
         refNo: "ref",
         amount: 1,
-        trxCode: QRTrxCode.DynamicQRCode,
+        trxCode: QRTrxCode.BuyGoods,
         cpi: "abc12",
         size: "300",
       }),
@@ -1303,7 +1303,7 @@ describe("QR Code validation", () => {
         merchantName: "m",
         refNo: "ref",
         amount: 1,
-        trxCode: QRTrxCode.DynamicQRCode,
+        trxCode: QRTrxCode.BuyGoods,
         cpi: "1234",
         size: "300",
       }),
@@ -1320,7 +1320,7 @@ describe("QR Code validation", () => {
         merchantName: "m",
         refNo: "ref",
         amount: 1,
-        trxCode: QRTrxCode.DynamicQRCode,
+        trxCode: QRTrxCode.BuyGoods,
         cpi: "174379",
         size: "-1",
       }),
@@ -1329,42 +1329,143 @@ describe("QR Code validation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Occassion wire key (double-s, Safaricom misspelling)
+// Endpoint command whitelists
 // ---------------------------------------------------------------------------
 
-describe("Occassion wire key", () => {
-  it("STK Push sends Occassion (double-s) not Occasion", async () => {
-    let capturedBody: Record<string, unknown> = {};
+describe("B2C CommandID whitelist", () => {
+  const baseReq = {
+    initiatorName: "i",
+    securityCredential: "c",
+    amount: 100,
+    partyA: "600992",
+    partyB: "254705912645",
+    remarks: "ok",
+    queueTimeOutURL: "https://a.com/t",
+    resultURL: "https://a.com/r",
+  };
 
-    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
-      const path = new URL(url).pathname;
-      if (path === "/oauth/v1/generate") {
+  it("rejects fabricated commands (MerchantPayment, B2C) before network", async () => {
+    let businessTouched = false;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (new URL(url).pathname === "/oauth/v1/generate") {
         return jsonResponse(VALID_TOKEN_RESPONSE);
       }
-      if (init?.body) {
-        capturedBody = JSON.parse(init.body as string);
-      }
+      businessTouched = true;
+      return jsonResponse({});
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    for (const bad of ["MerchantPayment", "B2C"]) {
+      await expect(
+        client.b2cPayout({
+          ...baseReq,
+          commandID: new CommandID(bad as "SalaryPayment"),
+        }),
+      ).rejects.toThrow("not in {SalaryPayment, BusinessPayment, PromotionPayment}");
+    }
+    expect(businessTouched).toBe(false);
+  });
+
+  it("accepts exactly the three documented commands", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
       return jsonResponse({
-        MerchantRequestID: "mr",
-        CheckoutRequestID: "ws_CO_1",
+        OriginatorConversationID: "o",
+        ConversationID: "AG_1",
         ResponseCode: "0",
         ResponseDescription: "ok",
-        CustomerMessage: "ok",
       });
     });
 
     const client = testClient("https://sandbox.safaricom.co.ke");
-    await client.stkPush({
-      ...validSTKPushRequest(),
-      occassion: "Project Alice",
+    for (const cmd of [
+      CommandID.SalaryPayment,
+      CommandID.BusinessPayment,
+      CommandID.PromotionPayment,
+    ]) {
+      await expect(client.b2cPayout({ ...baseReq, commandID: cmd })).resolves.toMatchObject({
+        ConversationID: "AG_1",
+      });
+    }
+  });
+});
+
+describe("Reversal CommandID guard", () => {
+  it("rejects any command whose value is not TransactionReversal", async () => {
+    let businessTouched = false;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (new URL(url).pathname === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      businessTouched = true;
+      return jsonResponse({});
     });
 
-    // Wire key must be double-s "Occassion" — NOT "Occasion"
-    expect(capturedBody["Occassion"]).toBe("Project Alice");
-    expect(capturedBody["Occasion"]).toBeUndefined();
-  });
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await expect(
+      client.reversal({
+        initiator: "i",
+        securityCredential: "c",
+        commandID: CommandID.AccountBalance, // wrong endpoint's command
+        transactionID: "R1",
+        amount: 10,
+        receiverParty: "600992",
+        remarks: "ok",
+        resultURL: "https://a.com/r",
+        queueTimeOutURL: "https://a.com/t",
+      }),
+    ).rejects.toThrow("must be TransactionReversal");
+    expect(businessTouched).toBe(false);
 
-  it("STK Push omits Occassion when not provided", async () => {
+    // And the accepted default pins the documented wire value.
+    expect(CommandID.ReverseTransaction.value).toBe("TransactionReversal");
+  });
+});
+
+describe("QR TrxCode whitelist", () => {
+  it("rejects fabricated codes and accepts all five documented codes", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
+      return jsonResponse({
+        ResponseCode: "AG_1",
+        RequestID: "rid",
+        ResponseDescription: "QR Code Successfully Generated",
+        QRCode: "payload",
+      });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    const base = {
+      merchantName: "m",
+      refNo: "ref",
+      amount: 1,
+      cpi: "174379",
+      size: "300",
+    };
+
+    await expect(
+      client.generateQRCode({
+        ...base,
+        trxCode: new QRTrxCode("DynamicQRCode"),
+      }),
+    ).rejects.toThrow("not in {BG, WA, PB, SM, SB}");
+
+    for (const trx of QRTrxCode.ALL) {
+      await expect(client.generateQRCode({ ...base, trxCode: trx })).resolves.toMatchObject({
+        QRCode: "payload",
+      });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Occasion wire key — STK Push never sends it; B2C uses double-s "Occassion"
+// ---------------------------------------------------------------------------
+
+describe("Occasion wire key", () => {
+  it("STK Push never sends Occassion/Occasion (Go/Py parity — field removed)", async () => {
     let capturedBody: Record<string, unknown> = {};
 
     fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
@@ -1387,9 +1488,144 @@ describe("Occassion wire key", () => {
     const client = testClient("https://sandbox.safaricom.co.ke");
     await client.stkPush(validSTKPushRequest());
 
-    // Neither key should be present when occasion is not provided
+    // Neither spelling may ever appear on the STK Push wire
     expect(capturedBody["Occassion"]).toBeUndefined();
     expect(capturedBody["Occasion"]).toBeUndefined();
+  });
+
+  it("B2C sends Occassion (double-s) when occasion is provided", async () => {
+    let capturedBody: Record<string, unknown> = {};
+
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return jsonResponse({
+        OriginatorConversationID: "o",
+        ConversationID: "AG_1",
+        ResponseCode: "0",
+        ResponseDescription: "ok",
+      });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await client.b2cPayout({
+      initiatorName: "testapi",
+      securityCredential: "cred",
+      commandID: CommandID.BusinessPayment,
+      amount: 100,
+      partyA: "600992",
+      partyB: "254705912645",
+      remarks: "promo payout",
+      queueTimeOutURL: "https://a.com/t",
+      resultURL: "https://a.com/r",
+      occasion: "ChristmasPay",
+    });
+
+    // Wire key must be double-s "Occassion" per docs/apis/b2c.md
+    expect(capturedBody["Occassion"]).toBe("ChristmasPay");
+    expect(capturedBody["Occasion"]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Redirect refusal on business POST paths
+// ---------------------------------------------------------------------------
+
+describe("Redirect refusal", () => {
+  it("stkPush issues fetch with redirect:'error'", async () => {
+    let capturedInit: RequestInit | undefined;
+
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      if (path === "/mpesa/stkpush/v1/processrequest") {
+        capturedInit = init;
+        return jsonResponse({
+          MerchantRequestID: "mr",
+          CheckoutRequestID: "ws_CO_1",
+          ResponseCode: "0",
+          ResponseDescription: "ok",
+          CustomerMessage: "ok",
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await client.stkPush(validSTKPushRequest());
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(capturedInit?.redirect).toBe("error");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bounded response reader (no full materialization)
+// ---------------------------------------------------------------------------
+
+describe("Bounded response reader", () => {
+  function streamResponse(chunks: Uint8Array[], status = 200): Response {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      status,
+      headers: { "Content-Type": "application/json" }, // NO Content-Length
+    });
+  }
+
+  it("rejects a streamed body of MAX+1 bytes even WITHOUT a Content-Length header", async () => {
+    const MAX = 1024 * 1024;
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      if (path === "/mpesa/stkpush/v1/processrequest") {
+        // 1 MiB + 1 byte across two chunks — no honest Content-Length.
+        return streamResponse([
+          new Uint8Array(MAX),
+          new Uint8Array(1),
+        ]);
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+
+    await expect(
+      client.stkPush(validSTKPushRequest()),
+    ).rejects.toThrow(`mpesa: /mpesa/stkpush/v1/processrequest response exceeds ${MAX} bytes`);
+  });
+
+  it("accepts a streamed body of exactly MAX bytes without Content-Length", async () => {
+    const MAX = 1024 * 1024;
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      if (path === "/mpesa/stkpush/v1/processrequest") {
+        // Exactly at the cap: pad with spaces so JSON still parses after decode.
+        const body = `{"MerchantRequestID":"mr","CheckoutRequestID":"ws_CO_1","ResponseCode":"0","ResponseDescription":"${" ".repeat(MAX - 128)}","CustomerMessage":"ok"}`;
+        return streamResponse([new TextEncoder().encode(body)]);
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    const resp = await client.stkPush(validSTKPushRequest());
+    expect(resp.ResponseCode).toBe("0");
   });
 });
 

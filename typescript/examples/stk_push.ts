@@ -11,9 +11,7 @@ import {
   Config,
   MpesaClient,
   MpesaError,
-  ResultClass,
   TransactionType,
-  classifyResultCode,
 } from "@mpesa-sdk/core";
 
 async function main(): Promise<void> {

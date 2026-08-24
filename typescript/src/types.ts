@@ -11,7 +11,7 @@
  * **`exactOptionalPropertyTypes`**: When constructing objects with optional
  * fields, use conditional spread to avoid assigning `undefined`:
  * ```ts
- * { ...base, ...(occassion !== undefined && { occassion }) }
+ * { ...base, ...(occasion !== undefined && { occasion }) }
  * ```
  *
  * @packageDocumentation
@@ -54,11 +54,6 @@ export interface STKPushRequest {
   readonly callBackURL: string;
   readonly accountReference: string;
   readonly transactionDesc: string;
-  /**
-   * @warning Intentional double-s misspelling matches the Daraja wire key
-   * `"Occassion"`. Do not "fix" to `occasion`.
-   */
-  readonly occassion?: string;
 }
 
 /** STK Push query status request body. */

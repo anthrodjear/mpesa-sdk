@@ -41,15 +41,16 @@
  * ## Safety notes
  *
  * - **Indeterminate results never auto-fail.** When Daraja returns a
- *   timeout, `ResultClass.Undetermined`, or a callback status that is
+ *   timeout, `ResultClass.INCONCLUSIVE`, or a callback status that is
  *   neither success nor failure, the SDK surfaces the raw result
  *   verbatim — callers must reconcile externally.
  * - **Callbacks are unsigned.** The SDK does not validate callback
  *   signatures; protect your callback endpoints with HMAC verification
  *   and IP allowlisting.
  * - **Secrets are redacted in representations.** {@link Config.toString},
- *   {@link Config.toJSON}, and {@link Config.logSafe} mask consumer
- *   keys, secrets, and passkeys. Never log the raw {@link Config} object.
+ *   {@link Config.toJSON}, and {@link Config.logSafe} omit
+ *   `consumerSecret` and `passkey` entirely (the `consumerKey` renders in
+ *   cleartext, matching Go/Python). Never log the raw {@link Config} object.
  *
  * @packageDocumentation
  */

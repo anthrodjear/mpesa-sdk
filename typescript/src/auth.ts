@@ -49,6 +49,47 @@ const MAX_BODY_BYTES = 1 << 20;
 /** Default OAuth request timeout (30s). */
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+/**
+ * Bounded response-body reader (parity: go `io.ReadAll(io.LimitReader(
+ * resp.Body, _MAX_BODY_BYTES+1))`). Accumulates stream chunks and aborts the
+ * moment the running byte total exceeds `maxBytes` — an oversized body is
+ * never fully materialized, even when no honest Content-Length header is
+ * present.
+ */
+async function readBodyBounded(
+  body: ReadableStream<Uint8Array> | null,
+  label: string,
+  maxBytes: number,
+): Promise<string> {
+  if (body === null) return "";
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value && value.byteLength > 0) {
+        total += value.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel();
+          throw new Error(`mpesa: ${label} response exceeds ${maxBytes} bytes`);
+        }
+        chunks.push(value);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder("utf-8").decode(merged);
+}
+
 // ─── Refresh cadence ──────────────────────────────────────────────────────────
 
 /**
@@ -318,15 +359,24 @@ export class TokenManager {
       clearTimeout(timer);
     }
 
-    const contentType = resp.headers.get("content-type") ?? "";
-    const text = await resp.text();
-    const bodyBytes = new TextEncoder().encode(text);
-
-    if (bodyBytes.byteLength > MAX_BODY_BYTES) {
-      throw new Error(
-        `mpesa: ${OAUTH_PATH} response exceeds ${MAX_BODY_BYTES} bytes`,
-      );
+    // First guard: honest Content-Length over the cap → cancel without
+    // consuming the body.
+    const contentLength = resp.headers.get("content-length");
+    if (contentLength !== null) {
+      const claimed = parseInt(contentLength, 10);
+      if (Number.isFinite(claimed) && claimed > MAX_BODY_BYTES) {
+        resp.body?.cancel();
+        throw new Error(
+          `mpesa: ${OAUTH_PATH} response exceeds ${MAX_BODY_BYTES} bytes (Content-Length: ${claimed})`,
+        );
+      }
     }
+
+    const contentType = resp.headers.get("content-type") ?? "";
+
+    // Second guard: bounded stream read — aborts once the accumulated chunk
+    // total passes the cap even when Content-Length is absent or dishonest.
+    const text = await readBodyBounded(resp.body, OAUTH_PATH, MAX_BODY_BYTES);
 
     if (resp.status < 200 || resp.status > 299) {
       throw MpesaError.fromResponse(resp.status, text, contentType);

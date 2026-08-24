@@ -2,8 +2,10 @@
  * Configuration and credential management for the Daraja API — mirrors
  * go/config.go and python/mpesa/config.py. {@link Config} carries live
  * credentials so its text form can never leak them: {@link Config.toString}
- * masks secrets; {@link Config.toJSON} / {@link Config.logSafe} return
- * redacted dicts for structured logging.
+ * shows `consumerKey` in CLEARTEXT (Go GoString parity) while
+ * `consumerSecret`/`passkey` are omitted ENTIRELY; {@link Config.toJSON} /
+ * {@link Config.logSafe} return the same secret-free dict for structured
+ * logging (Python `log_safe` parity).
  *
  * `JSON.stringify(config)` invokes `toJSON()` and returns the redacted
  * form, so it is safe for structured logging. Environment-variable wiring
@@ -74,12 +76,6 @@ export class ConfigError extends Error {
   }
 }
 
-/** Mask a secret: first 4 + "**" + last 2. Short values become "**". */
-function maskSecret(value: string): string {
-  if (value.length < 6) return "**";
-  return `${value.slice(0, 4)}**${value.slice(-2)}`;
-}
-
 /** Validate a field or throw {@link ConfigError}. */
 function validateField(value: unknown, name: string, check: (v: string) => boolean, reason: string): void {
   if (typeof value !== "string" || !check(value)) throw new ConfigError(`mpesa: ${name}: ${reason}`);
@@ -87,8 +83,8 @@ function validateField(value: unknown, name: string, check: (v: string) => boole
 
 /**
  * Immutable, credential-safe configuration. Validates on construction and
- * never exposes raw secrets in text form. `environment` defaults to
- * {@link Environment.SANDBOX}.
+ * never exposes `consumerSecret` or `passkey` in any text form.
+ * `environment` defaults to {@link Environment.SANDBOX}.
  *
  * @example
  * ```ts
@@ -97,7 +93,8 @@ function validateField(value: unknown, name: string, check: (v: string) => boole
  *   shortcode: "174379", passkey: "xyz789",
  * });
  * console.log(cfg.toString());
- * // Config(sandbox, shortcode=174379, key=abcd**xy, secret=mnop**st)
+ * // Config(sandbox, shortcode=174379, key=abcdefxy)
+ * // consumerKey is cleartext (Go GoString parity); secrets are omitted.
  * ```
  */
 export class Config {
@@ -142,41 +139,40 @@ export class Config {
   }
 
   /**
-   * Masked string: `Config(env, shortcode=XXXXXX, key=abcd**xy, secret=mnop**st)`.
+   * Credential-safe string: `Config(env, shortcode=XXXXXX, key=<cleartext>)`.
+   * `consumerSecret` and `passkey` are omitted entirely (Go GoString +
+   * Python `_redacted` convention: key shown, secrets redacted away).
    * @example
    * ```ts
    * log.info(cfg.toString()); // safe for human-readable logs
    * ```
    */
   toString(): string {
-    return `Config(${this.environment.name}, shortcode=${this.shortcode}, ` +
-      `key=${maskSecret(this.consumerKey)}, secret=${maskSecret(this.consumerSecret)})`;
+    return `Config(${this.environment.name}, shortcode=${this.shortcode}, key=${this.consumerKey})`;
   }
 
   /**
-   * Redacted object for structured logging.
+   * Secret-free object for structured logging: shortcode/environment/key.
+   * `consumerSecret` and `passkey` are omitted entirely (Python
+   * `log_safe()` parity).
    * @example
    * ```ts
    * logger.info(cfg.toJSON());
-   * // { shortcode: "174379", environment: "sandbox", key: "abcd**xy", secret: "mnop**st" }
+   * // { shortcode: "174379", environment: "sandbox", key: "abcdefxy" }
    * ```
    */
-  toJSON(): { shortcode: string; environment: string; key: string; secret: string } {
+  toJSON(): { shortcode: string; environment: string; key: string } {
     return {
       shortcode: this.shortcode,
       environment: this.environment.name,
-      key: maskSecret(this.consumerKey),
-      secret: maskSecret(this.consumerSecret),
+      key: this.consumerKey,
     };
   }
 
   /**
-   * Alias for {@link Config.toJSON} — log-safe redacted dict.
-   *
-   * TS exposes masked partials for debugging (more useful than total
-   * omission); Python omits key/secret entirely via `_redacted()`.
+   * Alias for {@link Config.toJSON} — log-safe dict with no secrets.
    */
-  logSafe(): { shortcode: string; environment: string; key: string; secret: string } {
+  logSafe(): { shortcode: string; environment: string; key: string } {
     return this.toJSON();
   }
 }

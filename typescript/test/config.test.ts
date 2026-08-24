@@ -245,77 +245,81 @@ describe("ConfigError", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Config.toString — masking
+// Config.toString — masking alignment (Go GoString / Py _redacted convention)
 // ---------------------------------------------------------------------------
 
 describe("Config.toString", () => {
-  it("masks consumerKey and consumerSecret", () => {
-    const cfg = new Config({
-      consumerKey: "abcdefxy",
-      consumerSecret: "mnopqrst",
+  const SECRET_KEY = "abcdefxy";
+  const SECRET_SECRET = "mnopqrst";
+  const SECRET_PASSKEY = "passkey-9f8e7d6c5b4a";
+
+  function makeCfg() {
+    return new Config({
+      consumerKey: SECRET_KEY,
+      consumerSecret: SECRET_SECRET,
       shortcode: "174379",
-      passkey: "pk123",
+      passkey: SECRET_PASSKEY,
     });
-    const s = cfg.toString();
-    expect(s).toContain("key=abcd**xy");
-    expect(s).toContain("secret=mnop**st");
-    expect(s).not.toContain("abcdefxy");
-    expect(s).not.toContain("mnopqrst");
+  }
+
+  it("shows consumerKey in CLEARTEXT (Go GoString parity)", () => {
+    expect(makeCfg().toString()).toContain(`key=${SECRET_KEY}`);
+  });
+
+  it("omits consumerSecret entirely", () => {
+    const s = makeCfg().toString();
+    expect(s).not.toContain(SECRET_SECRET);
+    expect(s).not.toContain("secret=");
+  });
+
+  it("omits passkey entirely", () => {
+    const s = makeCfg().toString();
+    expect(s).not.toContain(SECRET_PASSKEY);
+    expect(s).not.toContain("passkey");
   });
 
   it("shows shortcode fully visible", () => {
-    const cfg = new Config({
-      consumerKey: "k",
-      consumerSecret: "s",
-      shortcode: "174379",
-      passkey: "p",
-    });
-    expect(cfg.toString()).toContain("shortcode=174379");
+    expect(makeCfg().toString()).toContain("shortcode=174379");
   });
 
   it("shows environment name", () => {
-    const cfg = new Config({
-      consumerKey: "k",
-      consumerSecret: "s",
-      shortcode: "174379",
-      passkey: "p",
-    });
-    expect(cfg.toString()).toMatch(/^Config\(sandbox,/);
+    expect(makeCfg().toString()).toMatch(/^Config\(sandbox,/);
   });
 
   it("format matches expected pattern", () => {
-    const cfg = new Config({
-      consumerKey: "abcdefxy",
-      consumerSecret: "mnopqrst",
-      shortcode: "174379",
-      passkey: "pk123",
-    });
-    expect(cfg.toString()).toBe(
-      "Config(sandbox, shortcode=174379, key=abcd**xy, secret=mnop**st)",
+    expect(makeCfg().toString()).toBe(
+      "Config(sandbox, shortcode=174379, key=abcdefxy)",
     );
   });
 });
 
 // ---------------------------------------------------------------------------
-// Config.toJSON / logSafe — redacted
+// Config.toJSON / logSafe — secrets omitted, key cleartext
 // ---------------------------------------------------------------------------
 
 describe("Config.toJSON / logSafe", () => {
-  it("toJSON returns redacted keys", () => {
+  const SECRET_SECRET = "supersecretsecret123";
+  const SECRET_PASSKEY = "supersecretpass";
+
+  it("toJSON returns cleartext key and no secret fields", () => {
     const cfg = new Config({
       consumerKey: "abcdefxy",
-      consumerSecret: "mnopqrst",
+      consumerSecret: SECRET_SECRET,
       shortcode: "174379",
-      passkey: "pk123",
+      passkey: SECRET_PASSKEY,
     });
     const json = cfg.toJSON();
-    expect(json.key).toBe("abcd**xy");
-    expect(json.secret).toBe("mnop**st");
-    expect(json.shortcode).toBe("174379");
-    expect(json.environment).toBe("sandbox");
-    // Full secrets are never present
-    expect(JSON.stringify(json)).not.toContain("abcdefxy");
-    expect(JSON.stringify(json)).not.toContain("mnopqrst");
+    expect(json).toEqual({
+      shortcode: "174379",
+      environment: "sandbox",
+      key: "abcdefxy",
+    });
+    // Secret substrings never appear anywhere in the serialized form.
+    const blob = JSON.stringify(json);
+    expect(blob).not.toContain(SECRET_SECRET);
+    expect(blob).not.toContain(SECRET_PASSKEY);
+    expect(json).not.toHaveProperty("secret");
+    expect(json).not.toHaveProperty("passkey");
   });
 
   it("logSafe returns the same shape as toJSON", () => {
@@ -328,17 +332,16 @@ describe("Config.toJSON / logSafe", () => {
     expect(cfg.logSafe()).toEqual(cfg.toJSON());
   });
 
-  it("JSON.stringify of config does not leak full secrets", () => {
+  it("JSON.stringify of config omits secret and passkey substrings", () => {
     const cfg = new Config({
-      consumerKey: "supersecretkey123",
-      consumerSecret: "supersecretsecret123",
+      consumerKey: "visible-consumer-key",
+      consumerSecret: SECRET_SECRET,
       shortcode: "12345",
-      passkey: "supersecretpass",
+      passkey: SECRET_PASSKEY,
     });
-    // toJSON() is the default serialization
     const serialized = JSON.stringify(cfg);
-    expect(serialized).not.toContain("supersecretkey123");
-    expect(serialized).not.toContain("supersecretsecret123");
+    expect(serialized).not.toContain(SECRET_SECRET);
+    expect(serialized).not.toContain(SECRET_PASSKEY);
   });
 });
 
@@ -363,27 +366,32 @@ describe("Config.validate", () => {
 // ---------------------------------------------------------------------------
 
 describe("edge cases", () => {
-  it("passkey of fewer than 6 chars is masked to **", () => {
+  const SECRET_SECRET = "short-secret";
+  const SECRET_PASSKEY = "distinctive-passkey-xyz";
+
+  function renderAll(cfg: Config): string {
+    return cfg.toString() + JSON.stringify(cfg.toJSON()) + JSON.stringify(cfg.logSafe());
+  }
+
+  it("passkey never appears in any rendering, regardless of length", () => {
     const cfg = new Config({
       consumerKey: "12345",
-      consumerSecret: "12345",
+      consumerSecret: SECRET_SECRET,
       shortcode: "12345",
-      passkey: "p",
+      passkey: SECRET_PASSKEY,
     });
-    // Short secrets (<6 chars) become "**"
-    expect(cfg.toString()).toContain("key=**");
-    expect(cfg.toString()).toContain("secret=**");
+    expect(renderAll(cfg)).not.toContain(SECRET_PASSKEY);
+    expect(renderAll(cfg)).not.toContain("passkey=");
   });
 
-  it("secrets of exactly 6 chars get full mask pattern", () => {
+  it("consumerSecret never appears even when short", () => {
     const cfg = new Config({
       consumerKey: "abcdef",
-      consumerSecret: "mnopqr",
+      consumerSecret: SECRET_SECRET,
       shortcode: "12345",
       passkey: "p",
     });
-    expect(cfg.toString()).toContain("key=abcd**ef");
-    expect(cfg.toString()).toContain("secret=mnop**qr");
+    expect(renderAll(cfg)).not.toContain(SECRET_SECRET);
   });
 
   it("shortcode boundary: exactly 5 and 10 digits are valid", () => {

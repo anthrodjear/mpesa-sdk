@@ -112,10 +112,15 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 
 /** Commands accepted by the B2C endpoint (docs/apis/b2c.md). */
 const B2C_COMMANDS = new Set<string>([
+  CommandID.SalaryPayment.value,
   CommandID.BusinessPayment.value,
-  CommandID.MerchantPayment.value,
-  CommandID.B2C.value,
+  CommandID.PromotionPayment.value,
 ]);
+
+// ─── Dynamic QR TrxCode whitelist ─────────────────────────────────────────────
+
+/** TrxCode values accepted by the QR endpoint (docs/apis/dynamic-qr.md). */
+const QR_TRX_CODES = new Set<string>(QRTrxCode.ALL.map((c) => c.value));
 
 // ─── Validation helpers ───────────────────────────────────────────────────────
 
@@ -149,6 +154,48 @@ function requireLengthRange(field: string, value: string, min: number, max: numb
   if (n < min || n > max) {
     throw new Error(`mpesa: ${field} must be ${min}-${max} characters, got ${n}`);
   }
+}
+
+/**
+ * Bounded response-body reader (parity: go `io.ReadAll(io.LimitReader(
+ * resp.Body, maxResponseLen+1))`). Accumulates stream chunks and aborts the
+ * moment the running byte total exceeds `maxBytes` — an oversized body is
+ * never fully materialized, even when no honest Content-Length header is
+ * present. The Content-Length precheck at call sites remains the first,
+ * cheapest guard; this loop is the second.
+ */
+async function readBodyBounded(
+  body: ReadableStream<Uint8Array> | null,
+  label: string,
+  maxBytes: number,
+): Promise<string> {
+  if (body === null) return "";
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value && value.byteLength > 0) {
+        total += value.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel();
+          throw new Error(`mpesa: ${label} response exceeds ${maxBytes} bytes`);
+        }
+        chunks.push(value);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder("utf-8").decode(merged);
 }
 
 // ─── MpesaClient ──────────────────────────────────────────────────────────────
@@ -341,9 +388,10 @@ export class MpesaClient {
 
       const ct = resp.headers.get("content-type") ?? "";
 
-      // Pre-read guard: if Content-Length is present and exceeds the cap,
+      // First guard: if Content-Length is present and exceeds the cap,
       // cancel immediately without consuming the body (decompression bomb
-      // mitigation). Still keep the post-read byte check as second guard.
+      // mitigation). The bounded reader below stays as the second guard for
+      // missing/dishonest Content-Length headers.
       const contentLength = resp.headers.get("content-length");
       if (contentLength !== null) {
         const claimed = parseInt(contentLength, 10);
@@ -355,12 +403,9 @@ export class MpesaClient {
         }
       }
 
-      const text = await resp.text();
-      const bodyBytes = new TextEncoder().encode(text);
-
-      if (bodyBytes.byteLength > MAX_RESPONSE_LEN) {
-        throw new Error(`mpesa: ${path} response exceeds ${MAX_RESPONSE_LEN} bytes`);
-      }
+      // Second guard: bounded stream read — aborts once the accumulated
+      // chunk total passes the cap (never materializes an oversized body).
+      const text = await readBodyBounded(resp.body, path, MAX_RESPONSE_LEN);
 
       return { status: resp.status, contentType: ct, body: text };
     };
@@ -450,7 +495,9 @@ export class MpesaClient {
       new Date(this._now()),
     );
 
-    // Build payload with injected Password/Timestamp
+    // Build payload with injected Password/Timestamp.
+    // NOTE: no Occassion here — Go/Py never send it on STK Push; the
+    // double-s `Occassion` wire key belongs to B2C only (docs/apis/b2c.md).
     const payload: Record<string, unknown> = {
       BusinessShortCode: r.businessShortCode,
       Password: password,
@@ -464,9 +511,6 @@ export class MpesaClient {
       AccountReference: r.accountReference,
       TransactionDesc: r.transactionDesc,
     };
-    if (r.occassion !== undefined) {
-      payload["Occassion"] = r.occassion;
-    }
 
     return this._post(STK_PUSH_PATH, payload, (body) =>
       JSON.parse(body) as STKPushResponse,
@@ -555,7 +599,7 @@ export class MpesaClient {
     requireNonEmpty("SecurityCredential", r.securityCredential);
     if (!B2C_COMMANDS.has(r.commandID.value)) {
       throw new Error(
-        `mpesa: B2C CommandID ${JSON.stringify(r.commandID.value)} not in {BusinessPayment, MerchantPayment, B2C}`,
+        `mpesa: B2C CommandID ${JSON.stringify(r.commandID.value)} not in {SalaryPayment, BusinessPayment, PromotionPayment}`,
       );
     }
     requireMinMax("Amount", r.amount, 10, 250_000);
@@ -690,7 +734,7 @@ export class MpesaClient {
 
     // Validate
     if (r.commandID.value !== CommandID.ReverseTransaction.value) {
-      throw new Error("mpesa: Reversal CommandID must be ReverseTransaction");
+      throw new Error("mpesa: Reversal CommandID must be TransactionReversal");
     }
     requireNonEmpty("Initiator", r.initiator);
     requireNonEmpty("SecurityCredential", r.securityCredential);
@@ -885,7 +929,7 @@ export class MpesaClient {
    * const qr = await client.generateQRCode({
    *   merchantName: "TEST SUPERMARKET",
    *   refNo: "Invoice Test",
-   *   amount: 1, trxCode: QRTrxCode.DynamicQRCode,
+   *   amount: 1, trxCode: QRTrxCode.BuyGoods, // wire "BG"
    *   cpi: "174379", size: "300",
    * });
    * ```
@@ -898,9 +942,9 @@ export class MpesaClient {
     requireNonEmpty("MerchantName", r.merchantName);
     requireNonEmpty("RefNo", r.refNo);
     requirePositive("Amount", r.amount);
-    if (r.trxCode.value !== QRTrxCode.DynamicQRCode.value) {
+    if (!QR_TRX_CODES.has(r.trxCode.value)) {
       throw new Error(
-        `mpesa: TrxCode ${JSON.stringify(r.trxCode.value)} not in {DynamicQRCode}`,
+        `mpesa: TrxCode ${JSON.stringify(r.trxCode.value)} not in {BG, WA, PB, SM, SB}`,
       );
     }
     const cpi = r.cpi.trim();

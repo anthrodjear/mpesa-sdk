@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "baseUrl": ".",
+    // Resolve the package specifier to source so examples type-check
+    // against src/ without a prior build.
+    "paths": {
+      "@mpesa-sdk/core": ["./src/index.ts"]
+    }
+  },
+  "include": ["examples"]
+}

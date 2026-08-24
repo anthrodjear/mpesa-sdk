@@ -53,7 +53,7 @@ describe("Request interfaces compile", () => {
     expect(req.businessShortCode).toBe("174379");
   });
 
-  it("STKPushRequest omits optional occassion (double-s)", () => {
+  it("STKPushRequest has no occasion field (Go/Py parity — removed)", () => {
     const req: STKPushRequest = {
       businessShortCode: "174379",
       password: "MTc0...",
@@ -67,7 +67,8 @@ describe("Request interfaces compile", () => {
       accountReference: "ORDER-002",
       transactionDesc: "Test",
     };
-    expect(req.occassion).toBeUndefined();
+    expect((req as Record<string, unknown>)["occassion"]).toBeUndefined();
+    expect((req as Record<string, unknown>)["occasion"]).toBeUndefined();
   });
 
   it("STKQueryRequest constructs", () => {
@@ -168,11 +169,11 @@ describe("Request interfaces compile", () => {
       merchantName: "Test Shop",
       refNo: "ORDER-001",
       amount: 1500,
-      trxCode: QRTrxCode.DynamicQRCode,
+      trxCode: QRTrxCode.BuyGoods,
       cpi: "174379",
       size: "300",
     };
-    expect(req.trxCode.value).toBe("DynamicQRCode");
+    expect(req.trxCode.value).toBe("BG");
   });
 });
 
@@ -419,7 +420,7 @@ describe("Enums re-exported from types.ts", () => {
     expect(CommandID.BusinessPayment.value).toBe("BusinessPayment");
     expect(CommandID.TransactionStatusQuery.value).toBe("TransactionStatusQuery");
     expect(CommandID.AccountBalance.value).toBe("AccountBalance");
-    expect(CommandID.ReverseTransaction.value).toBe("ReverseTransaction");
+    expect(CommandID.ReverseTransaction.value).toBe("TransactionReversal");
   });
 
   it("ResponseType members accessible", () => {
@@ -428,29 +429,32 @@ describe("Enums re-exported from types.ts", () => {
   });
 
   it("QRTrxCode members accessible", () => {
-    expect(QRTrxCode.DynamicQRCode.value).toBe("DynamicQRCode");
+    expect(QRTrxCode.BuyGoods.value).toBe("BG");
+    expect(QRTrxCode.WithdrawAtAgentTill.value).toBe("WA");
+    expect(QRTrxCode.Paybill.value).toBe("PB");
+    expect(QRTrxCode.SendMoney.value).toBe("SM");
+    expect(QRTrxCode.SendToBusiness.value).toBe("SB");
   });
 });
 
 // ─── Section 8: Wire-trap spot-checks ────────────────────────────────────────
 
 describe("Wire-trap annotations", () => {
-  it("occassion uses double-s (intentional misspelling)", () => {
-    const req: STKPushRequest = {
-      businessShortCode: "174379",
-      password: "MTc0...",
-      timestamp: "20210628122408",
-      transactionType: TransactionType.BillPayGoodsGoods,
+  it("B2CRequest.occasion keeps the double-s wire key (STK Push has none)", () => {
+    const req: B2CRequest = {
+      initiatorName: "test",
+      securityCredential: "enc",
+      commandID: CommandID.BusinessPayment,
       amount: 100,
-      partyA: "254712345678",
-      partyB: "254787654321",
-      phoneNumber: "254712345678",
-      callBackURL: "https://example.com/cb",
-      accountReference: "ORD-1",
-      transactionDesc: "test",
-      occassion: "promo",
+      partyA: "174379",
+      partyB: "254712345678",
+      remarks: "test",
+      queueTimeOutURL: "https://example.com/to",
+      resultURL: "https://example.com/res",
+      occasion: "promo",
     };
-    expect(req.occassion).toBe("promo");
+    expect(req.occasion).toBe("promo");
+    expect((req as Record<string, unknown>).hasOwnProperty("occassion")).toBe(false);
   });
 
   it("ReversalRequest.recieverIdentifierType uses deliberate misspelling", () => {

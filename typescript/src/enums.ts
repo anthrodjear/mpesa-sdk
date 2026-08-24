@@ -87,31 +87,36 @@ export class TransactionType extends MpesaEnum<'CustomerPayBillOnline' | 'Custom
  */
 export class CommandID extends MpesaEnum<
   | 'CustomerPayBillOnline' | 'CustomerBuyGoodsOnline'
-  | 'BusinessPayment' | 'MerchantPayment' | 'B2C'
-  | 'TransactionStatusQuery' | 'AccountBalance' | 'ReverseTransaction'
+  | 'SalaryPayment' | 'BusinessPayment' | 'PromotionPayment'
+  | 'TransactionStatusQuery' | 'AccountBalance' | 'TransactionReversal'
 > {
   /** C2B Simulate — paybill direction. */
   static readonly PayBill = new CommandID('CustomerPayBillOnline');
   /** C2B Simulate — buy-goods/till direction. */
   static readonly PayGoods = new CommandID('CustomerBuyGoodsOnline');
+  /** B2C — recipient must be M-Pesa registered (unregistered numbers fail). */
+  static readonly SalaryPayment = new CommandID('SalaryPayment');
   /** B2C — works for registered and unregistered recipients. */
   static readonly BusinessPayment = new CommandID('BusinessPayment');
-  /** B2C — merchant payment variant. */
-  static readonly MerchantPayment = new CommandID('MerchantPayment');
-  /** B2C — short-form command. */
-  static readonly B2C = new CommandID('B2C');
+  /** B2C — promotional payouts; registered recipients; pair with Occasion. */
+  static readonly PromotionPayment = new CommandID('PromotionPayment');
   /** Transaction Status — only valid CommandID for that endpoint. */
   static readonly TransactionStatusQuery = new CommandID('TransactionStatusQuery');
   /** Account Balance — only valid CommandID for that endpoint. */
   static readonly AccountBalance = new CommandID('AccountBalance');
-  /** Reversal — only valid CommandID for that endpoint. */
-  static readonly ReverseTransaction = new CommandID('ReverseTransaction');
+  /**
+   * Reversal — only valid CommandID for that endpoint. Member named after
+   * the operation; wire value is Safaricom's `"TransactionReversal"`
+   * (docs/apis/reversal.md; Go `CommandTransactionReversal`).
+   */
+  static readonly ReverseTransaction = new CommandID('TransactionReversal');
   /** All `CommandID` instances. */
   static get ALL(): readonly CommandID[] {
     return Object.freeze([
-      CommandID.PayBill, CommandID.PayGoods, CommandID.BusinessPayment,
-      CommandID.MerchantPayment, CommandID.B2C, CommandID.TransactionStatusQuery,
-      CommandID.AccountBalance, CommandID.ReverseTransaction,
+      CommandID.PayBill, CommandID.PayGoods, CommandID.SalaryPayment,
+      CommandID.BusinessPayment, CommandID.PromotionPayment,
+      CommandID.TransactionStatusQuery, CommandID.AccountBalance,
+      CommandID.ReverseTransaction,
     ]);
   }
 }
@@ -138,20 +143,33 @@ export class ResponseType extends MpesaEnum<'Success' | 'Fail'> {
 }
 
 /**
- * Dynamic QR transaction type — currently a single-member enum, reserved
- * for future wire values as Safaricom extends the QR specification.
+ * Dynamic QR transaction type — five documented wire codes
+ * (docs/apis/dynamic-qr.md): `BG` Pay Merchant (Buy Goods), `WA` Withdraw
+ * Cash at Agent Till, `PB` Paybill/Business number, `SM` Send Money (mobile),
+ * `SB` Sent to Business (CPI in MSISDN format).
  *
  * @example
  * ```ts
- * const qr = { QRTrxCode: QRTrxCode.DynamicQRCode.wireKey };
+ * const qr = { TrxCode: QRTrxCode.BuyGoods.wireKey }; // "BG"
  * ```
  * @see docs/apis/dynamic-qr.md
  */
-export class QRTrxCode extends MpesaEnum<'DynamicQRCode'> {
-  /** Dynamic QR code generation. */
-  static readonly DynamicQRCode = new QRTrxCode('DynamicQRCode');
+export class QRTrxCode extends MpesaEnum<'BG' | 'WA' | 'PB' | 'SM' | 'SB'> {
+  /** `"BG"` — pay merchant (Buy Goods till). */
+  static readonly BuyGoods = new QRTrxCode('BG');
+  /** `"WA"` — withdraw cash at an agent till. */
+  static readonly WithdrawAtAgentTill = new QRTrxCode('WA');
+  /** `"PB"` — pay a paybill/business number. */
+  static readonly Paybill = new QRTrxCode('PB');
+  /** `"SM"` — send money to a mobile MSISDN (P2P). */
+  static readonly SendMoney = new QRTrxCode('SM');
+  /** `"SB"` — sent to business; CPI supplied in MSISDN format. */
+  static readonly SendToBusiness = new QRTrxCode('SB');
   /** All `QRTrxCode` instances. */
   static get ALL(): readonly QRTrxCode[] {
-    return Object.freeze([QRTrxCode.DynamicQRCode]);
+    return Object.freeze([
+      QRTrxCode.BuyGoods, QRTrxCode.WithdrawAtAgentTill, QRTrxCode.Paybill,
+      QRTrxCode.SendMoney, QRTrxCode.SendToBusiness,
+    ]);
   }
 }

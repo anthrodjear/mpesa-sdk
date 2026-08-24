@@ -60,6 +60,24 @@ describe("classifyResultCode", () => {
     });
   });
 
+  describe("quote-wrapped input (Go strings.Trim / Py strip('\"') parity)", () => {
+    it("classifies \"\\\"0\\\"\" as SUCCESS", () => {
+      expect(classifyResultCode('"0"')).toBe(ResultClass.SUCCESS);
+    });
+
+    it("classifies \"\\\"1032\\\"\" as FAILURE", () => {
+      expect(classifyResultCode('"1032"')).toBe(ResultClass.FAILURE);
+    });
+
+    it("classifies doubled-quote wrapping via cutset trim", () => {
+      expect(classifyResultCode('""2001""')).toBe(ResultClass.FAILURE);
+    });
+
+    it("quotes around non-ASCII stay INCONCLUSIVE (gate runs after strip)", () => {
+      expect(classifyResultCode('"٠١"')).toBe(ResultClass.INCONCLUSIVE);
+    });
+  });
+
   describe("INCONCLUSIVE (everything else)", () => {
     it("returns INCONCLUSIVE for null and undefined", () => {
       expect(classifyResultCode(null)).toBe(ResultClass.INCONCLUSIVE);
@@ -109,10 +127,16 @@ describe("ResultClass enum", () => {
     expect(Object.keys(ResultClass)).toHaveLength(3);
   });
 
-  it("values are uppercase strings matching enum keys", () => {
-    expect(ResultClass.SUCCESS).toBe("SUCCESS");
-    expect(ResultClass.FAILURE).toBe("FAILURE");
-    expect(ResultClass.INCONCLUSIVE).toBe("INCONCLUSIVE");
+  it("values are lowercase strings matching Go/Py serialization", () => {
+    expect(ResultClass.SUCCESS).toBe("success");
+    expect(ResultClass.FAILURE).toBe("failure");
+    expect(ResultClass.INCONCLUSIVE).toBe("indeterminate");
+  });
+
+  it("JSON.stringify emits the cross-language wire values", () => {
+    expect(JSON.stringify({ r: classifyResultCode("0") })).toBe('{"r":"success"}');
+    expect(JSON.stringify({ r: classifyResultCode("1032") })).toBe('{"r":"failure"}');
+    expect(JSON.stringify({ r: classifyResultCode("??") })).toBe('{"r":"indeterminate"}');
   });
 
   it("rejects duplicate values", () => {

@@ -9,9 +9,9 @@
  * result-code-section). Never auto-fail, never auto-refund, never auto-retry
  * on INCONCLUSIVE — keep querying.
  *
- * Enum values are UPPER_CASE — a deliberate TypeScript idiom. Go and Python
- * use lowercase (`"success"`, `"failure"`, `"indeterminate"`) per their
- * language conventions; TS uses `"SUCCESS"`, `"FAILURE"`, `"INCONCLUSIVE"`.
+ * Enum VALUES are lowercase strings matching Go and Python serialization
+ * exactly: `"success"`, `"failure"`, `"indeterminate"`. Member names stay
+ * idiomatic TypeScript (`ResultClass.SUCCESS`, …).
  *
  * @packageDocumentation
  */
@@ -20,17 +20,17 @@
  * Retry-safety bucket for a Daraja result code.
  *
  * - **SUCCESS** — Wire ResultCode 0 only; settled successfully, metadata
- *   present.
+ *   present. Serializes as `"success"`.
  * - **FAILURE** — Known terminal failure across all API catalogs; safe to
- *   surface as failed.
+ *   surface as failed. Serializes as `"failure"`.
  * - **INCONCLUSIVE** — Unknown, non-terminal, or non-numeric: money MAY have
  *   moved. Never auto-fail, never auto-refund, never auto-retry — keep
- *   querying.
+ *   querying. Serializes as `"indeterminate"`.
  */
 export enum ResultClass {
-  SUCCESS = "SUCCESS",
-  FAILURE = "FAILURE",
-  INCONCLUSIVE = "INCONCLUSIVE",
+  SUCCESS = "success",
+  FAILURE = "failure",
+  INCONCLUSIVE = "indeterminate",
 }
 
 // ── Terminal-failure code sets (frozen for O(1) lookup, immutable) ──────────
@@ -56,12 +56,15 @@ const ASCII_GATE = /^[+\-.\d]*$/;
 /**
  * Map any raw result-code shape to its {@link ResultClass} bucket.
  *
- * Accepts every observed wire variant: `"0"`, `0`, `"0.0"`, `0.0`. An ASCII
- * gate (`/^[+\-.\d]*$/`) rejects Unicode-ND digits and non-ASCII garbage
- * before numeric parsing. Integral floats (e.g. `"0.0"`) are accepted via
- * lenient `Number()` conversion with `Math.trunc` check — matching Go's
- * `strconv.ParseFloat` and Python's `float()` fallback. Non-integral floats
- * (e.g. `"1.5"`) land in INCONCLUSIVE.
+ * Accepts every observed wire variant: `"0"`, `0`, `"0.0"`, `0.0`, and the
+ * double-quote-wrapped form some gateways emit (`'"0"'`). Surrounding
+ * double quotes are stripped before the ASCII gate — cutset semantics,
+ * parity with Go `strings.Trim(code, "\"")` and Python `raw.strip('"')`.
+ * The ASCII gate (`/^[+\-.\d]*$/`) then rejects Unicode-ND digits and
+ * non-ASCII garbage before numeric parsing. Integral floats (e.g. `"0.0"`)
+ * are accepted via lenient `Number()` conversion with `Math.trunc` check —
+ * matching Go's `strconv.ParseFloat` and Python's `float()` fallback.
+ * Non-integral floats (e.g. `"1.5"`) land in INCONCLUSIVE.
  *
  * @param code - Raw ResultCode from callback or sync response.
  * @returns The classified {@link ResultClass}.
@@ -69,8 +72,10 @@ const ASCII_GATE = /^[+\-.\d]*$/;
  * @example
  * ```ts
  * classifyResultCode("0");      // ResultClass.SUCCESS
+ * classifyResultCode('"0"');    // ResultClass.SUCCESS (quote-wrapped)
  * classifyResultCode("0.0");    // ResultClass.SUCCESS (lenient float)
  * classifyResultCode(0);        // ResultClass.SUCCESS
+ * classifyResultCode('"1032"'); // ResultClass.FAILURE (quote-wrapped)
  * classifyResultCode("1");      // ResultClass.FAILURE
  * classifyResultCode("٠١");    // ResultClass.INCONCLUSIVE (Unicode-ND)
  * classifyResultCode(undefined); // ResultClass.INCONCLUSIVE
@@ -81,7 +86,11 @@ export function classifyResultCode(
 ): ResultClass {
   if (code == null) return ResultClass.INCONCLUSIVE;
 
-  const raw = typeof code === "string" ? code.trim() : String(code);
+  let raw = typeof code === "string" ? code.trim() : String(code);
+
+  // Cutset-trim surrounding double quotes (Go strings.Trim / Py strip('"')
+  // parity): strips every leading/trailing '"' regardless of pairing.
+  raw = raw.replace(/^"+|"+$/g, "");
 
   // ASCII gate: reject non-ASCII characters (Unicode-ND "٠١", etc.).
   if (!ASCII_GATE.test(raw) || raw === "") return ResultClass.INCONCLUSIVE;

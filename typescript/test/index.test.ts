@@ -159,7 +159,7 @@ describe("barrel exports — quick-start example compiles", () => {
     expect(TransactionType.BillPayGoods.value).toBe("CustomerPayBillOnline");
     expect(CommandID.BusinessPayment.value).toBe("BusinessPayment");
     expect(ResponseType.Success.value).toBe("Success");
-    expect(QRTrxCode.DynamicQRCode.value).toBe("DynamicQRCode");
+    expect(QRTrxCode.BuyGoods.value).toBe("BG");
 
     // Smoke: helpers are callable
     expect(typeof normalizePhone("+254712345678")).toBe("string");
