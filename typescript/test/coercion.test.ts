@@ -52,6 +52,24 @@ describe("safeJsonInt", () => {
     expect(safeJsonInt(Infinity)).toBeNull();
     expect(safeJsonInt(-Infinity)).toBeNull();
   });
+
+  it("returns null for string-encoded Infinity/NaN/overflow", () => {
+    expect(safeJsonInt("Infinity")).toBeNull();
+    expect(safeJsonInt("NaN")).toBeNull();
+    expect(safeJsonInt("1e999")).toBeNull();
+  });
+
+  it("returns null for __proto__ object input (no prototype pollution)", () => {
+    expect(safeJsonInt({ __proto__: 123 } as unknown)).toBeNull();
+  });
+
+  it("returns MAX_SAFE_INTEGER boundary value", () => {
+    expect(safeJsonInt("9007199254740991")).toBe(9007199254740991); // 2^53-1
+  });
+
+  it("returns null for non-integer floats", () => {
+    expect(safeJsonInt("1.5")).toBeNull();
+  });
 });
 
 describe("isNumericString", () => {
@@ -107,6 +125,10 @@ describe("coerceInt", () => {
 
   it("throws RangeError on INT32_MAX sentinel", () => {
     expect(() => coerceInt(2147483647)).toThrow(RangeError);
+  });
+
+  it("returns fallback for numbers beyond safe integer range", () => {
+    expect(coerceInt("9007199254740993")).toBe(0); // default fallback
   });
 
   it("includes field name in RangeError message when provided", () => {

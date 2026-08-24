@@ -47,7 +47,8 @@ export function safeJsonInt(value: unknown): number | null {
  * Fast ASCII-digit check: returns true if `value` is a string matching
  * `/^-?\d{1,15}$/` with no leading zeros on multi-digit numbers. Rejects
  * Unicode-ND digits (e.g. "٠٢٣"), commas, whitespace, and overflow-length
- * strings.
+ * strings. Capped at 15 digits because any 15-digit integer fits in JS's
+ * ±2^53 safe range.
  *
  * @example
  * ```ts
@@ -91,6 +92,7 @@ export function coerceInt(
   const n = safeJsonInt(value);
   if (n === null) return opts.fallback ?? 0;
   if (n === INT32_MAX) {
+    // TS-specific: Go/Python don't throw here — their int types absorb the value.
     const field = opts.field ?? "value";
     throw new RangeError(`mpesa: ${field} exceeds 32-bit range (${n})`);
   }
