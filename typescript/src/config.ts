@@ -5,8 +5,8 @@
  * masks secrets; {@link Config.toJSON} / {@link Config.logSafe} return
  * redacted dicts for structured logging.
  *
- * **WARNING**: `JSON.stringify(config)` may expose raw secrets. Use
- * {@link Config.logSafe} on logging surfaces. Environment-variable wiring
+ * `JSON.stringify(config)` invokes `toJSON()` and returns the redacted
+ * form, so it is safe for structured logging. Environment-variable wiring
  * belongs to the Client layer. Safaricom requires IP whitelisting for
  * production credentials.
  *
@@ -40,6 +40,7 @@ export class Environment {
   constructor(name: string, baseUrl: string) {
     this.name = name;
     this.baseUrl = baseUrl;
+    Object.freeze(this);
   }
 
   /** Safe for development and testing. */
@@ -81,7 +82,7 @@ function maskSecret(value: string): string {
 
 /** Validate a field or throw {@link ConfigError}. */
 function validateField(value: unknown, name: string, check: (v: string) => boolean, reason: string): void {
-  if (typeof value !== "string" || !check(value)) throw new ConfigError(`${name}: ${reason}`);
+  if (typeof value !== "string" || !check(value)) throw new ConfigError(`mpesa: ${name}: ${reason}`);
 }
 
 /**
@@ -128,6 +129,7 @@ export class Config {
     this.passkey = opts.passkey;
     this.environment = opts.environment ?? Environment.SANDBOX;
     this.validate();
+    Object.freeze(this);
   }
 
   /** Validate all fields — throws {@link ConfigError} on the first invalid. */
@@ -168,7 +170,12 @@ export class Config {
     };
   }
 
-  /** Alias for {@link Config.toJSON} — log-safe redacted dict. */
+  /**
+   * Alias for {@link Config.toJSON} — log-safe redacted dict.
+   *
+   * TS exposes masked partials for debugging (more useful than total
+   * omission); Python omits key/secret entirely via `_redacted()`.
+   */
   logSafe(): { shortcode: string; environment: string; key: string; secret: string } {
     return this.toJSON();
   }

@@ -407,3 +407,104 @@ describe("edge cases", () => {
     ).not.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Shortcode whitespace rejection
+// ---------------------------------------------------------------------------
+
+describe("shortcode whitespace rejection", () => {
+  it("rejects shortcode with trailing newline", () => {
+    expect(
+      () =>
+        new Config({
+          consumerKey: "k",
+          consumerSecret: "s",
+          shortcode: "12345\n",
+          passkey: "p",
+        }),
+    ).toThrow(ConfigError);
+  });
+
+  it("rejects shortcode with trailing tab", () => {
+    expect(
+      () =>
+        new Config({
+          consumerKey: "k",
+          consumerSecret: "s",
+          shortcode: "12345\t",
+          passkey: "p",
+        }),
+    ).toThrow(ConfigError);
+  });
+
+  it("rejects shortcode with leading/trailing spaces", () => {
+    expect(
+      () =>
+        new Config({
+          consumerKey: "k",
+          consumerSecret: "s",
+          shortcode: " 12345 ",
+          passkey: "p",
+        }),
+    ).toThrow(ConfigError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// toJSON passkey omission
+// ---------------------------------------------------------------------------
+
+describe("toJSON passkey omission", () => {
+  it("toJSON does not include passkey", () => {
+    const cfg = new Config({
+      consumerKey: "k",
+      consumerSecret: "s",
+      shortcode: "12345",
+      passkey: "my-secret-passkey",
+    });
+    const json = cfg.toJSON();
+    expect(json).not.toHaveProperty("passkey");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ConfigError passkey field name
+// ---------------------------------------------------------------------------
+
+describe("ConfigError passkey field name", () => {
+  it("message includes the field name for passkey", () => {
+    try {
+      new Config({
+        consumerKey: "k",
+        consumerSecret: "s",
+        shortcode: "12345",
+        passkey: "",
+      });
+      expect.fail("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as ConfigError).message).toContain("passkey");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Immutability (Object.freeze)
+// ---------------------------------------------------------------------------
+
+describe("immutability", () => {
+  it("Environment instances are frozen", () => {
+    expect(Object.isFrozen(Environment.SANDBOX)).toBe(true);
+    expect(Object.isFrozen(Environment.PRODUCTION)).toBe(true);
+  });
+
+  it("Config instances are frozen", () => {
+    const cfg = new Config({
+      consumerKey: "k",
+      consumerSecret: "s",
+      shortcode: "12345",
+      passkey: "p",
+    });
+    expect(Object.isFrozen(cfg)).toBe(true);
+  });
+});
