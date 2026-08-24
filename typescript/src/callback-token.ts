@@ -8,7 +8,13 @@
  * KNOWS the URL. It gates the ENDPOINT, NOT payload content; a hit never
  * replaces settlement — ALWAYS settle by query bound to YOUR record (forged
  * callbacks parse fine), e.g.
- * `if (parseInt((await client.stkQuery({ checkoutRequestID })).ResultCode, 10) === 0) markPaid(order);`
+ * ```ts
+ * try {
+ *   if (parseInt((await client.stkQuery({ checkoutRequestID })).ResultCode, 10) === 0) markPaid(order);
+ * } catch {
+ *   // inconclusive — never markPaid
+ * }
+ * ```
  * Scrub access logs/APM traces (the token rides in URLs); rotate long-lived
  * C2B registrations via an overlap window, retiring the old token once
  * traffic migrates.
@@ -46,11 +52,14 @@ export function newCallbackToken(): string {
  * Either side falsy returns false immediately — including BOTH empty —
  * because an unconfigured expectation must never bless a request:
  * {@link timingSafeEqual} alone returns true for two empty inputs, which is
- * exactly backwards here. Differing lengths return false via a plain length
- * guard before comparing — that short-circuit is NOT constant time, but it
- * leaks only the public length (the token rides in the URL) and pre-empts
- * the exception {@link timingSafeEqual} throws on unequal buffers. Once
- * lengths match, comparison cost stays flat in byte equality.
+ * exactly backwards here. Differing UTF-8 BYTE lengths return false via a
+ * plain pre-guard before comparing — that short-circuit is NOT constant
+ * time, but it leaks only the public encoded length (the token rides in
+ * the URL) and pre-empts the exception {@link timingSafeEqual} throws on
+ * unequal buffers. The guard compares BYTE length, not string code-unit
+ * count: non-ASCII inputs can share a string length yet encode to
+ * different byte totals. Once lengths match, comparison cost stays flat
+ * in byte equality.
  */
 export function callbackTokenEqual(
   expected: string,
@@ -59,8 +68,10 @@ export function callbackTokenEqual(
   if (!expected || !provided) {
     return false;
   }
-  if (expected.length !== provided.length) {
+  const expectedBytes = Buffer.from(expected, "utf8");
+  const providedBytes = Buffer.from(provided, "utf8");
+  if (expectedBytes.length !== providedBytes.length) {
     return false;
   }
-  return timingSafeEqual(Buffer.from(expected, "utf8"), Buffer.from(provided, "utf8"));
+  return timingSafeEqual(expectedBytes, providedBytes);
 }

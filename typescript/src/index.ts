@@ -47,6 +47,11 @@
  * - **Callbacks are unsigned.** The SDK does not validate callback
  *   signatures; protect your callback endpoints with HMAC verification
  *   and IP allowlisting.
+ * - **Callback URLs are bearer capabilities.** Embed
+ *   {@link newCallbackToken} in your CallBackURL path and gate hits with
+ *   {@link callbackTokenEqual}; a hit proves URL knowledge only — never
+ *   settle from a callback body. Reconcile via {@link MpesaClient.stkQuery}
+ *   bound to your CheckoutRequestID, and scrub tokens from access logs/APM.
  * - **Secrets are redacted in representations.** {@link Config.toString},
  *   {@link Config.toJSON}, and {@link Config.logSafe} omit
  *   `consumerSecret` and `passkey` entirely (the `consumerKey` renders in

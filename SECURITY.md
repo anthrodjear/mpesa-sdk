@@ -31,5 +31,6 @@ Please use GitHub's private vulnerability reporting — the **"Report a vulnerab
 Brief guidance when integrating this SDK:
 
 - **Callbacks are UNSIGNED.** Daraja C2B validation/confirmation callbacks carry no cryptographic signature. Enforce authenticity at your application layer: IP allowlisting against Safaricom's published ranges, an HMAC over your own callback contract, or binding results to the `CheckoutRequestID` you generated for the original request.
+- **Callback URLs are bearer capabilities.** Embed `newCallbackToken()` in your CallBackURL path and gate hits with `callbackTokenEqual()`; a hit proves URL knowledge only — never settle from a callback body. Reconcile via `stkQuery` bound to your CheckoutRequestID, and scrub tokens from access logs/APM.
 - **Never commit consumer credentials.** Consumer Key/Secret must live in environment variables or a secrets manager — not in source control, logs, or client-side code.
 - **Indeterminate results must not auto-fail.** Timeouts or ambiguous Daraja responses should be recorded as *pending* and reconciled via the transaction status query — auto-marking them as failed risks double-charging customers.

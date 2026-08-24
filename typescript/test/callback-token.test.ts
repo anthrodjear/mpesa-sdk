@@ -73,6 +73,25 @@ describe("callbackTokenEqual", () => {
     expect(() => callbackTokenEqual("x".repeat(21), "y".repeat(22))).not.toThrow();
   });
 
+  it("does NOT throw on non-ASCII equal-string-length input (byte-length guard)", () => {
+    // Regression: 22 code units per side, but 22 vs 43 UTF-8 bytes — the old
+    // string-.length guard passed both sides to timingSafeEqual, which threw
+    // RangeError on unequal buffer lengths.
+    const tricky = "é".repeat(21) + "a";
+    expect(tricky.length).toBe(TOKEN_LENGTH);
+    expect(() => callbackTokenEqual(newCallbackToken(), tricky)).not.toThrow();
+    expect(callbackTokenEqual(newCallbackToken(), tricky)).toBe(false);
+  });
+
+  it('false on "\\u00e9".repeat(22) vs an equal-string-length/different-byte-length peer', () => {
+    const accented = "\u00e9".repeat(22); // 44 code units, 44 UTF-8 bytes
+    const asciiTail = "\u00e9".repeat(21) + "a"; // 44 code units, 43 UTF-8 bytes
+    expect(accented.length).toBe(asciiTail.length);
+    expect(accented).not.toBe(asciiTail);
+    expect(() => callbackTokenEqual(accented, asciiTail)).not.toThrow();
+    expect(callbackTokenEqual(accented, asciiTail)).toBe(false);
+  });
+
   it("false on truncation — full token vs its own prefix", () => {
     const tok = newCallbackToken();
     expect(callbackTokenEqual(tok, tok.slice(0, TOKEN_LENGTH - 1))).toBe(false);
