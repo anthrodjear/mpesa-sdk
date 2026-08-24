@@ -58,6 +58,11 @@ export interface STKQueryRequest {
 
 /** B2C (Business to Customer) payout request body. */
 export interface B2CRequest {
+  /**
+   * Auto-generated when empty — 16 lowercase hex chars (≤20 per Daraja
+   * constraint). Serves as the idempotency key for retries.
+   */
+  readonly originatorConversationID?: string;
   readonly initiatorName: string;
   readonly securityCredential: string;
   readonly commandID: CommandID;
