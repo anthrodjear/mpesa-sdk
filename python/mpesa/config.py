@@ -23,6 +23,7 @@ client docs when they land; this module stays single-responsibility.
 
 from __future__ import annotations
 
+import re
 import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -67,6 +68,11 @@ class Config:
                 "TLS verification disabled on injected session -- Client will refuse",
                 UserWarning,
                 stacklevel=2,
+            )
+        if self.shortcode and not re.fullmatch(r"\d{5,10}", self.shortcode):
+            raise ValueError(
+                f"mpesa: Config.shortcode must be 5-10 digits, "
+                f"got {self.shortcode!r}"
             )
 
     @property

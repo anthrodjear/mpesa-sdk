@@ -167,3 +167,24 @@ def test_post_init_silent_when_session_verifies():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         Config(http_client=requests.Session())  # verify=True default: no warn
+
+
+@pytest.mark.parametrize("bad_shortcode", [
+    "abc", "1234", "12345678901", "17437A", "17 4379", "17.4379",
+])
+def test_post_init_rejects_invalid_shortcode(bad_shortcode):
+    with pytest.raises(ValueError, match="must be 5-10 digits"):
+        Config(shortcode=bad_shortcode)
+
+
+@pytest.mark.parametrize("valid_shortcode", [
+    "12345", "174379", "1234567890",
+])
+def test_post_init_accepts_valid_shortcode(valid_shortcode):
+    cfg = Config(shortcode=valid_shortcode)
+    assert cfg.shortcode == valid_shortcode
+
+
+def test_post_init_allows_empty_shortcode():
+    cfg = Config(shortcode="")
+    assert cfg.shortcode == ""
