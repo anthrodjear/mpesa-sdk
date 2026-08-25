@@ -200,7 +200,10 @@ func (c *Client) refreshAfterInvalidToken(ctx context.Context, myGen uint64) (st
 	if c.gen == myGen {
 		return c.forceRefreshLocked(ctx)
 	}
-	return c.token, nil
+	if c.tokenFresh() {
+		return c.token, nil
+	}
+	return c.forceRefreshLocked(ctx)
 }
 
 func (c *Client) attempt(ctx context.Context, token, path string, payload any) (status int, contentType string, body []byte, err error) {

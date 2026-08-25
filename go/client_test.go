@@ -1026,6 +1026,84 @@ func TestOversizedResponseBodyRejected(t *testing.T) {
 	}
 }
 
+// refreshAfterInvalidToken must check wall-clock freshness before adopting a
+// peer's token. When the peer refreshed (gen bumped) but its token has since
+// expired, the caller must force-refresh rather than re-use the stale token.
+func TestRefreshAfterInvalidTokenRejectsStalePeerToken(t *testing.T) {
+	var mu sync.Mutex
+	oauthHits := 0
+	now := fixedClock
+	currentNow := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/v1/generate", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		oauthHits++
+		n := oauthHits
+		mu.Unlock()
+		tok := "tok-v1"
+		if n > 1 {
+			tok = "tok-v2"
+		}
+		writeJSON(t, w, http.StatusOK, map[string]any{"access_token": tok, "expires_in": "120"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := NewClient(Config{
+		ConsumerKey: "test-key", ConsumerSecret: "test-secret",
+		Shortcode: testShortcode, Passkey: testPasskey,
+		Environment: Sandbox, Now: currentNow,
+	})
+	c.baseURL = srv.URL
+	ctx := context.Background()
+
+	// 1. Fetch initial token (tok-v1, gen=1, expiry=now+60s for 120s TTL).
+	tok, err := c.Token(ctx)
+	if err != nil {
+		t.Fatalf("initial token: %v", err)
+	}
+	if tok != "tok-v1" {
+		t.Fatalf("initial token = %q, want tok-v1", tok)
+	}
+
+	// 2. Simulate a peer refresh: bump gen directly (as if another goroutine
+	//    called refreshLocked) and set c.token to tok-v2 without resetting
+	//    tokenExpiry — the peer's token is logically "new" but we advance
+	//    the clock past expiry to make it stale by wall-clock.
+	c.mu.Lock()
+	c.gen++
+	c.token = "tok-v2"
+	// Keep tokenExpiry from the original tok-v1 fetch — the clock advance
+	// will make tokenFresh() return false.
+	c.mu.Unlock()
+
+	// 3. Advance clock past the original token expiry.
+	mu.Lock()
+	now = fixedClock.Add(70 * time.Second) // past 120s TTL - 60s safety = 60s cadence
+	mu.Unlock()
+
+	// 4. Call refreshAfterInvalidToken with myGen=0 (stale caller).
+	//    c.gen==1 != myGen==0, so the old code would return c.token (tok-v2)
+	//    unconditionally. With the fix, tokenFresh() is false so it must
+	//    force-refresh and return tok-v2 from the server (oauthHits=2).
+	tok, err = c.refreshAfterInvalidToken(ctx, 0)
+	if err != nil {
+		t.Fatalf("refreshAfterInvalidToken: %v", err)
+	}
+	if tok != "tok-v2" {
+		t.Fatalf("token = %q, want tok-v2 (fresh from server)", tok)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if oauthHits != 2 {
+		t.Fatalf("oauthHits = %d, want 2 (forced refresh for stale peer token)", oauthHits)
+	}
+}
+
 func TestC2BAckRawMisspelledBytesThroughHTTP(t *testing.T) {
 	mux := http.NewServeMux()
 	oauthHits := 0
