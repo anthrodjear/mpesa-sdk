@@ -109,7 +109,7 @@ export {
 
 // ── Types (request / response interfaces + helpers) ─────────────────────
 // Runtime exports (classes, functions)
-export { MetadataMap, parseBalanceSegments } from "./types.js";
+export { MetadataMap, parseBalanceSegments, isAccepted, parseAsyncResult } from "./types.js";
 
 // Type-only exports (interfaces)
 export type {
@@ -134,6 +134,7 @@ export type {
   StkCallbackResult,
   MetadataItem,
   AsyncResult,
+  AsyncResultEnvelope,
   BalanceSegment,
 } from "./types.js";
 

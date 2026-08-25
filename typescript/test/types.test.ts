@@ -26,6 +26,8 @@ import {
   AsyncResult,
   BalanceSegment,
   parseBalanceSegments,
+  isAccepted,
+  parseAsyncResult,
   TransactionType,
   CommandID,
   ResponseType,
@@ -554,5 +556,35 @@ describe("MetadataItem compiles", () => {
     const item2: MetadataItem = { Name: "Receipt", Value: "QKH7BDX10S" };
     expect(item1.Value).toBe(1000);
     expect(item2.Value).toBe("QKH7BDX10S");
+  });
+});
+
+// ─── Section 11: isAccepted ──────────────────────────────────────────────────
+
+describe("isAccepted", () => {
+  it("returns true for ResponseCode 0", () => {
+    expect(isAccepted({ ResponseCode: "0" })).toBe(true);
+  });
+  it("returns false for non-zero ResponseCode", () => {
+    expect(isAccepted({ ResponseCode: "1" })).toBe(false);
+  });
+});
+
+// ─── Section 12: parseAsyncResult ────────────────────────────────────────────
+
+describe("parseAsyncResult", () => {
+  it("parses valid envelope", () => {
+    const result = parseAsyncResult({
+      ResultCode: 0, ResultDesc: "Success",
+      MerchantRequestID: "m1", CheckoutRequestID: "c1",
+    });
+    expect(result.ResultCode).toBe(0);
+    expect(result.MerchantRequestID).toBe("m1");
+  });
+  it("throws on missing ResultCode", () => {
+    expect(() => parseAsyncResult({ ResultDesc: "x" })).toThrow("invalid");
+  });
+  it("throws on null", () => {
+    expect(() => parseAsyncResult(null)).toThrow("invalid");
   });
 });

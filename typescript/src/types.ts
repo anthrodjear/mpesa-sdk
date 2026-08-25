@@ -422,3 +422,48 @@ export function parseBalanceSegments(text: string): BalanceSegment[] {
   }
   return segments;
 }
+
+// ─── Section 6: isAccepted() and parseAsyncResult() ─────────────────────────
+
+/**
+ * Returns `true` when the synchronous response was accepted by Daraja
+ * (`ResponseCode === "0"`).
+ */
+export function isAccepted(res: { ResponseCode: string }): boolean {
+  return res.ResponseCode === "0";
+}
+
+/**
+ * Parsed envelope from a B2C / reversal / transaction-status async result
+ * callback. Only the fields common to all async result envelopes are
+ * captured here — use {@link AsyncResult} for the full B2C-specific payload.
+ */
+export interface AsyncResultEnvelope {
+  readonly ResultCode: number;
+  readonly ResultDesc: string;
+  readonly MerchantRequestID?: string;
+  readonly CheckoutRequestID?: string;
+}
+
+/**
+ * Parse and validate the raw async result callback body.
+ *
+ * @throws {TypeError} If the body is not an object or is missing required
+ *   fields (`ResultCode`, `ResultDesc`).
+ */
+export function parseAsyncResult(body: unknown): AsyncResultEnvelope {
+  const parsed = body as Record<string, unknown>;
+  if (
+    typeof parsed !== "object" || parsed === null ||
+    typeof parsed.ResultCode !== "number" ||
+    typeof parsed.ResultDesc !== "string"
+  ) {
+    throw new TypeError("mpesa: invalid async result envelope");
+  }
+  return {
+    ResultCode: parsed.ResultCode,
+    ResultDesc: parsed.ResultDesc,
+    ...(typeof parsed.MerchantRequestID === "string" && { MerchantRequestID: parsed.MerchantRequestID }),
+    ...(typeof parsed.CheckoutRequestID === "string" && { CheckoutRequestID: parsed.CheckoutRequestID }),
+  };
+}
