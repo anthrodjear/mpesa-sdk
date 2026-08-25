@@ -35,16 +35,6 @@ export interface STKPushRequest {
    * Callers typically omit this.
    */
   readonly businessShortCode?: string | undefined;
-  /**
-   * Client-injected — derived from shortcode + passkey + EAT timestamp.
-   * Callers must never set this directly.
-   */
-  readonly password?: string | undefined;
-  /**
-   * Client-injected — EAT timestamp derived from a single clock instant.
-   * Callers must never set this directly.
-   */
-  readonly timestamp?: string | undefined;
   readonly transactionType: TransactionType;
   readonly amount: number;
   readonly partyA: string;
@@ -64,16 +54,6 @@ export interface STKQueryRequest {
    * Callers typically omit this.
    */
   readonly businessShortCode?: string | undefined;
-  /**
-   * Client-injected — derived from shortcode + passkey + EAT timestamp.
-   * Callers must never set this directly.
-   */
-  readonly password?: string | undefined;
-  /**
-   * Client-injected — EAT timestamp derived from a single clock instant.
-   * Callers must never set this directly.
-   */
-  readonly timestamp?: string | undefined;
   readonly checkoutRequestID: string;
 }
 
@@ -160,7 +140,7 @@ export interface ReversalRequest {
 
 /** C2B URL registration request body. */
 export interface C2BRegisterRequest {
-  readonly shortCode: string;
+  readonly shortCode?: string | undefined;
   readonly responseType: ResponseType;
   readonly confirmationURL: string;
   readonly validationURL: string;
