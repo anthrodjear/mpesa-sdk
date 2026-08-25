@@ -141,6 +141,17 @@ func TestParseSTKCallbackEnvelopeAndBare(t *testing.T) {
 	}
 }
 
+func TestParseSTKCallbackRejectsOversizedBody(t *testing.T) {
+	big := strings.Repeat("x", maxCallbackBodyBytes+1)
+	res, err := ParseSTKCallback([]byte(big))
+	if err == nil {
+		t.Fatalf("want error for oversized body, got result %+v", res)
+	}
+	if !strings.Contains(err.Error(), "body too large") {
+		t.Fatalf("error %q does not mention body too large", err)
+	}
+}
+
 // Malformed and wrong-shape inputs must error loudly instead of yielding a
 // zero-value result a caller could mistake for a settled transaction.
 func TestParseSTKCallbackRejectsMalformed(t *testing.T) {

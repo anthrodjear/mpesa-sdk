@@ -9,6 +9,10 @@ import (
 	"strings"
 )
 
+// maxCallbackBodyBytes caps the accepted callback body size at 1 MiB to
+// prevent memory exhaustion from oversized or malicious POSTs.
+const maxCallbackBodyBytes = 1 << 20
+
 // STKCallback is the top-level envelope POSTed to CallBackURL.
 //
 // Safaricom callbacks carry NO HMAC signature, so ingestion endpoints must
@@ -84,6 +88,9 @@ func (r STKCallbackResult) DuplicateKeys() int {
 // it is NOT origin authentication; settle via STKQuery before any
 // irreversible action.
 func ParseSTKCallback(body []byte) (*STKCallbackResult, error) {
+	if len(body) > maxCallbackBodyBytes {
+		return nil, fmt.Errorf("mpesa: callback body too large (%d bytes, max %d)", len(body), maxCallbackBodyBytes)
+	}
 	var envelope struct {
 		Body *struct {
 			StkCallback *STKCallbackResult `json:"stkCallback"`
