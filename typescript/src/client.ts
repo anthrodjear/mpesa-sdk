@@ -175,6 +175,7 @@ export interface MpesaClientOptions {
   readonly config: Config;
   readonly timeoutMs?: number;
   readonly now?: () => number;
+  readonly fetch?: typeof globalThis.fetch;
 }
 
 /**
@@ -201,6 +202,8 @@ export class MpesaClient {
   private readonly _timeoutMs: number;
   /** Injectable clock for testing. */
   private readonly _now: () => number;
+  /** Injectable fetch for proxies, tracing, or custom transports. */
+  private readonly _fetch: typeof globalThis.fetch;
   /** Token manager with generation-guarded caching. */
   private readonly _tokens: TokenManager;
 
@@ -216,12 +219,14 @@ export class MpesaClient {
       ? opts.timeoutMs!
       : DEFAULT_TIMEOUT_MS;
     this._now = opts.now ?? (() => Date.now());
+    this._fetch = opts.fetch ?? globalThis.fetch.bind(globalThis);
     this._tokens = new TokenManager({
       baseUrl: this._baseUrl,
       consumerKey: opts.config.consumerKey,
       consumerSecret: opts.config.consumerSecret,
       timeoutMs: this._timeoutMs,
       now: this._now,
+      fetch: this._fetch,
     });
   }
 
@@ -343,7 +348,7 @@ export class MpesaClient {
 
       let resp: Response;
       try {
-        resp = await fetch(this._baseUrl + path, {
+        resp = await this._fetch(this._baseUrl + path, {
           method: "POST",
           redirect: "error",
           headers: {

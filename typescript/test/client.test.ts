@@ -1793,3 +1793,26 @@ describe("Timeout clamp", () => {
     expect(client.toJSON().timeout).toBe(5000);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fetch injection
+// ---------------------------------------------------------------------------
+
+describe("Fetch injection", () => {
+  it("uses injected fetch instead of global", async () => {
+    const customFetch = vi.fn(async () => new Response(
+      JSON.stringify({ access_token: "custom-tok", expires_in: "3599", token_type: "Bearer" }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+    const client = new MpesaClient({
+      config: new Config({
+        consumerKey: CONSUMER_KEY, consumerSecret: CONSUMER_SECRET,
+        shortcode: SHORTCODE, passkey: PASSKEY, environment: Environment.SANDBOX,
+      }),
+      fetch: customFetch,
+    });
+    await client.token();
+    expect(customFetch).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

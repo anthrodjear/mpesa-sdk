@@ -92,6 +92,7 @@ export interface TokenManagerOptions {
   readonly consumerSecret: string;
   readonly timeoutMs?: number;
   readonly now?: () => number;
+  readonly fetch?: typeof globalThis.fetch;
 }
 
 /**
@@ -118,6 +119,7 @@ export class TokenManager {
   private readonly _consumerSecret: string;
   private readonly _timeoutMs: number;
   private readonly _now: () => number;
+  private readonly _fetch: typeof globalThis.fetch;
 
   /** Cached bearer token (null until first fetch). */
   private _token: string | null = null;
@@ -154,6 +156,7 @@ export class TokenManager {
       ? opts.timeoutMs!
       : DEFAULT_TIMEOUT_MS;
     this._now = opts.now ?? (() => Date.now());
+    this._fetch = opts.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
@@ -308,7 +311,7 @@ export class TokenManager {
 
     let resp: Response;
     try {
-      resp = await fetch(url, {
+      resp = await this._fetch(url, {
         method: "GET",
         redirect: "error",
         headers: {
