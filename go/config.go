@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"time"
 )
 
@@ -36,6 +37,18 @@ func (c Config) GoString() string {
 // GoStringer alone only covers %#v, while %+v prints raw struct fields.
 func (c Config) Format(f fmt.State, verb rune) {
 	_, _ = fmt.Fprint(f, c.GoString())
+}
+
+// Validate checks that the Config fields are well-formed. An empty Shortcode
+// is allowed (some APIs don't require one), but when present it must be 5–10
+// digits.
+func (c Config) Validate() error {
+	if c.Shortcode != "" {
+		if ok, _ := regexp.MatchString(`^\d{5,10}$`, c.Shortcode); !ok {
+			return fmt.Errorf("mpesa: invalid shortcode %q: must be 5–10 digits", c.Shortcode)
+		}
+	}
+	return nil
 }
 
 // redactCredentials renders r as JSON with the named secret fields replaced

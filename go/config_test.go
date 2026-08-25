@@ -41,3 +41,29 @@ func TestSecretRedaction(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigValidateShortcode(t *testing.T) {
+	tests := []struct {
+		name    string
+		short   string
+		wantErr bool
+	}{
+		{"valid 6-digit", "174379", false},
+		{"valid 5-digit", "12345", false},
+		{"empty allowed", "", false},
+		{"too short 4-digit", "1234", true},
+		{"too long 11-digit", "12345678901", true},
+		{"contains letters", "17437A", true},
+		{"contains space", "17 4379", true},
+		{"alpha only", "abc", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{Shortcode: tc.short}
+			err := cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate(%q) err = %v, wantErr = %v", tc.short, err, tc.wantErr)
+			}
+		})
+	}
+}

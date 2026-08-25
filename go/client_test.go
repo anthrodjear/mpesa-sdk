@@ -20,7 +20,7 @@ var fixedClock = time.Date(2021, 6, 28, 9, 24, 8, 0, time.UTC)
 
 func testClient(t *testing.T, baseURL string) *Client {
 	t.Helper()
-	c := NewClient(Config{
+	c, err := NewClient(Config{
 		ConsumerKey:    "test-key",
 		ConsumerSecret: "test-secret",
 		Shortcode:      testShortcode,
@@ -28,6 +28,9 @@ func testClient(t *testing.T, baseURL string) *Client {
 		Environment:    Sandbox,
 		Now:            func() time.Time { return fixedClock },
 	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
 	c.baseURL = baseURL
 	return c
 }
@@ -374,10 +377,13 @@ func TestTokenRefreshedAfterFiftyMinutes(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c := NewClient(Config{
+	c, err := NewClient(Config{
 		ConsumerKey: "test-key", ConsumerSecret: "test-secret", Shortcode: testShortcode, Passkey: testPasskey,
 		Environment: Sandbox, Now: currentNow,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	c.baseURL = srv.URL
 	ctx := context.Background()
 
@@ -686,7 +692,10 @@ func TestZeroConfigSurfacesActionableError(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c := NewClient(Config{Environment: Sandbox})
+	c, err := NewClient(Config{Environment: Sandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
 	c.baseURL = srv.URL
 
 	if _, err := c.Token(context.Background()); err == nil ||
@@ -863,11 +872,14 @@ func TestShortTTLDrivesRefreshCadence(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c := NewClient(Config{
+	c, err := NewClient(Config{
 		ConsumerKey: "test-key", ConsumerSecret: "test-secret",
 		Shortcode: testShortcode, Passkey: testPasskey,
 		Environment: Sandbox, Now: currentNow,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	c.baseURL = srv.URL
 	bal := AccountBalanceRequest{
 		Initiator: "i", SecurityCredential: "c", PartyA: "600992", Remarks: "eod",
@@ -969,7 +981,10 @@ func TestUnparseableBodyDiagnostics(t *testing.T) {
 // the no-redirect policy plus a timeout default when zero.
 func TestHTTPClientInjection(t *testing.T) {
 	injected := &http.Client{Timeout: 5 * time.Second}
-	c := NewClient(Config{Environment: Sandbox, HTTPClient: injected})
+	c, err := NewClient(Config{Environment: Sandbox, HTTPClient: injected})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if c.http == injected {
 		t.Fatal("injected client must be cloned, not aliased")
 	}
@@ -981,12 +996,18 @@ func TestHTTPClientInjection(t *testing.T) {
 		t.Error("injected client must inherit ErrUseLastResponse redirect policy")
 	}
 
-	def := NewClient(Config{Environment: Sandbox})
+	def, err := NewClient(Config{Environment: Sandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if def.http.Timeout != defaultTimeout {
 		t.Errorf("default timeout = %v, want %v", def.http.Timeout, defaultTimeout)
 	}
 	zero := &http.Client{}
-	c2 := NewClient(Config{Environment: Sandbox, HTTPClient: zero})
+	c2, err := NewClient(Config{Environment: Sandbox, HTTPClient: zero})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if c2.http.Timeout != defaultTimeout {
 		t.Errorf("zero-timeout injection should get default; got %v", c2.http.Timeout)
 	}
@@ -1053,11 +1074,14 @@ func TestRefreshAfterInvalidTokenRejectsStalePeerToken(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c := NewClient(Config{
+	c, err := NewClient(Config{
 		ConsumerKey: "test-key", ConsumerSecret: "test-secret",
 		Shortcode: testShortcode, Passkey: testPasskey,
 		Environment: Sandbox, Now: currentNow,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	c.baseURL = srv.URL
 	ctx := context.Background()
 

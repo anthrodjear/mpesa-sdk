@@ -59,7 +59,10 @@ type Client struct {
 // mutated) and always gets the never-follow-redirects policy: Daraja never
 // legitimately redirects, and following 307/308 would replay request bodies
 // against an arbitrary Location host.
-func NewClient(cfg Config) *Client {
+func NewClient(cfg Config) (*Client, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = defaultTimeout
 	}
@@ -81,7 +84,7 @@ func NewClient(cfg Config) *Client {
 		cfg:     cfg,
 		baseURL: cfg.Environment.BaseURL(),
 		http:    hc,
-	}
+	}, nil
 }
 
 // Token returns the cached Bearer token, refreshing it single-flight before

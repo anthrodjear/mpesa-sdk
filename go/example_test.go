@@ -47,7 +47,11 @@ func ExampleNewClient() {
 		// Offline stub for this example — omit in production.
 		HTTPClient: &http.Client{Transport: stubTransport{}},
 	}
-	client := mpesa.NewClient(cfg)
+	client, err := mpesa.NewClient(cfg)
+	if err != nil {
+		fmt.Println("bad config:", err)
+		return
+	}
 
 	resp, err := client.STKPush(context.Background(), mpesa.STKPushRequest{
 		TransactionType:  mpesa.TransactionTypePayBillOnline,

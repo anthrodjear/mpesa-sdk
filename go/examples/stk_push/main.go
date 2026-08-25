@@ -29,7 +29,10 @@ func main() {
 	}
 
 	// 2. Create a concurrency-safe client (share across goroutines).
-	client := mpesa.NewClient(cfg)
+	client, err := mpesa.NewClient(cfg)
+	if err != nil {
+		log.Fatalf("bad config: %v", err)
+	}
 
 	// 3. Send the STK Push prompt.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
