@@ -51,5 +51,5 @@ export async function readBodyBounded(
     merged.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return new TextDecoder("utf-8").decode(merged);
+  return new TextDecoder("utf-8", { fatal: false }).decode(merged);
 }
