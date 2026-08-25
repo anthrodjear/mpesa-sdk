@@ -338,7 +338,7 @@ export class MetadataMap {
  */
 export interface AsyncResult {
   readonly ResultType: number;
-  readonly ResultCode: number;
+  readonly ResultCode: string;
   readonly ResultDesc: string;
   readonly OriginatorConversationID: string;
   readonly ConversationID: string;
@@ -439,7 +439,7 @@ export function isAccepted(res: { ResponseCode: string }): boolean {
  * captured here — use {@link AsyncResult} for the full B2C-specific payload.
  */
 export interface AsyncResultEnvelope {
-  readonly ResultCode: number;
+  readonly ResultCode: string;
   readonly ResultDesc: string;
   readonly MerchantRequestID?: string;
   readonly CheckoutRequestID?: string;
@@ -448,22 +448,35 @@ export interface AsyncResultEnvelope {
 /**
  * Parse and validate the raw async result callback body.
  *
+ * Accepts either:
+ * - **Flat**: `{ ResultCode, ResultDesc, ... }`
+ * - **Wrapped** (Daraja wire shape): `{ "Result": { ResultCode, ResultDesc, ... } }`
+ *
+ * `ResultCode` is always `string` for cross-language parity (Go uses
+ * `FlexString`, Python normalizes to `str`).
+ *
  * @throws {TypeError} If the body is not an object or is missing required
  *   fields (`ResultCode`, `ResultDesc`).
  */
 export function parseAsyncResult(body: unknown): AsyncResultEnvelope {
-  const parsed = body as Record<string, unknown>;
+  if (typeof body !== "object" || body === null) {
+    throw new TypeError("mpesa: invalid async result envelope");
+  }
+  const outer = body as Record<string, unknown>;
+  const inner: Record<string, unknown> =
+    typeof outer.Result === "object" && outer.Result !== null
+      ? (outer.Result as Record<string, unknown>)
+      : outer;
   if (
-    typeof parsed !== "object" || parsed === null ||
-    typeof parsed.ResultCode !== "number" ||
-    typeof parsed.ResultDesc !== "string"
+    typeof inner.ResultCode !== "string" ||
+    typeof inner.ResultDesc !== "string"
   ) {
     throw new TypeError("mpesa: invalid async result envelope");
   }
   return {
-    ResultCode: parsed.ResultCode,
-    ResultDesc: parsed.ResultDesc,
-    ...(typeof parsed.MerchantRequestID === "string" && { MerchantRequestID: parsed.MerchantRequestID }),
-    ...(typeof parsed.CheckoutRequestID === "string" && { CheckoutRequestID: parsed.CheckoutRequestID }),
+    ResultCode: inner.ResultCode,
+    ResultDesc: inner.ResultDesc,
+    ...(typeof inner.MerchantRequestID === "string" && { MerchantRequestID: inner.MerchantRequestID }),
+    ...(typeof inner.CheckoutRequestID === "string" && { CheckoutRequestID: inner.CheckoutRequestID }),
   };
 }

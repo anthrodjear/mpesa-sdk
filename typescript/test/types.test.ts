@@ -390,18 +390,18 @@ describe("AsyncResult compiles", () => {
   it("constructs with essential fields", () => {
     const result: AsyncResult = {
       ResultType: 0,
-      ResultCode: 0,
+      ResultCode: "0",
       ResultDesc: "Completed",
       OriginatorConversationID: "agt-1-29444-5948324",
       ConversationID: "agt_1_29444_5948324",
     };
-    expect(result.ResultCode).toBe(0);
+    expect(result.ResultCode).toBe("0");
   });
 
   it("omits optional fields", () => {
     const result: AsyncResult = {
       ResultType: 0,
-      ResultCode: 0,
+      ResultCode: "0",
       ResultDesc: "Completed",
       OriginatorConversationID: "agt-1",
       ConversationID: "agt_1",
@@ -573,18 +573,62 @@ describe("isAccepted", () => {
 // ─── Section 12: parseAsyncResult ────────────────────────────────────────────
 
 describe("parseAsyncResult", () => {
-  it("parses valid envelope", () => {
+  it("parses flat envelope", () => {
     const result = parseAsyncResult({
-      ResultCode: 0, ResultDesc: "Success",
+      ResultCode: "0", ResultDesc: "Success",
       MerchantRequestID: "m1", CheckoutRequestID: "c1",
     });
-    expect(result.ResultCode).toBe(0);
+    expect(result.ResultCode).toBe("0");
     expect(result.MerchantRequestID).toBe("m1");
   });
+
+  it("unwraps { Result: { ... } } envelope (Daraja wire shape)", () => {
+    const result = parseAsyncResult({
+      Result: {
+        ResultCode: "0", ResultDesc: "Completed",
+        MerchantRequestID: "m2", CheckoutRequestID: "c2",
+      },
+    });
+    expect(result.ResultCode).toBe("0");
+    expect(result.ResultDesc).toBe("Completed");
+    expect(result.MerchantRequestID).toBe("m2");
+    expect(result.CheckoutRequestID).toBe("c2");
+  });
+
+  it("accepts ResultCode as string (cross-language parity)", () => {
+    const result = parseAsyncResult({
+      ResultCode: "1032", ResultDesc: "Request cancelled by user",
+    });
+    expect(result.ResultCode).toBe("1032");
+  });
+
+  it("rejects numeric ResultCode (must be string)", () => {
+    expect(() =>
+      parseAsyncResult({ ResultCode: 0, ResultDesc: "Success" }),
+    ).toThrow("invalid");
+  });
+
   it("throws on missing ResultCode", () => {
     expect(() => parseAsyncResult({ ResultDesc: "x" })).toThrow("invalid");
   });
+
   it("throws on null", () => {
     expect(() => parseAsyncResult(null)).toThrow("invalid");
+  });
+
+  it("throws on non-object", () => {
+    expect(() => parseAsyncResult("hello")).toThrow("invalid");
+  });
+
+  it("throws when Result wrapper exists but inner is not an object", () => {
+    expect(() => parseAsyncResult({ Result: "not-an-object" })).toThrow(
+      "invalid",
+    );
+  });
+
+  it("throws when wrapped envelope is missing ResultCode", () => {
+    expect(() =>
+      parseAsyncResult({ Result: { ResultDesc: "fail" } }),
+    ).toThrow("invalid");
   });
 });
