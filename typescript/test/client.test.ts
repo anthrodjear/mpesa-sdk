@@ -194,6 +194,55 @@ describe("MpesaClient construction", () => {
 });
 
 // ---------------------------------------------------------------------------
+// fromEnv() env shorthand
+// ---------------------------------------------------------------------------
+
+describe("MpesaClient.fromEnv", () => {
+  it("defaults to sandbox", () => {
+    vi.stubEnv("MPESA_CONSUMER_KEY", "env-key");
+    vi.stubEnv("MPESA_CONSUMER_SECRET", "env-secret");
+    vi.stubEnv("MPESA_SHORTCODE", "12345");
+    vi.stubEnv("MPESA_PASSKEY", "env-passkey");
+    delete process.env.MPESA_ENVIRONMENT;
+    const client = MpesaClient.fromEnv();
+    expect(client).toBeInstanceOf(MpesaClient);
+    expect(client.toString()).toContain("sandbox");
+  });
+
+  it("accepts 'prod' shorthand for production", () => {
+    vi.stubEnv("MPESA_CONSUMER_KEY", "env-key");
+    vi.stubEnv("MPESA_CONSUMER_SECRET", "env-secret");
+    vi.stubEnv("MPESA_SHORTCODE", "12345");
+    vi.stubEnv("MPESA_PASSKEY", "env-passkey");
+    delete process.env.MPESA_ENVIRONMENT;
+    const client = MpesaClient.fromEnv("prod");
+    expect(client).toBeInstanceOf(MpesaClient);
+    expect(client.toString()).toContain("production");
+  });
+
+  it("accepts 'sandbox' explicitly", () => {
+    vi.stubEnv("MPESA_CONSUMER_KEY", "env-key");
+    vi.stubEnv("MPESA_CONSUMER_SECRET", "env-secret");
+    vi.stubEnv("MPESA_SHORTCODE", "12345");
+    vi.stubEnv("MPESA_PASSKEY", "env-passkey");
+    delete process.env.MPESA_ENVIRONMENT;
+    const client = MpesaClient.fromEnv("sandbox");
+    expect(client).toBeInstanceOf(MpesaClient);
+    expect(client.toString()).toContain("sandbox");
+  });
+
+  it("'prod' overrides MPESA_ENVIRONMENT=sandbox", () => {
+    vi.stubEnv("MPESA_CONSUMER_KEY", "env-key");
+    vi.stubEnv("MPESA_CONSUMER_SECRET", "env-secret");
+    vi.stubEnv("MPESA_SHORTCODE", "12345");
+    vi.stubEnv("MPESA_PASSKEY", "env-passkey");
+    vi.stubEnv("MPESA_ENVIRONMENT", "sandbox");
+    const client = MpesaClient.fromEnv("prod");
+    expect(client.toString()).toContain("production");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // OAuth once across sequential calls
 // ---------------------------------------------------------------------------
 

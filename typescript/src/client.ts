@@ -251,32 +251,46 @@ export class MpesaClient {
    * `MPESA_PASSKEY`, and optionally `MPESA_ENVIRONMENT` (accepted values:
    * exactly `"sandbox"` or `"production"`; unset defaults to sandbox).
    *
-   * @throws {ConfigError} When `MPESA_ENVIRONMENT` is set to anything else.
-   * @throws {Error} When required environment variables are missing.
+   * @param env - Optional environment shorthand: `"sandbox"` (default) or
+   *   `"prod"`. When provided, overrides `MPESA_ENVIRONMENT`.
+   *
+   * @throws {ConfigError} When `MPESA_ENVIRONMENT` is set to an unrecognised
+   *   value and `env` is not provided.
+   * @throws {Error} When required environment variables are missing or invalid.
    *
    * @example
    * ```ts
-   * const client = MpesaClient.fromEnv();
+   * const client = MpesaClient.fromEnv();       // sandbox (default)
+   * const prod = MpesaClient.fromEnv("prod");   // production
    * ```
    */
-  static fromEnv(): MpesaClient {
+  static fromEnv(env?: "sandbox" | "prod"): MpesaClient {
     const key = process.env.MPESA_CONSUMER_KEY ?? "";
     const secret = process.env.MPESA_CONSUMER_SECRET ?? "";
     const shortcode = process.env.MPESA_SHORTCODE ?? "";
     const passkey = process.env.MPESA_PASSKEY ?? "";
-    const envName = process.env.MPESA_ENVIRONMENT;
+
     let environment: Environment;
-    if (envName === undefined) {
-      environment = Environment.SANDBOX;
-    } else if (envName === "sandbox") {
-      environment = Environment.SANDBOX;
-    } else if (envName === "production") {
+    if (env === "prod") {
       environment = Environment.PRODUCTION;
+    } else if (env === "sandbox") {
+      environment = Environment.SANDBOX;
     } else {
-      throw new ConfigError(
-        `mpesa: MPESA_ENVIRONMENT must be "sandbox" or "production", got ${JSON.stringify(envName)}`,
-      );
+      // No explicit param — fall back to MPESA_ENVIRONMENT env var.
+      const envName = process.env.MPESA_ENVIRONMENT;
+      if (envName === undefined) {
+        environment = Environment.SANDBOX;
+      } else if (envName === "sandbox") {
+        environment = Environment.SANDBOX;
+      } else if (envName === "production") {
+        environment = Environment.PRODUCTION;
+      } else {
+        throw new ConfigError(
+          `mpesa: MPESA_ENVIRONMENT must be "sandbox" or "production", got ${JSON.stringify(envName)}`,
+        );
+      }
     }
+
     return new MpesaClient({
       config: new Config({ consumerKey: key, consumerSecret: secret, shortcode, passkey, environment }),
     });
