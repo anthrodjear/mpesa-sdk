@@ -137,6 +137,20 @@ const resp = await client.stkPush({
 console.log(resp.ResponseCode, resp.CheckoutRequestID, resp.CustomerMessage);
 ```
 
+### Enum naming cross-reference
+
+| Concept | Go | Python | TypeScript |
+|---------|-----|--------|------------|
+| Environment | `mpesa.Production` | `Environment.PRODUCTION` | `Environment.PRODUCTION` |
+| Transaction type (paybill) | `mpesa.TransactionTypePayBillOnline` | `TransactionType.CUSTOMER_PAY_BILL_ONLINE` | `TransactionType.BillPayGoods` |
+| Transaction type (business pay) | `mpesa.TransactionTypeBusinessPayment` | `TransactionType.BUSINESS_PAYMENT` | `TransactionType.BusinessPayment` |
+| Result classification | `mpesa.ResultClassIndeterminate` | `ResultClass.INDETERMINATE` | `ResultClass.INCONCLUSIVE` |
+| Response code (success) | `"0"` | `"0"` | `"0"` |
+| Command ID (business payment) | `mpesa.CommandBusinessPayment` | `CommandID.BUSINESS_PAYMENT` | `CommandID.BusinessPayment` |
+| QR transaction code | `mpesa.QRTrxCodePaybill` | `QRTrxCode.PAYBILL` | `QRTrxCode.Paybill` |
+
+> ⚠️ Enum member names differ across languages — the wire values are always identical. Use the tables above or your IDE's autocomplete to pick the right member; the name alone does not tell you the wire string.
+
 ### API surface at a glance
 
 | Endpoint              | Go                 | Python                | TypeScript          |
@@ -260,7 +274,7 @@ segs, skipped := mpesa.ParseBalanceSegments(params["AccountBalance"])
 cls := r.Result.Classify()
 ```
 
-TypeScript has no envelope parser class — `JSON.parse` the body yourself, then run the `AccountBalance` blob through `parseBalanceSegments(text)`.
+TypeScript has no envelope parser class — `JSON.parse` the body yourself, then run the `AccountBalance` blob through `parseBalanceSegments(text)`. If you need the full envelope, `parseAsyncResult(body)` accepts the raw JSON string and returns a typed object with the `{"Result": {...}}` wrapper already unwrapped; `parseAsyncResult` also handles the `Result` key extraction so you can call `.parameters()` directly on the result.
 
 Bind on `OriginatorConversationID` (echoed back in the result) before acting — these pushes are unsigned like everything else.
 
@@ -276,6 +290,8 @@ Per-endpoint specifics on the async result:
 ### B2C prerequisites: InitiatorName + SecurityCredential
 
 B2C, Transaction Status, Reversal and Account Balance require an API-operator **initiator** (created in the M-PESA portal) whose plaintext password is encrypted with the M-Pesa X.509 certificate (RSA PKCS#1 v1.5 — deliberately not OAEP — then base64). Cert validity dates are ignored by design; official certs ship long-expired. Use the matching environment's cert (`assets/certs/SandboxCertificate.cer` vs `ProductionCertificate.cer`).
+
+> ⚠️ **The credential must be encrypted before it is sent to Daraja.** Never pass a plaintext initiator password as the `securityCredential` value — the helpers below perform the RSA encryption for you. Passing unencrypted text will be silently rejected by the gateway.
 
 | Language   | Helper signature                                                        |
 |------------|--------------------------------------------------------------------------|
