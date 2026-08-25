@@ -64,6 +64,8 @@ Whitelist these gateway IPs so only Safaricom notifications are processed (offic
 196.201.212.129  196.201.212.136  196.201.212.74   196.201.212.69
 ```
 
+> ⚠️ Configure these exact addresses in your firewall/proxy — do not substitute broad CIDR ranges (e.g. a whole /24): over-broad ranges admit non-Safaricom hosts.
+
 ⚠️ Allowlisting is **defense-in-depth, not authentication**: an IP identifies the network path,
 not payload truth — and this list can change without notice (keep yours configurable, never
 hardcoded). The primary control remains pull-verification via query bound to your own records;
