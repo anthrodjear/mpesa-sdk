@@ -1,7 +1,70 @@
 # Changes — audit fixes (unreleased)
 
-All three suites pass: Go `go vet` + `go test` ✅ · Python `425 passed` ✅ ·
-TypeScript `typecheck` + `353 passed` ✅.
+All three suites pass: Go `go vet` + `go test` ✅ · Python `479 passed` ✅ ·
+TypeScript `typecheck` + `403 passed` ✅.
+
+## Second batch (re-review findings)
+
+Security (act on these):
+
+- **Go request `LogSafe()`** (`go/requests.go`): the four credentialed
+  requests now expose `LogSafe()` (wire shape with
+  `SecurityCredential:"[REDACTED]"`) — `json.Marshal(req)` still emits the
+  live credential because the wire needs cleartext, so never log a raw
+  request; use `LogSafe()`. `oauthTokenResponse` redacts the bearer
+  (length-only). `Config.MarshalJSON` now uses an explicit safe struct
+  (no `Now`/`HTTPClient` leak surface).
+- **Go transport walk** (`go/client.go`): `InsecureSkipVerify` refusal now
+  descends `Unwrap()` wrapper chains (tracing/retry transports); custom
+  `RoundTrippers` must preserve verification and expose `Unwrap()`.
+- **Python session trust boundary** (`client.py`): the injected-session clone
+  deep-copies cookies, clears `auth`, snapshots `proxies`, forces
+  `trust_env=False` (+`verify=True` as before) — env/netrc credentials and
+  attacker proxies can no longer ride along.
+- **`TokenManager` base-URL allowlist** (Python `auth.py`): only the two
+  Safaricom hosts accepted; direct `TokenManager` use with any other URL
+  raises before any `Basic key:secret` is sent. Prefer `MpesaClient`.
+- **TS bounded async entry** (`types.ts`): new `parseAsyncResultJson`
+  (1 MiB cap before `JSON.parse`) — never parse uncapped callback bodies.
+- **TS RSA gate** (`helpers.ts`): non-RSA certs rejected, passwords over
+  245 UTF-8 bytes rejected (RSA-2048 PKCS#1 v1.5 limit), never echoed.
+- **Config colon/ASCII everywhere**: Python + TS `Config` now reject `:`
+  in the key and non-ASCII credentials at construction (Go parity).
+
+Behavior / parity (known changes):
+
+- **Python `generate_qr_code` no longer mutates the caller** (`client.py`):
+  copies before validating like the other 8 endpoints.
+- **Python `mpesa/_limits.py`**: single `MAX_BODY_BYTES` + `check_body_size`
+  + shared `read_capped` streaming reader; amount/phone lookups are O(1)
+  dict gets (was O(k·n) re-scans).
+- **TS `stkQuery` coerces numeric `ResultCode`** (`client.ts`, `types.ts`):
+  `string | number` normalized via `String()`.
+- **TS `transactionStatus` `""` gets defaults** (`client.ts`): `??` → `||`
+  (Go/Py parity).
+- **TS `Config.shortcode` optional** (`config.ts`): defaults to `""`.
+- **TS `MetadataMap.duplicateKeys()`** added; `set()` deprecated;
+  dead `OAUTH_PATH`/`requirePositive` deleted (`parseIntSafe` kept —
+  public API); `ALL` memoized frozen statics; `MpesaEnum` frozen;
+  sanitizer is now `/[\p{Cc}\p{Cf}]/u`; non-breaking aliases
+  (`PayBillOnline`, `BuyGoodsOnline`, `TransactionReversal`,
+  `B2CPayoutRequest`, `QRCodeRequest`).
+- **Go classification quote order** (`classification.go`): `' "0" '`
+  now succeeds (spaces→quotes→spaces).
+- **Go `FlexInt64` accepts integral floats** (`coercion.go`): `3599.0`
+  works like Python/TS.
+- **Go balance parser hardened** (`results.go`): ASCII gate + NaN/Inf +
+  `>2⁵³` rejection (Python parity).
+- **`OriginatorConversationID` length enforced** (all three): non-blank,
+  max 19 chars (contract `<20`); client auto-fill unaffected.
+- **README fixes**: Go snippet handles the `NewClient` error return;
+  enum table corrected (`TransactionTypeBuyGoodsOnline` /
+  `CUSTOMER_BUY_GOODS_ONLINE` / `BuyGoodsOnline`; `QRTrxPaybill`);
+  body cap worded as UTF-8 bytes.
+
+Deferred (need design first): C2B validation/confirmation parsers,
+STK poll helper, TS `parseSTKCallback`, `{segments, skipped}` return
+change, `client.ts`/`types.ts` module splits.
 
 ## Security fixes (act on these)
 

@@ -6,3 +6,4 @@ dist/
 *.key
 *.p12
 coverage/
+test-report.json

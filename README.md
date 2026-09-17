@@ -63,10 +63,13 @@ import (
 )
 
 func main() {
-	c := mpesa.NewClient(mpesa.Config{
+	c, err := mpesa.NewClient(mpesa.Config{
 		ConsumerKey: os.Getenv("MPESA_CONSUMER_KEY"), ConsumerSecret: os.Getenv("MPESA_CONSUMER_SECRET"),
 		Shortcode: os.Getenv("MPESA_SHORTCODE"), Passkey: os.Getenv("MPESA_PASSKEY"),
 	}) // Environment zero value = mpesa.Sandbox
+	if err != nil {
+		log.Fatal(err)
+	}
 	resp, err := c.STKPush(context.Background(), mpesa.STKPushRequest{
 		TransactionType: mpesa.TransactionTypePayBillOnline, Amount: 100,
 		PartyA: "254712345678", PhoneNumber: "254712345678",
@@ -143,11 +146,11 @@ console.log(resp.ResponseCode, resp.CheckoutRequestID, resp.CustomerMessage);
 |---------|-----|--------|------------|
 | Environment | `mpesa.Production` | `Environment.PRODUCTION` | `Environment.PRODUCTION` |
 | Transaction type (paybill) | `mpesa.TransactionTypePayBillOnline` | `TransactionType.CUSTOMER_PAY_BILL_ONLINE` | `TransactionType.BillPayGoods` |
-| Transaction type (business pay) | `mpesa.TransactionTypeBusinessPayment` | `TransactionType.BUSINESS_PAYMENT` | `TransactionType.BusinessPayment` |
+| Transaction type (buy goods) | `mpesa.TransactionTypeBuyGoodsOnline` | `TransactionType.CUSTOMER_BUY_GOODS_ONLINE` | `TransactionType.BuyGoodsOnline` (`BillPayGoodsGoods` kept as deprecated alias) |
 | Result classification | `mpesa.ResultClassIndeterminate` | `ResultClass.INDETERMINATE` | `ResultClass.INCONCLUSIVE` |
 | Response code (success) | `"0"` | `"0"` | `"0"` |
 | Command ID (business payment) | `mpesa.CommandBusinessPayment` | `CommandID.BUSINESS_PAYMENT` | `CommandID.BusinessPayment` |
-| QR transaction code | `mpesa.QRTrxCodePaybill` | `QRTrxCode.PAYBILL` | `QRTrxCode.Paybill` |
+| QR transaction code | `mpesa.QRTrxPaybill` | `QRTrxCode.PAYBILL` | `QRTrxCode.Paybill` |
 
 > ⚠️ Enum member names differ across languages — the wire values are always identical. Use the tables above or your IDE's autocomplete to pick the right member; the name alone does not tell you the wire string.
 
@@ -248,7 +251,7 @@ def stk_callback():
     return "", 200                                            # ACK immediately
 ```
 
-(`client`, `settle`, `mark_pending_reconcile` are your functions.) Typed metadata helpers: `amount()`, `mpesa_receipt()`, `phone_number()`, `transaction_date()`, plus `metadata()` for the raw first-wins map — Go exposes `STKCallbackResult.MetadataMap()`, TypeScript `new MetadataMap(items)` with `.get(key)`. Go also offers `mpesa.ParseSTKCallback(body)` accepting the full envelope or a bare result object, and `STKQueryResponse.Classify()` mirroring Python's `classify_result_code(resp.result_code)`. Cap request bodies at your framework level too; `from_json` refuses bodies over 1 MiB characters regardless. Callbacks late or missing? Poll synchronously: `stk_query(STKQueryRequest(checkout_request_id=…))` returns the outcome directly (`resp.result_code`, string-normalized) — back off between polls (+30s/+60s/+120s), classify each result, and only settle on terminal codes.
+(`client`, `settle`, `mark_pending_reconcile` are your functions.) Typed metadata helpers: `amount()`, `mpesa_receipt()`, `phone_number()`, `transaction_date()`, plus `metadata()` for the raw first-wins map — Go exposes `STKCallbackResult.MetadataMap()`, TypeScript `new MetadataMap(items)` with `.get(key)`. Go also offers `mpesa.ParseSTKCallback(body)` accepting the full envelope or a bare result object, and `STKQueryResponse.Classify()` mirroring Python's `classify_result_code(resp.result_code)`. Cap request bodies at your framework level too; `from_json` refuses bodies over 1 MiB (UTF-8 bytes) regardless. Callbacks late or missing? Poll synchronously: `stk_query(STKQueryRequest(checkout_request_id=…))` returns the outcome directly (`resp.result_code`, string-normalized) — back off between polls (+30s/+60s/+120s), classify each result, and only settle on terminal codes.
 
 ### Async results (B2C / Transaction Status / Reversal / Account Balance)
 
