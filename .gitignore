@@ -14,3 +14,20 @@ coverage/
 # local workflow memory — never publish
 project-map.md
 session-log.md
+state.md
+context-snapshot.json
+MEMORY.md
+memory/
+
+# agent / assistant workspaces — never publish
+.agents/
+agents/
+.skills/
+skills/
+.claude/
+.opencode/
+opencode.json
+opencode.jsonc
+.cursor/
+.aider*
+*.skill
