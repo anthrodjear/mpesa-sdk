@@ -159,6 +159,14 @@ export function normalizePhone(raw: string): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * Maximum initiator-password size in UTF-8 bytes for RSA-2048 PKCS#1 v1.5:
+ * `keySize - 11 = 245` (Go `rsa.EncryptPKCS1v15` parity — longer
+ * plaintexts fail inside the primitive with an opaque error, so reject
+ * early with an actionable message instead).
+ */
+const MAX_RSA_PLAINTEXT_BYTES = 245;
+
+/**
  * Encrypt the initiator password with the M-Pesa public key certificate
  * using RSA PKCS#1 v1.5 and base64-encode the ciphertext.
  *
@@ -170,6 +178,13 @@ export function normalizePhone(raw: string): string {
  * deliberately NOT verified because official certs ship long-expired
  * by design.
  *
+ * Hardening (Go `*rsa.PublicKey` / Python `RSAPublicKey` parity):
+ * - The certificate's public key MUST be RSA (`asymmetricKeyType === "rsa"`)
+ *   — EC/EdDSA certs are rejected before any crypto runs.
+ * - The UTF-8-encoded password MUST fit the RSA-2048 PKCS#1 v1.5 limit
+ *   (≤ 245 bytes) — longer inputs are rejected with a length-only message
+ *   that never echoes the password.
+ *
  * **Argument order trap (documented divergence from Go/Python)**: this
  * function takes `(password, cert)` — password first, certificate
  * second. Go/Python take the reverse order. A fail-fast guard throws
@@ -180,10 +195,13 @@ export function normalizePhone(raw: string): string {
  *
  * @param initiatorPassword - Raw UTF-8 initiator password to encrypt.
  *   MUST be a string; non-string first args throw an arg-order error.
- * @param certificatePem    - PEM or DER encoded M-Pesa certificate.
+ *   Must be non-blank and encode to ≤ 245 UTF-8 bytes.
+ * @param certificatePem    - PEM or DER encoded M-Pesa certificate
+ *   carrying an RSA public key.
  * @returns Base64-encoded ciphertext.
  * @throws {Error} Arg-order swap (first arg not a string), empty
- *   password, unparseable cert, or non-RSA key.
+ *   password, oversize password (> 245 UTF-8 bytes — message carries the
+ *   byte count only, never the password), unparseable cert, or non-RSA key.
  *
  * @example
  * ```ts
@@ -207,6 +225,13 @@ export function securityCredential(
   if (!initiatorPassword.trim()) {
     throw new Error("mpesa: initiator_password is required");
   }
+  const passwordBytes = Buffer.from(initiatorPassword, "utf-8");
+  if (passwordBytes.byteLength > MAX_RSA_PLAINTEXT_BYTES) {
+    throw new Error(
+      `mpesa: initiator password too long for RSA-2048 PKCS#1 v1.5 ` +
+        `(${passwordBytes.byteLength} bytes, max ${MAX_RSA_PLAINTEXT_BYTES})`,
+    );
+  }
 
   const certInput = typeof certificatePem === "string"
     ? Buffer.from(certificatePem, "utf-8")
@@ -220,7 +245,7 @@ export function securityCredential(
   }
 
   const publicKey = cert.publicKey;
-  if (!publicKey) {
+  if (!publicKey || publicKey.asymmetricKeyType !== "rsa") {
     throw new Error("mpesa: M-Pesa certificate carries non-RSA public key");
   }
 
@@ -228,7 +253,7 @@ export function securityCredential(
   try {
     ciphertext = publicEncrypt(
       { key: publicKey, padding: constants.RSA_PKCS1_PADDING },
-      Buffer.from(initiatorPassword, "utf-8"),
+      passwordBytes,
     );
   } catch {
     throw new Error("mpesa: encrypt security credential");

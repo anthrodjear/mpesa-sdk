@@ -78,6 +78,15 @@ export interface B2CRequest {
 }
 
 /**
+ * Alias for {@link B2CRequest} — the B2C payout request body.
+ *
+ * Added for naming consistency (`b2cPayout` ↔ `B2CPayoutRequest`); the
+ * canonical name stays {@link B2CRequest}. Wire output is identical —
+ * this is a pure type alias, zero runtime footprint.
+ */
+export type B2CPayoutRequest = B2CRequest;
+
+/**
  * Common fields shared by both XOR variants of {@link TransactionStatusRequest}.
  * `commandID` and `identifierType` are client-defaulted when omitted.
  */
@@ -176,6 +185,15 @@ export interface DynamicQRRequest {
   readonly size: string;
 }
 
+/**
+ * Alias for {@link DynamicQRRequest} — the dynamic QR generation request body.
+ *
+ * Added for naming consistency (`generateQRCode` ↔ `QRCodeRequest`); the
+ * canonical name stays {@link DynamicQRRequest}. Wire output is identical —
+ * this is a pure type alias, zero runtime footprint.
+ */
+export type QRCodeRequest = DynamicQRRequest;
+
 // ─── Section 3: Response interfaces ──────────────────────────────────────────
 
 /** STK Push synchronous response from Daraja. */
@@ -194,11 +212,18 @@ export interface STKQueryResponse {
   readonly MerchantRequestID: string;
   readonly CheckoutRequestID: string;
   /**
-   * @warning Wire sends both `"1032"` (string) and `1032` (number) for this
-   * field depending on the gateway version. Always `parseInt()` before
-   * numeric comparison — never `===` against a number literal.
+   * STK Query result code — the gateway emits BOTH `"1032"` (string) and
+   * `1032` (number) depending on gateway version (same trap as
+   * {@link StkCallbackResult.ResultCode}; Go `FlexString` / Python
+   * `str`-normalization parity).
+   *
+   * The type is `string | number` for back-compat; `MpesaClient.stkQuery`
+   * normalizes it to `string` via `String()` before returning, so callers
+   * normally observe a string. When reading raw JSON (fixtures, replays),
+   * ALWAYS normalize with `String()` before numeric comparison — never
+   * `===` against a single-type literal.
    */
-  readonly ResultCode: string;
+  readonly ResultCode: string | number;
   readonly ResultDesc: string;
 }
 
@@ -287,20 +312,35 @@ export interface StkCallbackResult {
  * If the callback contains duplicate keys (malformed or gateway retries),
  * the first occurrence wins — subsequent values are silently dropped.
  * Use {@link MetadataMap.get} for O(n) lookup; for bulk access, iterate
- * with {@link MetadataMap.entries}.
+ * with {@link MetadataMap.entries}. Use {@link MetadataMap.duplicateKeys}
+ * to detect lossy collisions (Go `DuplicateKeys` / Python
+ * `duplicate_keys` parity).
  */
 export class MetadataMap {
   private readonly items: MetadataItem[];
   private readonly index: Map<string, unknown>;
+  /**
+   * Count of wire items shadowed by an earlier same-named item.
+   *
+   * Counts EXTRA occurrences, not distinct keys: `[A, A, A]` reports `2`.
+   * Fixed at construction from the wire items — later {@link MetadataMap.set}
+   * calls never change it (Go `DuplicateKeys` / Python `duplicate_keys`
+   * parity: Safaricom duplicates have been observed on retries).
+   */
+  private readonly duplicates: number;
 
   constructor(items: readonly MetadataItem[]) {
     this.items = [...items];
     this.index = new Map();
+    let dupes = 0;
     for (const item of items) {
       if (!this.index.has(item.Name)) {
         this.index.set(item.Name, item.Value);
+      } else {
+        dupes++;
       }
     }
+    this.duplicates = dupes;
   }
 
   /** Get a value by key. Returns `undefined` if not present. */
@@ -311,6 +351,12 @@ export class MetadataMap {
   /**
    * Set a key-value pair. **No-op** if the key already exists
    * (first-wins semantics).
+   *
+   * @deprecated Prefer constructing `new MetadataMap(items)` with the full
+   *   item list instead — `set()` exists only for back-compat. First-wins
+   *   still applies: existing keys are never overwritten, and `set()` calls
+   *   never affect {@link MetadataMap.duplicateKeys} (which counts wire
+   *   duplicates fixed at construction).
    *
    * @security PII warning — values may contain MSISDN, receipt numbers, or
    * account references. Never log raw MetadataMap contents in production;
@@ -326,6 +372,34 @@ export class MetadataMap {
   /** Check whether a key exists. */
   has(key: string): boolean {
     return this.index.has(key);
+  }
+
+  /**
+   * Count of metadata items shadowed by an earlier same-named item
+   * (Safaricom duplicates have been observed on retries).
+   *
+   * Counts EXTRA occurrences, not distinct keys: `[A, A, A]` returns `2`,
+   * `[A, A, B]` returns `1`, no duplicates returns `0`. Non-zero means the
+   * flattened view lost data — surface it for reconciliation instead of
+   * silently dropping values.
+   *
+   * Go `STKCallbackResult.DuplicateKeys` / Python
+   * `STKCallbackResult.duplicate_keys` parity.
+   *
+   * @returns Number of shadowed duplicate items fixed at construction.
+   *
+   * @example
+   * ```ts
+   * const map = new MetadataMap([
+   *   { Name: "Amount", Value: 1000 },
+   *   { Name: "Amount", Value: 9999 },
+   * ]);
+   * map.get("Amount");      // 1000 (first wins)
+   * map.duplicateKeys();    // 1 (one item shadowed)
+   * ```
+   */
+  duplicateKeys(): number {
+    return this.duplicates;
   }
 
   /** Iterate all key-value pairs in insertion order. */
@@ -524,4 +598,61 @@ export function parseAsyncResult(body: unknown): AsyncResultEnvelope {
     ...(typeof inner.MerchantRequestID === "string" && { MerchantRequestID: inner.MerchantRequestID }),
     ...(typeof inner.CheckoutRequestID === "string" && { CheckoutRequestID: inner.CheckoutRequestID }),
   };
+}
+
+/**
+ * Hard cap (1 MiB) for raw async-result callback bodies accepted by
+ * {@link parseAsyncResultJson} — parity with the client/OAuth transport
+ * caps (`maxResponseLen` / `MAX_BODY_BYTES`). Measured in UTF-8 bytes,
+ * not UTF-16 code units, so multi-byte characters count honestly.
+ */
+export const MAX_ASYNC_RESULT_BYTES = 1 << 20;
+
+/**
+ * Parse a RAW async-result callback body (string or UTF-8 bytes) into an
+ * {@link AsyncResultEnvelope} with a bounded size pre-check.
+ *
+ * Measures the UTF-8 byte length FIRST — `string` via
+ * `new TextEncoder().encode(raw).length`, `Uint8Array` via `byteLength` —
+ * and rejects bodies over {@link MAX_ASYNC_RESULT_BYTES} (1 MiB) BEFORE
+ * calling `JSON.parse`, then delegates envelope validation to
+ * {@link parseAsyncResult}.
+ *
+ * SECURITY: never `JSON.parse` uncapped callback bodies — an unbounded
+ * parse materializes attacker-controlled memory before validation runs.
+ * Route every raw callback POST body through this entry instead of
+ * `JSON.parse` + {@link parseAsyncResult} by hand.
+ *
+ * @param raw - Raw callback POST body: JSON text, or the raw request bytes.
+ * @returns The validated envelope (`ResultCode` always `string`).
+ * @throws {Error} When the body exceeds 1 MiB
+ *   (`mpesa: async result body exceeds 1048576 bytes`).
+ * @throws {SyntaxError} When the body is not valid JSON (from `JSON.parse`).
+ * @throws {TypeError} When the parsed JSON is not a valid envelope
+ *   (from {@link parseAsyncResult}).
+ *
+ * @example
+ * ```ts
+ * import { parseAsyncResultJson } from "@mpesa-sdk/core";
+ *
+ * // In an HTTP handler (Express-style):
+ * const envelope = parseAsyncResultJson(reqBodyText);
+ * if (envelope.ResultCode === "0") markSettled(order);
+ * ```
+ */
+export function parseAsyncResultJson(raw: string | Uint8Array): AsyncResultEnvelope {
+  const byteLen =
+    typeof raw === "string"
+      ? new TextEncoder().encode(raw).length
+      : raw.byteLength;
+  if (byteLen > MAX_ASYNC_RESULT_BYTES) {
+    throw new Error(
+      `mpesa: async result body exceeds ${MAX_ASYNC_RESULT_BYTES} bytes (got ${byteLen})`,
+    );
+  }
+  const text =
+    typeof raw === "string"
+      ? raw
+      : new TextDecoder("utf-8", { ignoreBOM: true }).decode(raw);
+  return parseAsyncResult(JSON.parse(text) as unknown);
 }

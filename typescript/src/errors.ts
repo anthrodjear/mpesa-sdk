@@ -15,17 +15,20 @@ const MAX_FIELD_CHARS = 512;
 /** Printable-ASCII cap for unparseable-body snippets (parity: `_MAX_SNIPPET_CHARS`). */
 const MAX_SNIPPET_CHARS = 200;
 
+/**
+ * Control/format detector: Unicode General_Category `Cc` (control) or `Cf`
+ * (format) — e.g. `\x1b`, `\n`, `\x07`, zero-width spaces. Uses a Unicode
+ * property escape, which REQUIRES the `u` flag (`/\p{Cc}|\p{Cf}/u` without
+ * it is a SyntaxError) — see MDN "Unicode character class escape:
+ * `\p{...}`, `\P{...}`" (the `u`/`v` flag section). Single source of truth
+ * replacing the previous 11-clause code-point OR-chain (same strip set:
+ * every Cc/Cf point, astral-safe since `for..of` walks code points).
+ */
+const CONTROL_RE = /[\p{Cc}\p{Cf}]/u;
+
 /** Is this code point Unicode General_Category Cc (control) or Cf (format)? */
 function isControlCodePoint(cp: number): boolean {
-  if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return true; // Cc: C0 + DEL..C1
-  return cp === 0xad || (cp >= 0x600 && cp <= 0x605) || cp === 0x61c || cp === 0x6dd ||
-    cp === 0x70f || (cp >= 0x890 && cp <= 0x891) || cp === 0x8e2 || cp === 0x180e ||
-    (cp >= 0x200b && cp <= 0x200f) || (cp >= 0x202a && cp <= 0x202e) ||
-    (cp >= 0x2060 && cp <= 0x2064) || (cp >= 0x2066 && cp <= 0x206f) ||
-    cp === 0xfeff || (cp >= 0xfff9 && cp <= 0xfffb) ||
-    cp === 0x110bd || cp === 0x110cd || (cp >= 0x13430 && cp <= 0x1343f) ||
-    (cp >= 0x1bca0 && cp <= 0x1bca3) || (cp >= 0x1d173 && cp <= 0x1d17a) ||
-    cp === 0xe0001 || (cp >= 0xe0020 && cp <= 0xe007f);
+  return CONTROL_RE.test(String.fromCodePoint(cp));
 }
 
 /** Strip Cc/Cf code points, then cap at `limit` kept code points. Astral-safe:

@@ -16,6 +16,11 @@
  * `value` and a `wireKey` emitted on the wire. `toString()`, `toJSON()` and
  * `Symbol.toPrimitive` all return `wireKey` so template literals, logging and
  * `JSON.stringify` emit the exact gateway string — matches Go/Python convention.
+ *
+ * Instances are deeply immutable: the constructor `Object.freeze(this)`es
+ * each instance, and every subclass exposes its members via a frozen
+ * `static readonly ALL` array (memoized — a single array per class, not a
+ * fresh allocation per access).
  */
 export class MpesaEnum<T extends string> {
   /** The semantic value (matches the wire key for standard enums). */
@@ -26,6 +31,7 @@ export class MpesaEnum<T extends string> {
   constructor(value: T, wireKey: string = value) {
     this.value = value;
     this.wireKey = wireKey;
+    Object.freeze(this);
   }
 
   /** Returns `wireKey` for URL encoding and template-literal interpolation. */
@@ -65,14 +71,42 @@ export class MpesaEnum<T extends string> {
  * @see docs/apis/stk-push.md
  */
 export class TransactionType extends MpesaEnum<'CustomerPayBillOnline' | 'CustomerBuyGoodsOnline'> {
-  /** Paybill accounts (shortcode + account number). */
+  /**
+   * Paybill accounts (shortcode + account number).
+   *
+   * @deprecated Use {@link TransactionType.PayBillOnline} — same wire value
+   *   (`"CustomerPayBillOnline"`), clearer name. Kept as an alias for
+   *   back-compat.
+   */
   static readonly BillPayGoods = new TransactionType('CustomerPayBillOnline');
-  /** Buy Goods tills (till number, no account reference). */
+  /**
+   * Buy Goods tills (till number, no account reference).
+   *
+   * @deprecated Use {@link TransactionType.BuyGoodsOnline} — same wire value
+   *   (`"CustomerBuyGoodsOnline"`), clearer name. Kept as an alias for
+   *   back-compat.
+   */
   static readonly BillPayGoodsGoods = new TransactionType('CustomerBuyGoodsOnline');
-  /** All `TransactionType` instances. */
-  static get ALL(): readonly TransactionType[] {
-    return Object.freeze([TransactionType.BillPayGoods, TransactionType.BillPayGoodsGoods]);
-  }
+  /**
+   * Paybill accounts — canonical name for wire `"CustomerPayBillOnline"`.
+   * Same instance as {@link TransactionType.BillPayGoods} (identity-equal),
+   * so `ALL` containment holds for both names.
+   */
+  static readonly PayBillOnline: TransactionType = TransactionType.BillPayGoods;
+  /**
+   * Buy Goods tills — canonical name for wire `"CustomerBuyGoodsOnline"`.
+   * Same instance as {@link TransactionType.BillPayGoodsGoods}
+   * (identity-equal), so `ALL` containment holds for both names.
+   */
+  static readonly BuyGoodsOnline: TransactionType = TransactionType.BillPayGoodsGoods;
+  /**
+   * All `TransactionType` wire variants — memoized frozen array (a single
+   * shared instance, not rebuilt per access). Aliases share identity with
+   * the listed members, so both old and new names are contained.
+   */
+  static readonly ALL: readonly TransactionType[] = Object.freeze([
+    TransactionType.BillPayGoods, TransactionType.BillPayGoodsGoods,
+  ]);
 }
 
 /**
@@ -108,17 +142,29 @@ export class CommandID extends MpesaEnum<
    * Reversal — only valid CommandID for that endpoint. Member named after
    * the operation; wire value is Safaricom's `"TransactionReversal"`
    * (docs/apis/reversal.md; Go `CommandTransactionReversal`).
+   *
+   * @deprecated Use {@link CommandID.TransactionReversal} — same wire value
+   *   (`"TransactionReversal"`), matching the gateway string. Kept as an
+   *   alias for back-compat.
    */
   static readonly ReverseTransaction = new CommandID('TransactionReversal');
-  /** All `CommandID` instances. */
-  static get ALL(): readonly CommandID[] {
-    return Object.freeze([
-      CommandID.PayBill, CommandID.PayGoods, CommandID.SalaryPayment,
-      CommandID.BusinessPayment, CommandID.PromotionPayment,
-      CommandID.TransactionStatusQuery, CommandID.AccountBalance,
-      CommandID.ReverseTransaction,
-    ]);
-  }
+  /**
+   * Reversal — canonical name matching the wire value `"TransactionReversal"`.
+   * Same instance as {@link CommandID.ReverseTransaction} (identity-equal),
+   * so `ALL` containment holds for both names.
+   */
+  static readonly TransactionReversal: CommandID = CommandID.ReverseTransaction;
+  /**
+   * All `CommandID` instances — memoized frozen array (a single shared
+   * instance, not rebuilt per access). The `TransactionReversal` alias
+   * shares identity with `ReverseTransaction`, so both names are contained.
+   */
+  static readonly ALL: readonly CommandID[] = Object.freeze([
+    CommandID.PayBill, CommandID.PayGoods, CommandID.SalaryPayment,
+    CommandID.BusinessPayment, CommandID.PromotionPayment,
+    CommandID.TransactionStatusQuery, CommandID.AccountBalance,
+    CommandID.ReverseTransaction,
+  ]);
 }
 
 /**
@@ -151,10 +197,13 @@ export class ResponseType extends MpesaEnum<'Success' | 'Fail' | 'Completed' | '
   static readonly Completed = new ResponseType('Completed');
   /** Validation explicitly rejected the payment (wire-correct). */
   static readonly Cancelled = new ResponseType('Cancelled');
-  /** All `ResponseType` instances. */
-  static get ALL(): readonly ResponseType[] {
-    return Object.freeze([ResponseType.Success, ResponseType.Fail, ResponseType.Completed, ResponseType.Cancelled]);
-  }
+  /**
+   * All `ResponseType` instances — memoized frozen array (a single shared
+   * instance, not rebuilt per access).
+   */
+  static readonly ALL: readonly ResponseType[] = Object.freeze([
+    ResponseType.Success, ResponseType.Fail, ResponseType.Completed, ResponseType.Cancelled,
+  ]);
 }
 
 /**
@@ -180,11 +229,12 @@ export class QRTrxCode extends MpesaEnum<'BG' | 'WA' | 'PB' | 'SM' | 'SB'> {
   static readonly SendMoney = new QRTrxCode('SM');
   /** `"SB"` — sent to business; CPI supplied in MSISDN format. */
   static readonly SendToBusiness = new QRTrxCode('SB');
-  /** All `QRTrxCode` instances. */
-  static get ALL(): readonly QRTrxCode[] {
-    return Object.freeze([
-      QRTrxCode.BuyGoods, QRTrxCode.WithdrawAtAgentTill, QRTrxCode.Paybill,
-      QRTrxCode.SendMoney, QRTrxCode.SendToBusiness,
-    ]);
-  }
+  /**
+   * All `QRTrxCode` instances — memoized frozen array (a single shared
+   * instance, not rebuilt per access).
+   */
+  static readonly ALL: readonly QRTrxCode[] = Object.freeze([
+    QRTrxCode.BuyGoods, QRTrxCode.WithdrawAtAgentTill, QRTrxCode.Paybill,
+    QRTrxCode.SendMoney, QRTrxCode.SendToBusiness,
+  ]);
 }

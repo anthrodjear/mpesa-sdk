@@ -68,9 +68,6 @@ import { CommandID, TransactionType, QRTrxCode } from "./enums.js";
 
 // ─── Endpoint paths ───────────────────────────────────────────────────────────
 
-/** OAuth endpoint path (docs/apis/oauth.md). */
-const OAUTH_PATH = "/oauth/v1/generate?grant_type=client_credentials";
-
 /** STK Push (Lipa Na M-Pesa Online) request path. */
 const STK_PUSH_PATH = "/mpesa/stkpush/v1/processrequest";
 
@@ -138,12 +135,6 @@ function requireURL(field: string, value: string): void {
   }
 }
 
-function requirePositive(field: string, value: number): void {
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`mpesa: ${field} must be positive, got ${value}`);
-  }
-}
-
 /**
  * Require a positive whole number amount (OWASP Input Validation:
  * allowlist positive integers; Daraja amounts are whole shillings —
@@ -183,6 +174,13 @@ function requireLengthRange(field: string, value: string, min: number, max: numb
  * @property config      - Validated configuration with credentials.
  * @property timeoutMs   - Per-request timeout in milliseconds (default 30s).
  * @property now         - Injectable clock for testing (default `Date.now`).
+ * @property fetch       - Injectable fetch for proxies, tracing, or custom
+ *   transports. TRANSPORT BOUNDARY: a custom `fetch` MUST honor
+ *   `RequestInit.redirect` — the client passes `redirect: "error"` on every
+ *   business POST and OAuth GET (Node undici default is `follow`, and
+ *   cross-origin redirects strip `Authorization` while same-origin 307/308s
+ *   would replay the Bearer token to the redirect target). A wrapper that
+ *   drops or overrides `redirect` re-opens credential replay on 307/308.
  */
 export interface MpesaClientOptions {
   readonly config: Config;
@@ -528,6 +526,12 @@ export class MpesaClient {
    * Check the outcome of a push; the fallback when callbacks are late.
    * Password binds to the EFFECTIVE shortcode — override or default.
    *
+   * `ResultCode` is normalized to `string` via `String()` before returning
+   * (same pattern as `parseAsyncResult` — the gateway emits both `0` and
+   * `"0"` depending on gateway version; Go `FlexString` / Python
+   * `str`-normalization parity). Compare with `String(...) === "0"` semantics
+   * in mind — never `===` a raw wire value against a single-type literal.
+   *
    * @throws {Error} On validation failure (before any network I/O).
    *
    * @example
@@ -562,9 +566,12 @@ export class MpesaClient {
       CheckoutRequestID: r.checkoutRequestID,
     };
 
-    return this._post(STK_QUERY_PATH, payload, (body) =>
-      JSON.parse(body) as STKQueryResponse,
-    );
+    return this._post(STK_QUERY_PATH, payload, (body) => {
+      const parsed = JSON.parse(body) as STKQueryResponse;
+      // Normalize the string|number wire trap to string (parseAsyncResult
+      // pattern) so callers always observe `ResultCode: string`.
+      return { ...parsed, ResultCode: String(parsed.ResultCode) };
+    });
   }
 
   /**
@@ -663,9 +670,12 @@ export class MpesaClient {
     // Value copy (spread of the XOR union stays non-mutating)
     const r = { ...req };
 
-    // Injected defaults via locals — never mutate the caller's view
-    const commandID = r.commandID ?? CommandID.TransactionStatusQuery;
-    const identifierType = r.identifierType ?? "4";
+    // Injected defaults via locals — never mutate the caller's view.
+    // Falsy checks (not `??`): Go/Python default on EMPTY (`== ""`), so an
+    // explicit `""` must fall back to TransactionStatusQuery/"4" — same as
+    // accountBalance/reversal in this file, which already use falsy checks.
+    const commandID = r.commandID || CommandID.TransactionStatusQuery;
+    const identifierType = r.identifierType || "4";
 
     // Validate — exactly one of TransactionID or OriginalConversationID
     // (ALSO enforced at the type level; these checks guard JS callers)

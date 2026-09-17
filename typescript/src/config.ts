@@ -82,6 +82,21 @@ function validateField(value: unknown, name: string, check: (v: string) => boole
 }
 
 /**
+ * ASCII gate for credential fields (Go `Config.Validate` parity — the
+ * Basic-auth `key:secret` pair is base64'd verbatim, so non-ASCII bytes
+ * would sign a different credential than the dashboard shows).
+ *
+ * @param s - Candidate credential string.
+ * @returns `true` when every code unit is ≤ 0x7F.
+ */
+function isAscii(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    if (s.charCodeAt(i) > 0x7f) return false;
+  }
+  return true;
+}
+
+/**
  * Immutable, credential-safe configuration. Validates on construction and
  * never exposes `consumerSecret` or `passkey` in any text form.
  * `environment` defaults to {@link Environment.SANDBOX}.
@@ -115,28 +130,72 @@ export class Config {
 
   /**
    * Build a validated Config.
-   * @throws {ConfigError} When any required field is missing or invalid.
+   *
+   * `shortcode` is optional and defaults to `""` (Go/Python parity — an
+   * empty shortcode means "supply it per-request"; endpoints that need one
+   * inject `config.shortcode` only when the caller omits it). When
+   * non-empty it must be 5–10 ASCII digits; `consumerKey` must be
+   * non-empty ASCII with no `":"` (Basic-auth `key:secret` separator —
+   * a colon would split credentials ambiguously at the gateway or a
+   * forward proxy); `consumerSecret` must be non-empty ASCII.
+   *
+   * @throws {ConfigError} When any field is missing or invalid.
+   *
+   * @example
+   * ```ts
+   * // Per-request shortcode callers may omit it entirely:
+   * const cfg = new Config({ consumerKey: "k", consumerSecret: "s", passkey: "p" });
+   * cfg.shortcode; // ""
+   * ```
    */
   constructor(opts: {
     consumerKey: string;
     consumerSecret: string;
-    shortcode: string;
+    shortcode?: string;
     passkey: string;
     environment?: Environment;
   }) {
     this.consumerKey = opts.consumerKey;
     this.consumerSecret = opts.consumerSecret;
-    this.shortcode = opts.shortcode;
+    this.shortcode = opts.shortcode ?? "";
     this.passkey = opts.passkey;
     this.environment = opts.environment ?? Environment.SANDBOX;
     this.validate();
     Object.freeze(this);
   }
 
-  /** Validate all fields — throws {@link ConfigError} on the first invalid. */
+  /**
+   * Validate all fields — throws {@link ConfigError} on the first invalid.
+   *
+   * Rules (Go `Config.Validate` parity, plus the ASCII gate the TS
+   * `TokenManager` already enforces so misconfiguration fails here and
+   * not at first network I/O):
+   * - `consumerKey`: non-empty string, ASCII-only, must not contain `":"`.
+   * - `consumerSecret`: non-empty string, ASCII-only.
+   * - `shortcode`: `""` (per-request mode) or 5–10 ASCII digits.
+   * - `passkey`: non-empty string.
+   */
   validate(): void {
     validateField(this.consumerKey, "consumerKey", (v) => v.length > 0, "must be a non-empty string");
+    validateField(
+      this.consumerKey,
+      "consumerKey",
+      (v) => !v.includes(":"),
+      "must not contain ':' (Basic-auth key:secret separator)",
+    );
+    validateField(
+      this.consumerKey,
+      "consumerKey",
+      (v) => isAscii(v),
+      "must be ASCII-only",
+    );
     validateField(this.consumerSecret, "consumerSecret", (v) => v.length > 0, "must be a non-empty string");
+    validateField(
+      this.consumerSecret,
+      "consumerSecret",
+      (v) => isAscii(v),
+      "must be ASCII-only",
+    );
     // Empty shortcode allowed (Go/Py parity) — callers may supply the
     // shortcode per-request; validate the shape only when non-empty.
     validateField(this.shortcode, "shortcode", (v) => v.length === 0 || /^\d{5,10}$/.test(v),

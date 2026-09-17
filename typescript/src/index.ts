@@ -108,8 +108,15 @@ export {
 } from "./coercion.js";
 
 // ── Types (request / response interfaces + helpers) ─────────────────────
-// Runtime exports (classes, functions)
-export { MetadataMap, parseBalanceSegments, isAccepted, parseAsyncResult } from "./types.js";
+// Runtime exports (classes, functions, consts)
+export {
+  MetadataMap,
+  parseBalanceSegments,
+  isAccepted,
+  parseAsyncResult,
+  parseAsyncResultJson,
+  MAX_ASYNC_RESULT_BYTES,
+} from "./types.js";
 
 // Type-only exports (interfaces)
 export type {
@@ -117,12 +124,16 @@ export type {
   STKPushRequest,
   STKQueryRequest,
   B2CRequest,
+  /** Alias for {@link B2CRequest} — identical wire output. */
+  B2CPayoutRequest,
   TransactionStatusRequest,
   AccountBalanceRequest,
   ReversalRequest,
   C2BRegisterRequest,
   C2BSimulateRequest,
   DynamicQRRequest,
+  /** Alias for {@link DynamicQRRequest} — identical wire output. */
+  QRCodeRequest,
   // Response types
   STKPushResponse,
   STKQueryResponse,
