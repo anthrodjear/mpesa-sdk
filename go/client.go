@@ -54,6 +54,38 @@ type Client struct {
 	gen         uint64    // bumped on every successful refresh
 }
 
+// transportDisablesVerification walks the RoundTripper chain looking for any
+// *http.Transport with TLSClientConfig.InsecureSkipVerify=true.
+//
+// Why the walk (Context7 net/http baseline): http.Client.Transport is an
+// interface — production tracing/retry/logging wrappers commonly embed a
+// *http.Transport behind Unwrap() http.RoundTripper. Checking only the
+// outermost type with `tr, ok := rt.(*http.Transport)` misses an insecure
+// inner transport entirely. The loop unwraps via
+// `interface{ Unwrap() http.RoundTripper }` until it finds a concrete
+// *http.Transport (terminal verdict) or a RoundTripper that does not
+// unwrap (nothing more to inspect → safe). A nil Transport means
+// http.DefaultTransport (verification on) → safe; a *http.Transport with
+// nil TLSClientConfig also verifies → safe.
+func transportDisablesVerification(rt http.RoundTripper) bool {
+	for rt != nil {
+		if tr, ok := rt.(*http.Transport); ok {
+			// Concrete transport reached: verdict depends solely on its
+			// TLSClientConfig. No further unwrapping is possible.
+			return tr != nil && tr.TLSClientConfig != nil && tr.TLSClientConfig.InsecureSkipVerify
+		}
+		// Not a concrete transport — descend through wrappers that
+		// expose their inner RoundTripper (standard library convention
+		// for Transport wrappers since Go 1.14-adjacent patterns).
+		unwrapper, ok := rt.(interface{ Unwrap() http.RoundTripper })
+		if !ok {
+			return false
+		}
+		rt = unwrapper.Unwrap()
+	}
+	return false
+}
+
 // NewClient returns a Client for cfg. Timeout defaults to 30s and Now to
 // time.Now when unset. An injected Config.HTTPClient is cloned (never
 // mutated) and always gets the never-follow-redirects policy: Daraja never
@@ -61,10 +93,14 @@ type Client struct {
 // against an arbitrary Location host.
 //
 // Security: an injected Transport with InsecureSkipVerify=true is refused
-// outright (fail-closed, Python verify=True parity). A test-only insecure
-// transport accidentally wired in production would otherwise MITM the OAuth
-// Basic credential, bearer tokens, SecurityCredential and PII. Do not
-// inject a transport that disables certificate verification.
+// outright (fail-closed, Python verify=True parity), including when hidden
+// behind wrapper RoundTrippers (tracing, retry, logging) that implement
+// Unwrap() http.RoundTripper. A test-only insecure transport accidentally
+// wired in production would otherwise MITM the OAuth Basic credential,
+// bearer tokens, SecurityCredential and PII. Custom RoundTrippers must
+// preserve TLS verification — never set InsecureSkipVerify, even on an
+// inner *http.Transport, and wrappers must expose Unwrap() so the check
+// can see through them.
 func NewClient(cfg Config) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -77,8 +113,7 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 	hc := &http.Client{Timeout: cfg.Timeout}
 	if cfg.HTTPClient != nil {
-		if tr, ok := cfg.HTTPClient.Transport.(*http.Transport); ok && tr != nil &&
-			tr.TLSClientConfig != nil && tr.TLSClientConfig.InsecureSkipVerify {
+		if transportDisablesVerification(cfg.HTTPClient.Transport) {
 			return nil, fmt.Errorf("mpesa: refusing HTTPClient with InsecureSkipVerify (would disable TLS verification)")
 		}
 		cloned := *cfg.HTTPClient

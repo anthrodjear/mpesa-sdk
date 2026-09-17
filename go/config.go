@@ -41,37 +41,53 @@ func (c Config) Format(f fmt.State, verb rune) {
 }
 
 // MarshalJSON renders Config for structured logging with live secrets
-// replaced by [REDACTED].
+// excluded entirely (never emitted, not even as "[REDACTED]" placeholders).
 //
-// Why this exists (OWASP log-injection / secret-scanning baseline):
-// GoString/Format only cover fmt verbs — encoding/json bypasses
-// fmt.Formatter entirely, so json.Marshal(cfg) used to emit
-// ConsumerSecret and Passkey in cleartext to log aggregators.
-// MarshalJSON closes that path; raw struct copies still carry secrets,
-// so never marshal a shadow struct — always marshal Config itself.
+// Why an explicit safe struct (OWASP log-injection / secret-scanning
+// baseline): the previous implementation marshalled a shadow copy of the
+// whole Config, which included the Now func field (encoding/json cannot
+// marshal funcs — UnsupportedTypeError, i.e. a panic-equivalent error path
+// whenever Now was set) and the *http.Client (huge, transport-dependent
+// shape that could leak proxy/TLS internals and also error on its
+// CheckRedirect func field). GoString/Format only cover fmt verbs —
+// encoding/json bypasses fmt.Formatter entirely, so json.Marshal(cfg)
+// must itself be safe.
 //
-// ConsumerKey stays visible by design (GoString parity across SDKs);
-// ConsumerSecret and Passkey are redacted. See SECURITY.md.
+// The explicit struct below carries only ConsumerKey (visible by design,
+// GoString parity), Shortcode, Environment NAME ("sandbox"/"production",
+// Python log_safe / TS toJSON parity) and Timeout. ConsumerSecret, Passkey,
+// Now and HTTPClient are omitted by construction, so setting Now or
+// injecting an HTTPClient can neither panic nor leak. See SECURITY.md.
 func (c Config) MarshalJSON() ([]byte, error) {
-	type shadow Config // avoid recursion into this method
-	b, err := json.Marshal(shadow(c))
-	if err != nil {
-		return nil, err
+	// safeConfig is the complete JSON shape: no secret, func or transport
+	// fields exist here by design, so future Config fields are deny-by-
+	// default (must be allow-listed explicitly to appear in logs).
+	type safeConfig struct {
+		ConsumerKey string `json:"ConsumerKey"`
+		Shortcode   string `json:"Shortcode"`
+		Environment string `json:"Environment"`
+		Timeout     string `json:"Timeout"`
 	}
-	var m map[string]any
-	if err := json.Unmarshal(b, &m); err != nil {
-		return b, nil
+	envName := "sandbox"
+	if c.Environment == Production {
+		envName = "production"
 	}
-	m["ConsumerSecret"] = "[REDACTED]"
-	m["Passkey"] = "[REDACTED]"
-	return json.Marshal(m)
+	return json.Marshal(safeConfig{
+		ConsumerKey: c.ConsumerKey,
+		Shortcode:   c.Shortcode,
+		Environment: envName,
+		Timeout:     c.Timeout.String(),
+	})
 }
 
 // Validate checks that the Config fields are well-formed. An empty Shortcode
 // is allowed (some APIs don't require one), but when present it must be 5–10
 // digits. ConsumerKey must not contain ':' — it becomes the Basic-auth
 // username in "key:secret" (docs/apis/oauth.md) and a colon would split
-// credentials ambiguously at the gateway or a forward proxy.
+// credentials ambiguously at the gateway or a forward proxy. ConsumerKey and
+// ConsumerSecret must be ASCII-only (Python auth.py + TS auth.ts parity):
+// non-ASCII breaks Basic-auth encoding, which is defined over bytes, and
+// would otherwise produce gateway-dependent credential corruption.
 func (c Config) Validate() error {
 	if c.Shortcode != "" {
 		if ok, _ := regexp.MatchString(`^\d{5,10}$`, c.Shortcode); !ok {
@@ -80,6 +96,19 @@ func (c Config) Validate() error {
 	}
 	if strings.Contains(c.ConsumerKey, ":") {
 		return fmt.Errorf("mpesa: invalid ConsumerKey: must not contain ':' (Basic-auth separator)")
+	}
+	// ASCII gate: Basic-auth transmits "key:secret" as bytes (RFC 7617);
+	// non-ASCII runes (>0x7F) have no canonical byte form and break auth
+	// at the gateway or proxies. Reject explicitly with a field-named error.
+	for _, r := range c.ConsumerKey {
+		if r > 0x7F {
+			return fmt.Errorf("mpesa: invalid ConsumerKey: must be ASCII-only (non-ASCII breaks Basic-auth)")
+		}
+	}
+	for _, r := range c.ConsumerSecret {
+		if r > 0x7F {
+			return fmt.Errorf("mpesa: invalid ConsumerSecret: must be ASCII-only (non-ASCII breaks Basic-auth)")
+		}
 	}
 	return nil
 }

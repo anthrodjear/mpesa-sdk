@@ -2,6 +2,8 @@
 
 package mpesa
 
+import "fmt"
+
 // STKPushResponse is the synchronous acknowledgement. ResponseCode "0" means
 // accepted — NOT paid. Persist CheckoutRequestID as the dedup/join key.
 type STKPushResponse struct {
@@ -61,4 +63,27 @@ type QRCodeResponse struct {
 type oauthTokenResponse struct {
 	AccessToken string    `json:"access_token"`
 	ExpiresIn   FlexInt64 `json:"expires_in"`
+}
+
+// redactedOAuth renders the token response without the bearer value: only
+// the token LENGTH (proof of presence/shape) and the TTL are shown. The
+// bearer is a live credential — even len+prefix would aid brute-force
+// validation, so only len is exposed and never any token bytes.
+func (t oauthTokenResponse) redactedOAuth() string {
+	return fmt.Sprintf("oauthTokenResponse{access_token_len:%d expires_in:%d}", len(t.AccessToken), int64(t.ExpiresIn))
+}
+
+// String redacts the bearer token (len-only, never the bearer) for %v/%s
+// formatting so accidental log.Printf("%v", tok) cannot leak credentials.
+func (t oauthTokenResponse) String() string { return t.redactedOAuth() }
+
+// GoString redacts the bearer token (len-only, never the bearer) for %#v
+// formatting.
+func (t oauthTokenResponse) GoString() string { return t.redactedOAuth() }
+
+// Format routes EVERY fmt verb through the redacted form (GoStringer only
+// covers %#v and Stringer only %v/%s, while %+v on a struct with no Format
+// prints raw fields including the bearer).
+func (t oauthTokenResponse) Format(f fmt.State, verb rune) {
+	_, _ = fmt.Fprint(f, t.redactedOAuth())
 }

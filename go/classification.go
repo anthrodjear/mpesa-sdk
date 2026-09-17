@@ -33,7 +33,13 @@ var resultCodeFailure = map[int64]bool{
 }
 
 func parseResultCode(code string) (int64, bool) {
-	s := strings.TrimSpace(strings.Trim(code, `"`))
+	// Trim order is spaces→quotes→spaces (NEW-2): the old
+	// TrimSpace(Trim(code, '"')) stripped quotes BEFORE spaces, so a padded
+	// quoted code like ' "0" ' kept its inner quotes ('"0"' after the outer
+	// space trim) and misclassified as indeterminate instead of success.
+	// Trimming spaces first exposes the quotes, trimming quotes exposes any
+	// inner padding, and the final space trim normalizes it.
+	s := strings.TrimSpace(strings.Trim(strings.TrimSpace(code), `"`))
 	if v, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return v, true
 	}

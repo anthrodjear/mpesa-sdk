@@ -4,6 +4,7 @@
 package mpesa
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -61,6 +62,19 @@ func (r B2CPayoutRequest) Format(f fmt.State, verb rune) {
 	_, _ = fmt.Fprint(f, r.GoString())
 }
 
+// LogSafe returns the JSON wire shape as a map with SecurityCredential
+// replaced by "[REDACTED]" for structured logging.
+//
+// Security: never json.Marshal(req) for logging — use LogSafe().
+// json.Marshal emits SecurityCredential in cleartext and bypasses the
+// GoString/Format redaction hooks (which only cover fmt verbs), so logging
+// the raw struct or its JSON bytes leaks the bearer credential to log
+// aggregators. LogSafe preserves every other wire key verbatim for
+// debuggability while redacting only the secret.
+func (r B2CPayoutRequest) LogSafe() map[string]any {
+	return logSafeRedacted(r, "SecurityCredential")
+}
+
 // TransactionStatusRequest queries by receipt XOR original conversation ID.
 // Contains credentials — never log directly; GoString/Format redact.
 type TransactionStatusRequest struct {
@@ -87,6 +101,19 @@ func (r TransactionStatusRequest) GoString() string {
 // covers %#v, while %+v prints raw struct fields).
 func (r TransactionStatusRequest) Format(f fmt.State, verb rune) {
 	_, _ = fmt.Fprint(f, r.GoString())
+}
+
+// LogSafe returns the JSON wire shape as a map with SecurityCredential
+// replaced by "[REDACTED]" for structured logging.
+//
+// Security: never json.Marshal(req) for logging — use LogSafe().
+// json.Marshal emits SecurityCredential in cleartext and bypasses the
+// GoString/Format redaction hooks (which only cover fmt verbs), so logging
+// the raw struct or its JSON bytes leaks the bearer credential to log
+// aggregators. LogSafe preserves every other wire key verbatim for
+// debuggability while redacting only the secret.
+func (r TransactionStatusRequest) LogSafe() map[string]any {
+	return logSafeRedacted(r, "SecurityCredential")
 }
 
 // ReversalRequest reverses a recent C2B transaction. The wire field stays
@@ -118,6 +145,19 @@ func (r ReversalRequest) Format(f fmt.State, verb rune) {
 	_, _ = fmt.Fprint(f, r.GoString())
 }
 
+// LogSafe returns the JSON wire shape as a map with SecurityCredential
+// replaced by "[REDACTED]" for structured logging.
+//
+// Security: never json.Marshal(req) for logging — use LogSafe().
+// json.Marshal emits SecurityCredential in cleartext and bypasses the
+// GoString/Format redaction hooks (which only cover fmt verbs), so logging
+// the raw struct or its JSON bytes leaks the bearer credential to log
+// aggregators. LogSafe preserves every other wire key verbatim for
+// debuggability while redacting only the secret.
+func (r ReversalRequest) LogSafe() map[string]any {
+	return logSafeRedacted(r, "SecurityCredential")
+}
+
 // AccountBalanceRequest queries organization shortcode balances.
 // Contains credentials — never log directly; GoString/Format redact.
 type AccountBalanceRequest struct {
@@ -141,6 +181,41 @@ func (r AccountBalanceRequest) GoString() string {
 // covers %#v, while %+v prints raw struct fields).
 func (r AccountBalanceRequest) Format(f fmt.State, verb rune) {
 	_, _ = fmt.Fprint(f, r.GoString())
+}
+
+// LogSafe returns the JSON wire shape as a map with SecurityCredential
+// replaced by "[REDACTED]" for structured logging.
+//
+// Security: never json.Marshal(req) for logging — use LogSafe().
+// json.Marshal emits SecurityCredential in cleartext and bypasses the
+// GoString/Format redaction hooks (which only cover fmt verbs), so logging
+// the raw struct or its JSON bytes leaks the bearer credential to log
+// aggregators. LogSafe preserves every other wire key verbatim for
+// debuggability while redacting only the secret.
+func (r AccountBalanceRequest) LogSafe() map[string]any {
+	return logSafeRedacted(r, "SecurityCredential")
+}
+
+// logSafeRedacted renders v through its JSON tags into a map and replaces
+// the named secret fields with "[REDACTED]". It operates on serialized
+// bytes so the returned map always mirrors the exact wire shape (including
+// omitempty behavior) without duplicating struct tags. On marshal failure
+// it returns a minimal redacted marker rather than leaking partial state.
+func logSafeRedacted(v any, secretFields ...string) map[string]any {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return map[string]any{"redacted": "[REDACTED]"}
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return map[string]any{"redacted": "[REDACTED]"}
+	}
+	for _, k := range secretFields {
+		if _, ok := m[k]; ok {
+			m[k] = "[REDACTED]"
+		}
+	}
+	return m
 }
 
 // C2BRegisterRequest registers validation/confirmation callback URLs (v2).
@@ -254,7 +329,21 @@ func (r *STKQueryRequest) Validate() error {
 // Validate checks every documented constraint (amount bounds, remarks length,
 // command enum, URL shape) and normalizes PartyB — safe to call before
 // hand-marshalling.
+//
+// OriginatorConversationID bound: Daraja requires <20 chars (1..19 bytes).
+// Client.B2CPayout auto-generates a 16-char lowercase-hex idempotency key
+// when empty, so direct Validate() rejects empty (callers must either set
+// one or go through the client) and rejects longer than 19 chars to fail
+// fast instead of surfacing a gateway rejection.
 func (r *B2CPayoutRequest) Validate() error {
+	// OriginatorConversationID is the async idempotency key: contract <20
+	// chars, generated IDs are 16 lowercase-hex chars (see newOriginatorID).
+	if err := requireNonEmpty("OriginatorConversationID", r.OriginatorConversationID); err != nil {
+		return err
+	}
+	if err := requireMaxLen("OriginatorConversationID", r.OriginatorConversationID, 19); err != nil {
+		return err
+	}
 	if err := requireNonEmpty("InitiatorName", r.InitiatorName); err != nil {
 		return err
 	}

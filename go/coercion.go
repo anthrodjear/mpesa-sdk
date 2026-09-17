@@ -5,6 +5,7 @@ package mpesa
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -48,7 +49,9 @@ type FlexInt64 int64
 
 // UnmarshalJSON accepts quoted numeric strings, bare numbers, and null;
 // null or "" map to 0 — callers treat <=0 as TTL unknown. Malformed input
-// (doubled quotes, alphabetic content) is a hard error.
+// (doubled quotes, alphabetic content) is a hard error. Integral floats
+// like 3599.0 are accepted (Python coerce_int + TS safeJsonInt parity);
+// non-integral floats like 1.5 are rejected.
 func (f *FlexInt64) UnmarshalJSON(b []byte) error {
 	s := strings.TrimSpace(string(b))
 	if s == "null" || s == "" {
@@ -65,17 +68,42 @@ func (f *FlexInt64) UnmarshalJSON(b []byte) error {
 			*f = 0
 			return nil
 		}
-		v, err := strconv.ParseInt(str, 10, 64)
-		if err != nil {
-			return fmt.Errorf("mpesa: cannot parse %s as integer", b)
+		// Strict integer fast path: plain ASCII digits with optional sign.
+		if v, err := strconv.ParseInt(str, 10, 64); err == nil {
+			*f = FlexInt64(v)
+			return nil
 		}
+		// Lenient fallback: integral floats only ("3599.0" → 3599);
+		// non-integral, non-finite or out-of-range values stay hard errors.
+		// Pattern copied from classification.go parseResultCode.
+		if v, err := parseIntegralFloat(str); err == nil {
+			*f = FlexInt64(v)
+			return nil
+		}
+		return fmt.Errorf("mpesa: cannot parse %s as integer", b)
+	}
+	// Strict integer fast path for bare numbers.
+	if v, err := strconv.ParseInt(s, 10, 64); err == nil {
 		*f = FlexInt64(v)
 		return nil
 	}
-	v, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return fmt.Errorf("mpesa: cannot parse %s as integer", b)
+	// Lenient fallback: bare integral floats only (3599.0 → 3599).
+	if v, err := parseIntegralFloat(s); err == nil {
+		*f = FlexInt64(v)
+		return nil
 	}
-	*f = FlexInt64(v)
-	return nil
+	return fmt.Errorf("mpesa: cannot parse %s as integer", b)
+}
+
+// parseIntegralFloat converts an integral-float rendering to int64,
+// rejecting non-integral fractions, non-finite values and out-of-int64
+// magnitudes. It mirrors classification.go's lenient fallback so OAuth
+// TTLs (Python coerce_int integral-float branch, TS safeJsonInt) accept
+// 3599.0 while 1.5/NaN/Inf/1e30 stay errors.
+func parseIntegralFloat(s string) (int64, error) {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) || f < math.MinInt64 || f > math.MaxInt64 {
+		return 0, fmt.Errorf("not an integral float: %q", s)
+	}
+	return int64(f), nil
 }
