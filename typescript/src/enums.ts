@@ -125,20 +125,35 @@ export class CommandID extends MpesaEnum<
  * C2B URL-registration fallback when ValidationURL is unreachable.
  * Wire values are sentence-case — NOT SCREAMING_CASE.
  *
+ * The wire-correct members are `Completed` / `Cancelled` (Go/Py
+ * parity — these are the exact strings Safaricom matches on the
+ * wire). `Success` / `Fail` are deprecated aliases kept for
+ * back-compat; new code MUST use `Completed` / `Cancelled`.
+ *
  * @example
  * ```ts
- * const body = { ResponseType: ResponseType.Success.wireKey };
+ * const body = { ResponseType: ResponseType.Completed.wireKey }; // "Completed"
  * ```
  * @see docs/apis/c2b.md
  */
-export class ResponseType extends MpesaEnum<'Success' | 'Fail'> {
-  /** Validation succeeded or was unreachable — accept the payment. */
+export class ResponseType extends MpesaEnum<'Success' | 'Fail' | 'Completed' | 'Cancelled'> {
+  /**
+   * @deprecated Use {@link ResponseType.Completed} — wire-correct value.
+   * Kept as an alias for back-compat.
+   */
   static readonly Success = new ResponseType('Success');
-  /** Validation explicitly rejected the payment. */
+  /**
+   * @deprecated Use {@link ResponseType.Cancelled} — wire-correct value.
+   * Kept as an alias for back-compat.
+   */
   static readonly Fail = new ResponseType('Fail');
+  /** Validation succeeded or was unreachable — accept the payment (wire-correct). */
+  static readonly Completed = new ResponseType('Completed');
+  /** Validation explicitly rejected the payment (wire-correct). */
+  static readonly Cancelled = new ResponseType('Cancelled');
   /** All `ResponseType` instances. */
   static get ALL(): readonly ResponseType[] {
-    return Object.freeze([ResponseType.Success, ResponseType.Fail]);
+    return Object.freeze([ResponseType.Success, ResponseType.Fail, ResponseType.Completed, ResponseType.Cancelled]);
   }
 }
 

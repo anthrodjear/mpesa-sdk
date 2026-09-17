@@ -45,10 +45,13 @@ export function safeJsonInt(value: unknown): number | null {
 
 /**
  * Fast ASCII-digit check: returns true if `value` is a string matching
- * `/^-?\d{1,15}$/` with no leading zeros on multi-digit numbers. Rejects
+ * `/^-?\d{1,19}$/` with no leading zeros on multi-digit numbers. Rejects
  * Unicode-ND digits (e.g. "٠٢٣"), commas, whitespace, and overflow-length
- * strings. Capped at 15 digits because any 15-digit integer fits in JS's
- * ±2^53 safe range.
+ * strings. Capped at 19 digits for Go int64 / Python 19-digit parity —
+ * note this exceeds JS's ±2^53 safe-integer range, so callers MUST still
+ * route through {@link safeJsonInt} (which guards ±2^53) before numeric
+ * conversion; this check is a shape allowlist only (OWASP Input
+ * Validation), not a safe-integer proof.
  *
  * @example
  * ```ts
@@ -61,7 +64,7 @@ export function safeJsonInt(value: unknown): number | null {
  */
 export function isNumericString(value: unknown): boolean {
   if (typeof value !== "string") return false;
-  if (!/^-?\d{1,15}$/.test(value)) return false;
+  if (!/^-?\d{1,19}$/.test(value)) return false;
   const abs = value[0] === "-" ? value.slice(1) : value;
   return abs === "0" || abs[0] !== "0";
 }

@@ -144,9 +144,22 @@ function requirePositive(field: string, value: number): void {
   }
 }
 
+/**
+ * Require a positive whole number amount (OWASP Input Validation:
+ * allowlist positive integers; Daraja amounts are whole shillings —
+ * Go/Python + docs/apis/stk-push.md require ints, never decimals).
+ * Uses `Number.isInteger` + `Number.isFinite` + `> 0` per TypeScript
+ * numeric-guard conventions.
+ */
+function requirePositiveInt(field: string, value: number): void {
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`mpesa: ${field} must be a positive whole number, got ${value}`);
+  }
+}
+
 function requireMinMax(field: string, value: number, min: number, max: number): void {
-  if (!Number.isFinite(value) || value < min || value > max) {
-    throw new Error(`mpesa: ${field} must be between ${min} and ${max}, got ${value}`);
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`mpesa: ${field} must be a whole number between ${min} and ${max}, got ${value}`);
   }
 }
 
@@ -472,7 +485,7 @@ export class MpesaClient {
         `mpesa: TransactionType ${JSON.stringify(r.transactionType.value)} not in {CustomerPayBillOnline, CustomerBuyGoodsOnline}`,
       );
     }
-    requirePositive("Amount", r.amount);
+    requirePositiveInt("Amount", r.amount);
     r.partyA = normalizePhone(r.partyA);
     r.phoneNumber = normalizePhone(r.phoneNumber);
     requireURL("CallBackURL", r.callBackURL);
@@ -596,6 +609,7 @@ export class MpesaClient {
         `mpesa: B2C CommandID ${JSON.stringify(r.commandID.value)} not in {SalaryPayment, BusinessPayment, PromotionPayment}`,
       );
     }
+    requirePositiveInt("Amount", r.amount);
     requireMinMax("Amount", r.amount, 10, 250_000);
     requireNonEmpty("PartyA", r.partyA);
     r.partyB = normalizePhone(r.partyB);
@@ -734,7 +748,7 @@ export class MpesaClient {
     requireNonEmpty("Initiator", r.initiator);
     requireNonEmpty("SecurityCredential", r.securityCredential);
     requireNonEmpty("TransactionID", r.transactionID);
-    requirePositive("Amount", r.amount);
+    requirePositiveInt("Amount", r.amount);
     requireNonEmpty("ReceiverParty", r.receiverParty);
     requireLengthRange("Remarks", r.remarks, 2, 100);
     requireURL("ResultURL", r.resultURL);
@@ -836,13 +850,16 @@ export class MpesaClient {
     // Inject default
     if (!r.shortCode) r.shortCode = this._config.shortcode;
 
-    // Validate
+    // Validate — accept deprecated aliases (Success/Fail) and
+    // wire-correct values (Completed/Cancelled); all map to the wire.
     if (
       r.responseType.value !== "Success" &&
-      r.responseType.value !== "Fail"
+      r.responseType.value !== "Fail" &&
+      r.responseType.value !== "Completed" &&
+      r.responseType.value !== "Cancelled"
     ) {
       throw new Error(
-        `mpesa: ResponseType ${JSON.stringify(r.responseType.value)} must be Success or Fail`,
+        `mpesa: ResponseType ${JSON.stringify(r.responseType.value)} must be Success/Completed or Fail/Cancelled`,
       );
     }
     requireURL("ConfirmationURL", r.confirmationURL);
@@ -851,7 +868,7 @@ export class MpesaClient {
     // Build payload — C2B uses "Completed"/"Cancelled" wire values
     const payload: Record<string, unknown> = {
       ShortCode: r.shortCode,
-      ResponseType: r.responseType.value === "Success" ? "Completed" : "Cancelled",
+      ResponseType: (r.responseType.value === "Success" || r.responseType.value === "Completed") ? "Completed" : "Cancelled",
       ConfirmationURL: r.confirmationURL,
       ValidationURL: r.validationURL,
     };
@@ -892,7 +909,7 @@ export class MpesaClient {
         `mpesa: simulate CommandID ${JSON.stringify(r.commandID.value)} not in {CustomerPayBillOnline, CustomerBuyGoodsOnline}`,
       );
     }
-    requirePositive("Amount", r.amount);
+    requirePositiveInt("Amount", r.amount);
     r.msisdn = normalizePhone(r.msisdn);
     if (r.commandID.value === TransactionType.BillPayGoods.value && !r.billRefNumber?.trim()) {
       throw new Error("mpesa: BillRefNumber is required for CustomerPayBillOnline simulation");
@@ -936,7 +953,7 @@ export class MpesaClient {
     // Validate
     requireNonEmpty("MerchantName", r.merchantName);
     requireNonEmpty("RefNo", r.refNo);
-    requirePositive("Amount", r.amount);
+    requirePositiveInt("Amount", r.amount);
     if (!QR_TRX_CODES.has(r.trxCode.value)) {
       throw new Error(
         `mpesa: TrxCode ${JSON.stringify(r.trxCode.value)} not in {BG, WA, PB, SM, SB}`,

@@ -602,9 +602,20 @@ describe("parseAsyncResult", () => {
     expect(result.ResultCode).toBe("1032");
   });
 
-  it("rejects numeric ResultCode (must be string)", () => {
+  it("coerces numeric ResultCode/ResultDesc via String() (Go FlexString parity)", () => {
+    const flat = parseAsyncResult({ ResultCode: 0, ResultDesc: 0 });
+    expect(flat.ResultCode).toBe("0");
+    expect(flat.ResultDesc).toBe("0");
+
+    const wrapped = parseAsyncResult({
+      Result: { ResultCode: 1032, ResultDesc: "Request cancelled by user" },
+    });
+    expect(wrapped.ResultCode).toBe("1032");
+  });
+
+  it("rejects non-string/number ResultCode (boolean/null)", () => {
     expect(() =>
-      parseAsyncResult({ ResultCode: 0, ResultDesc: "Success" }),
+      parseAsyncResult({ ResultCode: true, ResultDesc: "Success" }),
     ).toThrow("invalid");
   });
 

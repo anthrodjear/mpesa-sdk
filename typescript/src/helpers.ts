@@ -22,7 +22,7 @@
  * @packageDocumentation
  */
 
-import { randomBytes, constants, createHash } from "node:crypto";
+import { randomBytes, constants } from "node:crypto";
 import { X509Certificate, publicEncrypt } from "node:crypto";
 
 // ---------------------------------------------------------------------------
@@ -170,10 +170,20 @@ export function normalizePhone(raw: string): string {
  * deliberately NOT verified because official certs ship long-expired
  * by design.
  *
+ * **Argument order trap (documented divergence from Go/Python)**: this
+ * function takes `(password, cert)` — password first, certificate
+ * second. Go/Python take the reverse order. A fail-fast guard throws
+ * when the first argument is not a string, which catches the common
+ * swap where a Buffer/PEM certificate is passed as the password
+ * (OWASP Input Validation: fail fast on allowlist violation rather
+ * than emitting well-formed garbage).
+ *
  * @param initiatorPassword - Raw UTF-8 initiator password to encrypt.
+ *   MUST be a string; non-string first args throw an arg-order error.
  * @param certificatePem    - PEM or DER encoded M-Pesa certificate.
  * @returns Base64-encoded ciphertext.
- * @throws {Error} Empty password, unparseable cert, or non-RSA key.
+ * @throws {Error} Arg-order swap (first arg not a string), empty
+ *   password, unparseable cert, or non-RSA key.
  *
  * @example
  * ```ts
@@ -189,6 +199,11 @@ export function securityCredential(
   initiatorPassword: string,
   certificatePem: string | Buffer,
 ): string {
+  if (typeof initiatorPassword !== "string") {
+    throw new Error(
+      "mpesa: securityCredential(password, cert) — arg order swapped? password first, certificate second",
+    );
+  }
   if (!initiatorPassword.trim()) {
     throw new Error("mpesa: initiator_password is required");
   }

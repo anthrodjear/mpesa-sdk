@@ -133,14 +133,25 @@ describe("CommandID", () => {
 });
 
 describe("ResponseType", () => {
-  it("has exactly 2 members: Success and Fail", () => {
-    expect(ResponseType.ALL).toHaveLength(2);
+  it("has 4 members: deprecated Success/Fail aliases + wire-correct Completed/Cancelled", () => {
+    expect(ResponseType.ALL).toHaveLength(4);
     expect(ResponseType.Success.value).toBe("Success");
     expect(ResponseType.Fail.value).toBe("Fail");
+    expect(ResponseType.Completed.value).toBe("Completed");
+    expect(ResponseType.Cancelled.value).toBe("Cancelled");
+  });
+
+  it("coerce accepts wire-correct Completed/Cancelled (Go/Py parity)", () => {
+    const valid = ResponseType.ALL.map(e => e.value);
+    expect(MpesaEnum.coerce("Completed", valid)).toBe("Completed");
+    expect(MpesaEnum.coerce("Cancelled", valid)).toBe("Cancelled");
+    // Deprecated aliases still accepted for back-compat
+    expect(MpesaEnum.coerce("Success", valid)).toBe("Success");
+    expect(MpesaEnum.coerce("Fail", valid)).toBe("Fail");
   });
 
   it("coerce rejects values from other enum domains", () => {
-    expect(() => MpesaEnum.coerce("Completed", ResponseType.ALL.map(e => e.value)))
+    expect(() => MpesaEnum.coerce("SUCCESS", ResponseType.ALL.map(e => e.value)))
       .toThrow(TypeError);
   });
 });

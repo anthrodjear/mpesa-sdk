@@ -77,7 +77,8 @@ describe("isNumericString", () => {
     expect(isNumericString("123")).toBe(true);
     expect(isNumericString("-1")).toBe(true);
     expect(isNumericString("0")).toBe(true);
-    expect(isNumericString("999999999999999")).toBe(true); // 15 digits max
+    expect(isNumericString("999999999999999")).toBe(true); // 15 digits
+    expect(isNumericString("1".repeat(19))).toBe(true); // 19 digits max (Go int64 parity)
   });
 
   it("rejects leading zeros on multi-digit numbers", () => {
@@ -98,8 +99,9 @@ describe("isNumericString", () => {
     expect(isNumericString("")).toBe(false);
   });
 
-  it("rejects strings longer than 15 digits", () => {
-    expect(isNumericString("1".repeat(16))).toBe(false);
+  it("rejects strings longer than 19 digits (Go int64 parity; safeJsonInt still guards ±2^53)", () => {
+    expect(isNumericString("1".repeat(19))).toBe(true);
+    expect(isNumericString("1".repeat(20))).toBe(false);
   });
 
   it("rejects non-string inputs", () => {

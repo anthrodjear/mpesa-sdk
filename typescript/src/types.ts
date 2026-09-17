@@ -148,7 +148,11 @@ export interface C2BRegisterRequest {
 
 /** C2B payment simulation request body (test environment). */
 export interface C2BSimulateRequest {
-  readonly shortCode: string;
+  /**
+   * Client-injected — defaults to config shortcode when empty/omitted
+   * (Go/Py parity). Callers typically omit this.
+   */
+  readonly shortCode?: string | undefined;
   readonly commandID: CommandID;
   readonly amount: number;
   readonly msisdn: string;
@@ -255,13 +259,20 @@ export interface MetadataItem {
 /**
  * Callback result payload from STK Push async callback.
  *
- * @property ResultCode - `0` = success; anything else = failure.
+ * The gateway sends `ResultCode` as BOTH `0` (number) and `"0"`
+ * (string) depending on gateway version — same trap as
+ * {@link STKQueryResponse.ResultCode}. The type is `string | number`
+ * for back-compat; callers MUST normalize with `String()` before
+ * comparison (e.g. `String(cb.ResultCode) === "0"`) — never `===`
+ * against a single-type literal.
+ *
+ * @property ResultCode - `0`/`"0"` = success; anything else = failure.
  * @property CallbackMetadata - Present only on success.
  */
 export interface StkCallbackResult {
   readonly MerchantRequestID: string;
   readonly CheckoutRequestID: string;
-  readonly ResultCode: number;
+  readonly ResultCode: string | number;
   readonly ResultDesc: string;
   readonly CallbackMetadata?: {
     readonly Item: readonly MetadataItem[];
@@ -363,11 +374,32 @@ export interface BalanceSegment {
   readonly uncleared: number;
   readonly reserved: number;
   readonly min: number;
+  /** Raw `account|currency|avail|uncleared|reserved|min` row (trimmed). */
+  readonly raw: string;
 }
+
+/**
+ * ASCII-digit gate for balance amounts (Python `_BALANCE_NUM_RE`
+ * parity): `^[+-]?[0-9]{1,18}(\.[0-9]{1,6})?$`. Rejects `parseFloat`
+ * false-positives such as `"1_000"` (→ 1), `"0x10"` (→ 0), and
+ * Unicode-ND digits — allowlist per OWASP Input Validation.
+ */
+const BALANCE_NUM_RE = /^[+-]?[0-9]{1,18}(\.[0-9]{1,6})?$/;
 
 /**
  * Parse the pipe-delimited AccountBalance callback text into structured
  * segments. Malformed or incomplete rows are silently skipped.
+ *
+ * Each numeric field must match {@link BALANCE_NUM_RE} (ASCII digits
+ * only) before `parseFloat` — this rejects `"1_000"`, `"0x10"`, and
+ * Unicode digits that `parseFloat` would otherwise mis-parse or that
+ * Python's `_BALANCE_NUM_RE` rejects.
+ *
+ * **Skipped-count limitation**: malformed rows are dropped without a
+ * count in this pass — the return type stays `BalanceSegment[]` for
+ * back-compat. A future breaking change will return
+ * `{ segments, skipped }` so callers can distinguish "empty balance"
+ * from "all rows malformed".
  *
  * @param text - Raw callback text (e.g.
  *   `"Available Account Balance|KES|1234.56|0.00|0.00|0.00"`).
@@ -402,10 +434,18 @@ export function parseBalanceSegments(text: string): BalanceSegment[] {
       availStr === undefined || unclearedStr === undefined ||
       reservedStr === undefined || minStr === undefined
     ) continue;
-    const available = parseFloat(availStr);
-    const uncleared = parseFloat(unclearedStr);
-    const reserved = parseFloat(reservedStr);
-    const min = parseFloat(minStr);
+    const availT = availStr.trim();
+    const unclearedT = unclearedStr.trim();
+    const reservedT = reservedStr.trim();
+    const minT = minStr.trim();
+    if (
+      !BALANCE_NUM_RE.test(availT) || !BALANCE_NUM_RE.test(unclearedT) ||
+      !BALANCE_NUM_RE.test(reservedT) || !BALANCE_NUM_RE.test(minT)
+    ) continue;
+    const available = parseFloat(availT);
+    const uncleared = parseFloat(unclearedT);
+    const reserved = parseFloat(reservedT);
+    const min = parseFloat(minT);
     if (
       Number.isFinite(available) && Number.isFinite(uncleared) &&
       Number.isFinite(reserved) && Number.isFinite(min)
@@ -417,6 +457,7 @@ export function parseBalanceSegments(text: string): BalanceSegment[] {
         uncleared,
         reserved,
         min,
+        raw: trimmed,
       });
     }
   }
@@ -452,11 +493,13 @@ export interface AsyncResultEnvelope {
  * - **Flat**: `{ ResultCode, ResultDesc, ... }`
  * - **Wrapped** (Daraja wire shape): `{ "Result": { ResultCode, ResultDesc, ... } }`
  *
- * `ResultCode` is always `string` for cross-language parity (Go uses
- * `FlexString`, Python normalizes to `str`).
+ * `ResultCode`/`ResultDesc` accept `string` OR `number` and are
+ * coerced via `String()` — the gateway emits both shapes depending on
+ * endpoint/version. `ResultCode` is always `string` after coercion for
+ * cross-language parity (Go `FlexString`, Python normalizes to `str`).
  *
  * @throws {TypeError} If the body is not an object or is missing required
- *   fields (`ResultCode`, `ResultDesc`).
+ *   fields (`ResultCode`, `ResultDesc` as string or number).
  */
 export function parseAsyncResult(body: unknown): AsyncResultEnvelope {
   if (typeof body !== "object" || body === null) {
@@ -467,15 +510,17 @@ export function parseAsyncResult(body: unknown): AsyncResultEnvelope {
     typeof outer.Result === "object" && outer.Result !== null
       ? (outer.Result as Record<string, unknown>)
       : outer;
+  const rawCode = inner.ResultCode;
+  const rawDesc = inner.ResultDesc;
   if (
-    typeof inner.ResultCode !== "string" ||
-    typeof inner.ResultDesc !== "string"
+    (typeof rawCode !== "string" && typeof rawCode !== "number") ||
+    (typeof rawDesc !== "string" && typeof rawDesc !== "number")
   ) {
     throw new TypeError("mpesa: invalid async result envelope");
   }
   return {
-    ResultCode: inner.ResultCode,
-    ResultDesc: inner.ResultDesc,
+    ResultCode: String(rawCode),
+    ResultDesc: String(rawDesc),
     ...(typeof inner.MerchantRequestID === "string" && { MerchantRequestID: inner.MerchantRequestID }),
     ...(typeof inner.CheckoutRequestID === "string" && { CheckoutRequestID: inner.CheckoutRequestID }),
   };

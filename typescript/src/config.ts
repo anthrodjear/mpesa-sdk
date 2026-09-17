@@ -102,7 +102,11 @@ export class Config {
   readonly consumerKey: string;
   /** OAuth consumer secret — non-empty string. */
   readonly consumerSecret: string;
-  /** M-Pesa shortcode — digits-only, 5 to 10 characters. */
+  /**
+   * M-Pesa shortcode — digits-only, 5 to 10 characters, OR empty.
+   * Empty is allowed (Go/Py parity) for callers that pass the shortcode
+   * per-request instead of via config; validated only when non-empty.
+   */
   readonly shortcode: string;
   /** Daraja passkey — non-empty string. */
   readonly passkey: string;
@@ -133,8 +137,10 @@ export class Config {
   validate(): void {
     validateField(this.consumerKey, "consumerKey", (v) => v.length > 0, "must be a non-empty string");
     validateField(this.consumerSecret, "consumerSecret", (v) => v.length > 0, "must be a non-empty string");
-    validateField(this.shortcode, "shortcode", (v) => /^\d{5,10}$/.test(v),
-      "must be a digits-only string of 5 to 10 characters");
+    // Empty shortcode allowed (Go/Py parity) — callers may supply the
+    // shortcode per-request; validate the shape only when non-empty.
+    validateField(this.shortcode, "shortcode", (v) => v.length === 0 || /^\d{5,10}$/.test(v),
+      "must be a digits-only string of 5 to 10 characters (or empty when passed per-request)");
     validateField(this.passkey, "passkey", (v) => v.length > 0, "must be a non-empty string");
   }
 
