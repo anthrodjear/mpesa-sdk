@@ -59,6 +59,12 @@ type Client struct {
 // mutated) and always gets the never-follow-redirects policy: Daraja never
 // legitimately redirects, and following 307/308 would replay request bodies
 // against an arbitrary Location host.
+//
+// Security: an injected Transport with InsecureSkipVerify=true is refused
+// outright (fail-closed, Python verify=True parity). A test-only insecure
+// transport accidentally wired in production would otherwise MITM the OAuth
+// Basic credential, bearer tokens, SecurityCredential and PII. Do not
+// inject a transport that disables certificate verification.
 func NewClient(cfg Config) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -71,6 +77,10 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 	hc := &http.Client{Timeout: cfg.Timeout}
 	if cfg.HTTPClient != nil {
+		if tr, ok := cfg.HTTPClient.Transport.(*http.Transport); ok && tr != nil &&
+			tr.TLSClientConfig != nil && tr.TLSClientConfig.InsecureSkipVerify {
+			return nil, fmt.Errorf("mpesa: refusing HTTPClient with InsecureSkipVerify (would disable TLS verification)")
+		}
 		cloned := *cfg.HTTPClient
 		if cloned.Timeout <= 0 {
 			cloned.Timeout = cfg.Timeout

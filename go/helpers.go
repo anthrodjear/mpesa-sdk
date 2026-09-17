@@ -72,8 +72,17 @@ func NormalizePhone(s string) (string, error) {
 
 // SecurityCredential encrypts the initiator password with the M-Pesa public
 // key certificate using RSA PKCS#1 v1.5 and base64-encodes the ciphertext.
+//
+// Padding note (Context7 pyca/cryptography baseline): OAEP is recommended
+// for new applications, but Daraja mandates legacy PKCS#1 v1.5 on the wire —
+// the SDK uses EncryptPKCS1v15 deliberately, never OAEP. Ciphertexts are
+// short-lived initiator passwords, never long-term secrets.
+//
 // The certificate may be PEM or raw DER; validity dates and chains are
-// deliberately NOT verified because official certs ship long-expired by design.
+// deliberately NOT verified because official certs ship long-expired by design
+// (assets/certs/* — encryption-only public keys, not trust anchors).
+// Max plaintext is keySize-11 bytes (245 B for RSA-2048); longer passwords
+// fail with an encryption error. Errors never echo password/cert material.
 func SecurityCredential(certPEMorDER []byte, initiatorPassword string) (string, error) {
 	if strings.TrimSpace(initiatorPassword) == "" {
 		return "", fmt.Errorf("mpesa: initiator password is required")

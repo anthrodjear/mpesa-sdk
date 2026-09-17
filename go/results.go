@@ -27,12 +27,20 @@ type AsyncResultBody struct {
 
 // Parameters flattens ResultParameters tolerating absent sections; values are
 // rendered leniently as strings since Safaricom mixes types.
+//
+// First-wins: on duplicate Key entries (gateway retries) the FIRST value
+// wins, matching MetadataMap(), Python parameters()/metadata() and
+// TypeScript MetadataMap. Earlier last-wins behavior silently diverged
+// across SDKs on duplicate keys — fixed to first-wins.
 func (r AsyncResultBody) Parameters() map[string]string {
 	out := make(map[string]string)
 	if r.ResultParameters == nil {
 		return out
 	}
 	for _, p := range r.ResultParameters.ResultParameter {
+		if _, exists := out[p.Key]; exists {
+			continue
+		}
 		fs := FlexString("")
 		if err := json.Unmarshal(p.Value, &fs); err != nil {
 			out[p.Key] = string(p.Value)

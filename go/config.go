@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -39,14 +40,46 @@ func (c Config) Format(f fmt.State, verb rune) {
 	_, _ = fmt.Fprint(f, c.GoString())
 }
 
+// MarshalJSON renders Config for structured logging with live secrets
+// replaced by [REDACTED].
+//
+// Why this exists (OWASP log-injection / secret-scanning baseline):
+// GoString/Format only cover fmt verbs — encoding/json bypasses
+// fmt.Formatter entirely, so json.Marshal(cfg) used to emit
+// ConsumerSecret and Passkey in cleartext to log aggregators.
+// MarshalJSON closes that path; raw struct copies still carry secrets,
+// so never marshal a shadow struct — always marshal Config itself.
+//
+// ConsumerKey stays visible by design (GoString parity across SDKs);
+// ConsumerSecret and Passkey are redacted. See SECURITY.md.
+func (c Config) MarshalJSON() ([]byte, error) {
+	type shadow Config // avoid recursion into this method
+	b, err := json.Marshal(shadow(c))
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return b, nil
+	}
+	m["ConsumerSecret"] = "[REDACTED]"
+	m["Passkey"] = "[REDACTED]"
+	return json.Marshal(m)
+}
+
 // Validate checks that the Config fields are well-formed. An empty Shortcode
 // is allowed (some APIs don't require one), but when present it must be 5–10
-// digits.
+// digits. ConsumerKey must not contain ':' — it becomes the Basic-auth
+// username in "key:secret" (docs/apis/oauth.md) and a colon would split
+// credentials ambiguously at the gateway or a forward proxy.
 func (c Config) Validate() error {
 	if c.Shortcode != "" {
 		if ok, _ := regexp.MatchString(`^\d{5,10}$`, c.Shortcode); !ok {
 			return fmt.Errorf("mpesa: invalid shortcode %q: must be 5–10 digits", c.Shortcode)
 		}
+	}
+	if strings.Contains(c.ConsumerKey, ":") {
+		return fmt.Errorf("mpesa: invalid ConsumerKey: must not contain ':' (Basic-auth separator)")
 	}
 	return nil
 }
