@@ -41,6 +41,8 @@ import {
   // Types (runtime — class + function)
   MetadataMap,
   parseBalanceSegments,
+  parseAsyncResultJson,
+  MAX_ASYNC_RESULT_BYTES,
   // Version
   VERSION,
 } from "../src/index.js";
@@ -50,12 +52,14 @@ import type {
   STKPushRequest,
   STKQueryRequest,
   B2CRequest,
+  B2CPayoutRequest,
   TransactionStatusRequest,
   AccountBalanceRequest,
   ReversalRequest,
   C2BRegisterRequest,
   C2BSimulateRequest,
   DynamicQRRequest,
+  QRCodeRequest,
   STKPushResponse,
   STKQueryResponse,
   ConversationResponse,
@@ -99,6 +103,8 @@ describe("barrel exports — non-null", () => {
     coerceInt,
     parseIntSafe,
     parseBalanceSegments,
+    parseAsyncResultJson,
+    MAX_ASYNC_RESULT_BYTES,
     MetadataMap,
     VERSION,
   };
@@ -118,12 +124,14 @@ describe("barrel exports — non-null", () => {
 type _STKPushRequest           = STKPushRequest;
 type _STKQueryRequest          = STKQueryRequest;
 type _B2CRequest               = B2CRequest;
+type _B2CPayoutRequest         = B2CPayoutRequest;
 type _TransactionStatusRequest = TransactionStatusRequest;
 type _AccountBalanceRequest    = AccountBalanceRequest;
 type _ReversalRequest          = ReversalRequest;
 type _C2BRegisterRequest       = C2BRegisterRequest;
 type _C2BSimulateRequest       = C2BSimulateRequest;
 type _DynamicQRRequest         = DynamicQRRequest;
+type _QRCodeRequest            = QRCodeRequest;
 type _STKPushResponse          = STKPushResponse;
 type _STKQueryResponse         = STKQueryResponse;
 type _ConversationResponse     = ConversationResponse;
@@ -183,11 +191,12 @@ describe("barrel exports — count", () => {
       "ResultClass", "classifyResultCode",
       "safeJsonInt", "isNumericString", "coerceInt", "parseIntSafe",
       "MetadataMap", "parseBalanceSegments",
+      "parseAsyncResultJson", "MAX_ASYNC_RESULT_BYTES",
       "VERSION",
-      // Type-only (21)
-      "STKPushRequest", "STKQueryRequest", "B2CRequest",
+      // Type-only (23)
+      "STKPushRequest", "STKQueryRequest", "B2CRequest", "B2CPayoutRequest",
       "TransactionStatusRequest", "AccountBalanceRequest", "ReversalRequest",
-      "C2BRegisterRequest", "C2BSimulateRequest", "DynamicQRRequest",
+      "C2BRegisterRequest", "C2BSimulateRequest", "DynamicQRRequest", "QRCodeRequest",
       "STKPushResponse", "STKQueryResponse", "ConversationResponse",
       "C2BAckResponse", "QRCodeResponse", "OAuthToken",
       "StkCallbackResult", "MetadataItem", "AsyncResult", "BalanceSegment",
@@ -206,7 +215,8 @@ describe("barrel exports — count", () => {
       generatePassword, normalizePhone, securityCredential, newOriginatorID,
       ResultClass, classifyResultCode,
       safeJsonInt, isNumericString, coerceInt, parseIntSafe,
-      parseBalanceSegments, MetadataMap, VERSION,
+      parseBalanceSegments, parseAsyncResultJson, MAX_ASYNC_RESULT_BYTES,
+      MetadataMap, VERSION,
     };
 
     const runtimeNames = allExports.filter(n => n in runtimeMod);

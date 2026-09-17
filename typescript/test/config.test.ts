@@ -92,6 +92,26 @@ describe("Config construction — valid", () => {
     expect(cfg.environment).toBe(Environment.PRODUCTION);
   });
 
+  it("defaults shortcode to empty string when omitted (Go/Python parity)", () => {
+    const cfg = new Config({
+      consumerKey: "k",
+      consumerSecret: "s",
+      passkey: "p",
+    });
+    expect(cfg.shortcode).toBe("");
+  });
+
+  it("accepts explicit empty shortcode (per-request mode)", () => {
+    const cfg = new Config({
+      consumerKey: "k",
+      consumerSecret: "s",
+      shortcode: "",
+      passkey: "p",
+    });
+    expect(cfg.shortcode).toBe("");
+    expect(() => cfg.validate()).not.toThrow();
+  });
+
   it("accepts shortcodes of length 5 and 10", () => {
     expect(() =>
       new Config({
@@ -195,6 +215,45 @@ describe("Config construction — invalid", () => {
         new Config({
           consumerKey: 123 as unknown as string,
           consumerSecret: "s",
+          shortcode: "174379",
+          passkey: "p",
+        }),
+    ).toThrow(ConfigError);
+  });
+
+  it("throws ConfigError for consumerKey containing ':' (Basic-auth separator)", () => {
+    try {
+      new Config({
+        consumerKey: "key:secret",
+        consumerSecret: "s",
+        shortcode: "174379",
+        passkey: "p",
+      });
+      expect.fail("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as ConfigError).message).toContain("consumerKey");
+    }
+  });
+
+  it("throws ConfigError for non-ASCII consumerKey", () => {
+    expect(
+      () =>
+        new Config({
+          consumerKey: "kéy",
+          consumerSecret: "s",
+          shortcode: "174379",
+          passkey: "p",
+        }),
+    ).toThrow(ConfigError);
+  });
+
+  it("throws ConfigError for non-ASCII consumerSecret", () => {
+    expect(
+      () =>
+        new Config({
+          consumerKey: "k",
+          consumerSecret: "sécret",
           shortcode: "174379",
           passkey: "p",
         }),

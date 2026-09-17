@@ -112,3 +112,18 @@ describe("MpesaError instance semantics", () => {
     expect(new MpesaError(429, null, "500.003.02").message).toBe("mpesa: HTTP 429 [500.003.02]");
   });
 });
+
+describe("sanitizer Unicode property escapes (Cc/Cf)", () => {
+  it("strips Cf tag characters (U+E0020) and ZWSP while preserving emoji", () => {
+    const body = JSON.stringify({ requestId: "ok\u{E0020}\u200B\u{1F389}" });
+    const err = MpesaError.fromResponse(400, body);
+    expect(err.requestId).toBe("ok\u{1F389}");
+  });
+
+  it("strips C0 controls and DEL but keeps printable ASCII", () => {
+    const body = JSON.stringify({ errorCode: "A\x01\x7FB" });
+    const err = MpesaError.fromResponse(400, body);
+    expect(err.errorCode).toBe("AB");
+  });
+});
+

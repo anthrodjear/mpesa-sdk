@@ -8,12 +8,14 @@ import {
   STKPushRequest,
   STKQueryRequest,
   B2CRequest,
+  B2CPayoutRequest,
   TransactionStatusRequest,
   AccountBalanceRequest,
   ReversalRequest,
   C2BRegisterRequest,
   C2BSimulateRequest,
   DynamicQRRequest,
+  QRCodeRequest,
   STKPushResponse,
   STKQueryResponse,
   ConversationResponse,
@@ -24,10 +26,13 @@ import {
   MetadataItem,
   MetadataMap,
   AsyncResult,
+  AsyncResultEnvelope,
   BalanceSegment,
   parseBalanceSegments,
   isAccepted,
   parseAsyncResult,
+  parseAsyncResultJson,
+  MAX_ASYNC_RESULT_BYTES,
   TransactionType,
   CommandID,
   ResponseType,
@@ -641,5 +646,193 @@ describe("parseAsyncResult", () => {
     expect(() =>
       parseAsyncResult({ Result: { ResultDesc: "fail" } }),
     ).toThrow("invalid");
+  });
+});
+
+// ─── Section 13: parseAsyncResultJson (bounded entry) ─────────────────────────
+// SECURITY: never JSON.parse uncapped callback bodies — this entry enforces
+// the 1 MiB cap BEFORE parsing, then delegates to parseAsyncResult.
+
+describe("parseAsyncResultJson", () => {
+  it("parses a valid flat envelope from a string", () => {
+    const result = parseAsyncResultJson(
+      '{"ResultCode":"0","ResultDesc":"Completed","MerchantRequestID":"m1"}',
+    );
+    expect(result.ResultCode).toBe("0");
+    expect(result.ResultDesc).toBe("Completed");
+    expect(result.MerchantRequestID).toBe("m1");
+  });
+
+  it("parses a valid wrapped envelope from Uint8Array bytes", () => {
+    const bytes = new TextEncoder().encode(
+      '{"Result":{"ResultCode":1032,"ResultDesc":"Request cancelled by user"}}',
+    );
+    const result = parseAsyncResultJson(bytes);
+    expect(result.ResultCode).toBe("1032");
+    expect(result.ResultDesc).toBe("Request cancelled by user");
+  });
+
+  it("delegates envelope validation (missing ResultCode throws TypeError)", () => {
+    expect(() => parseAsyncResultJson('{"ResultDesc":"x"}')).toThrow(TypeError);
+    expect(() => parseAsyncResultJson(new TextEncoder().encode("null"))).toThrow(
+      TypeError,
+    );
+  });
+
+  it("rejects an oversize string body (> 1 MiB UTF-8)", () => {
+    const overhead = new TextEncoder().encode(
+      '{"ResultCode":"0","ResultDesc":""}',
+    ).length;
+    const oversize =
+      '{"ResultCode":"0","ResultDesc":"' +
+      "A".repeat(MAX_ASYNC_RESULT_BYTES - overhead + 1) +
+      '"}';
+    expect(new TextEncoder().encode(oversize).length).toBeGreaterThan(
+      MAX_ASYNC_RESULT_BYTES,
+    );
+    expect(() => parseAsyncResultJson(oversize)).toThrow(/exceeds/);
+  });
+
+  it("rejects oversize Uint8Array bytes (> 1 MiB)", () => {
+    const oversize = new Uint8Array(MAX_ASYNC_RESULT_BYTES + 1);
+    oversize.fill(0x20); // spaces — cap must fire before JSON.parse runs
+    expect(() => parseAsyncResultJson(oversize)).toThrow(/exceeds/);
+  });
+
+  it("cap counts UTF-8 bytes, not UTF-16 units (multibyte trap)", () => {
+    // "é" is 1 UTF-16 unit but 2 UTF-8 bytes: 600k chars = 1.2 MiB.
+    const tricky = "é".repeat(600_000);
+    expect(tricky.length).toBeLessThan(MAX_ASYNC_RESULT_BYTES);
+    expect(() => parseAsyncResultJson(tricky)).toThrow(/exceeds/);
+  });
+
+  it("accepts a body of exactly 1 MiB", () => {
+    const overhead = new TextEncoder().encode(
+      '{"ResultCode":"0","ResultDesc":""}',
+    ).length;
+    const exact =
+      '{"ResultCode":"0","ResultDesc":"' +
+      "A".repeat(MAX_ASYNC_RESULT_BYTES - overhead) +
+      '"}';
+    expect(new TextEncoder().encode(exact).length).toBe(MAX_ASYNC_RESULT_BYTES);
+    const result = parseAsyncResultJson(exact);
+    expect(result.ResultCode).toBe("0");
+  });
+
+  it("MAX_ASYNC_RESULT_BYTES is 1 MiB", () => {
+    expect(MAX_ASYNC_RESULT_BYTES).toBe(1 << 20);
+  });
+});
+
+// ─── Section 14: MetadataMap.duplicateKeys ────────────────────────────────────
+// Go DuplicateKeys / Python duplicate_keys parity: counts EXTRA occurrences.
+
+describe("MetadataMap.duplicateKeys", () => {
+  it("returns 0 with no duplicates", () => {
+    const map = new MetadataMap([
+      { Name: "A", Value: 1 },
+      { Name: "B", Value: 2 },
+    ]);
+    expect(map.duplicateKeys()).toBe(0);
+  });
+
+  it("returns 0 for an empty map", () => {
+    expect(new MetadataMap([]).duplicateKeys()).toBe(0);
+  });
+
+  it("counts one shadowed item ([A, A, B] → 1)", () => {
+    const map = new MetadataMap([
+      { Name: "Amount", Value: 1000 },
+      { Name: "Amount", Value: 9999 },
+      { Name: "Receipt", Value: "ABC" },
+    ]);
+    expect(map.get("Amount")).toBe(1000); // first still wins
+    expect(map.duplicateKeys()).toBe(1);
+  });
+
+  it("counts extra occurrences, not distinct keys ([A, A, A] → 2)", () => {
+    const map = new MetadataMap([
+      { Name: "A", Value: 1 },
+      { Name: "A", Value: 2 },
+      { Name: "A", Value: 3 },
+    ]);
+    expect(map.duplicateKeys()).toBe(2);
+  });
+
+  it("set() never affects duplicateKeys (wire duplicates fixed at construction)", () => {
+    const map = new MetadataMap([{ Name: "A", Value: 1 }]);
+    map.set("B", 2); // new key
+    map.set("A", 999); // no-op (first-wins)
+    expect(map.duplicateKeys()).toBe(0);
+  });
+});
+
+// ─── Section 15: Request type aliases + numeric STKQuery ResultCode ──────────
+
+describe("request type aliases (non-breaking)", () => {
+  it("B2CPayoutRequest is assignable to/from B2CRequest (identical wire)", () => {
+    const alias: B2CPayoutRequest = {
+      initiatorName: "test",
+      securityCredential: "enc",
+      commandID: CommandID.BusinessPayment,
+      amount: 100,
+      partyA: "174379",
+      partyB: "254712345678",
+      remarks: "test",
+      queueTimeOutURL: "https://example.com/to",
+      resultURL: "https://example.com/res",
+    };
+    const canonical: B2CRequest = alias;
+    expect(canonical.amount).toBe(100);
+  });
+
+  it("QRCodeRequest is assignable to/from DynamicQRRequest (identical wire)", () => {
+    const alias: QRCodeRequest = {
+      merchantName: "Shop",
+      refNo: "R1",
+      amount: 50,
+      trxCode: QRTrxCode.BuyGoods,
+      cpi: "174379",
+      size: "300",
+    };
+    const canonical: DynamicQRRequest = alias;
+    expect(canonical.trxCode.value).toBe("BG");
+  });
+
+  it("STKQueryResponse accepts numeric ResultCode (wire trap, normalized by stkQuery)", () => {
+    const res: STKQueryResponse = {
+      ResponseCode: "0",
+      ResponseDescription: "ok",
+      MerchantRequestID: "m",
+      CheckoutRequestID: "c",
+      ResultCode: 1032,
+      ResultDesc: "cancelled",
+    };
+    expect(String(res.ResultCode)).toBe("1032");
+  });
+});
+
+// ─── Section 16: parseBalanceSegments hardening ──────────────────────────────
+
+describe("parseBalanceSegments hardening", () => {
+  it("preserves the trimmed raw row", () => {
+    const segments = parseBalanceSegments("  A|KES|100|0|0|0  ");
+    expect(segments).toHaveLength(1);
+    expect(segments[0]!.raw).toBe("A|KES|100|0|0|0");
+  });
+
+  it('rejects parseFloat traps "1_000" (→ 1) and "0x10" (→ 0)', () => {
+    expect(parseBalanceSegments("A|KES|1_000|0|0|0")).toEqual([]);
+    expect(parseBalanceSegments("A|KES|0x10|0|0|0")).toEqual([]);
+  });
+
+  it("rejects Arabic-Indic digits (Unicode-ND)", () => {
+    // U+0661 U+0662 U+0663 — parseFloat mis-parses, _BALANCE_NUM_RE rejects.
+    expect(parseBalanceSegments("A|KES|١٢٣|0|0|0")).toEqual([]);
+  });
+
+  it("rejects non-numeric garbage in any numeric column", () => {
+    expect(parseBalanceSegments("A|KES|100|abc|0|0")).toEqual([]);
+    expect(parseBalanceSegments("A|KES|100|0|0|NaN")).toEqual([]);
   });
 });

@@ -260,6 +260,62 @@ describe("securityCredential", () => {
 });
 
 // ---------------------------------------------------------------------------
+// securityCredential hardening — RSA gate + 245-byte PKCS#1 v1.5 limit
+// ---------------------------------------------------------------------------
+
+describe("securityCredential hardening", () => {
+  // Self-signed ECDSA P-256 fixture (public cert only — no private key
+  // material). Generated for this test; parsing never checks dates/chains.
+  const EC_CERT_PEM = [
+    "-----BEGIN CERTIFICATE-----",
+    "MIIBhjCCASygAwIBAgIQGqNIXcJuCbNO+LkDj+13ejAKBggqhkjOPQQDAjAcMRow",
+    "GAYDVQQDDBFtcGVzYS1zZGstdGVzdC1lYzAeFw0yNjA5MTcwMzU1MjlaFw0zNjA5",
+    "MTcwNDA1MjhaMBwxGjAYBgNVBAMMEW1wZXNhLXNkay10ZXN0LWVjMFkwEwYHKoZI",
+    "zj0CAQYIKoZIzj0DAQcDQgAE4NdiMQ6OmZ04CJRiyqUJpDdu7TUAkP+5eGEMUACN",
+    "RB6HoB50vEtcQQzF/95ms4zWH9HbW4LExtILSBs2l/cwdqNQME4wDgYDVR0PAQH/",
+    "BAQDAgWgMB0GA1UdJQQWMBQGCCsGAQUFBwMCBggrBgEFBQcDATAdBgNVHQ4EFgQU",
+    "qmX08aRRVhst8qcPTqx/3YsEodEwCgYIKoZIzj0EAwIDSAAwRQIhALLrIQd2UV+W",
+    "ZUIgkVm04ZmhyvzKig4B+hzndN/fmWbVAiAJU2NHj2IJWEHds/JaCWrVCm7OKh9p",
+    "pwB0TZikvT6x+A==",
+    "-----END CERTIFICATE-----",
+  ].join("\n");
+
+  it("rejects EC certificates (Go *rsa.PublicKey / Python RSAPublicKey parity)", () => {
+    expect(() => securityCredential("password", EC_CERT_PEM)).toThrow(
+      "mpesa: M-Pesa certificate carries non-RSA public key",
+    );
+  });
+
+  it("rejects passwords over 245 UTF-8 bytes without echoing the secret", () => {
+    const secret = `s3cr3t-${"x".repeat(300)}`; // 307 ASCII bytes
+    expect(Buffer.from(secret, "utf-8").byteLength).toBeGreaterThan(245);
+    let message = "";
+    try {
+      securityCredential(secret, SANDBOX_CERT_PEM);
+      expect.fail("should have thrown");
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/too long/);
+    expect(message).toContain("245");
+    expect(message).not.toContain("s3cr3t");
+  });
+
+  it("counts bytes, not chars: 123 × U+00E9 (246 bytes) throws", () => {
+    const pw = "é".repeat(123); // 123 chars, 246 UTF-8 bytes
+    expect(pw.length).toBe(123);
+    expect(Buffer.from(pw, "utf-8").byteLength).toBe(246);
+    expect(() => securityCredential(pw, SANDBOX_CERT_PEM)).toThrow(/246 bytes/);
+  });
+
+  it("accepts exactly 245-byte passwords (RSA-2048 PKCS#1 v1.5 boundary)", () => {
+    const pw = "a".repeat(245);
+    const cred = securityCredential(pw, SANDBOX_CERT_PEM);
+    expect(Buffer.from(cred, "base64").byteLength).toBe(256);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // newOriginatorID
 // ---------------------------------------------------------------------------
 

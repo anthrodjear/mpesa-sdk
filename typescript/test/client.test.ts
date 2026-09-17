@@ -1865,3 +1865,337 @@ describe("Fetch injection", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// STK Query ResultCode normalization (string|number wire trap)
+// ---------------------------------------------------------------------------
+
+describe("STK Query ResultCode normalization", () => {
+  async function queryWithResultCode(rawCode: unknown): Promise<string | number> {
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      return jsonResponse({
+        ResponseCode: "0",
+        ResponseDescription: "desc",
+        MerchantRequestID: "mr",
+        CheckoutRequestID: "ws_CO_x",
+        ResultCode: rawCode,
+        ResultDesc: "processed",
+      });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    const resp = await client.stkQuery({ checkoutRequestID: "ws_CO_x" });
+    return resp.ResultCode;
+  }
+
+  it("normalizes numeric 0 → string \"0\"", async () => {
+    expect(await queryWithResultCode(0)).toBe("0");
+  });
+
+  it("normalizes numeric 1032 → string \"1032\"", async () => {
+    expect(await queryWithResultCode(1032)).toBe("1032");
+  });
+
+  it("passes string ResultCode through unchanged", async () => {
+    expect(await queryWithResultCode("1032")).toBe("1032");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TransactionStatus empty-string defaults (Go/Py == "" parity)
+// ---------------------------------------------------------------------------
+
+describe("TransactionStatus empty-string defaults", () => {
+  it('applies IdentifierType "4" when identifierType is ""', async () => {
+    let capturedBody: Record<string, unknown> = {};
+
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return jsonResponse({
+        OriginatorConversationID: "o",
+        ConversationID: "AG_1",
+        ResponseCode: "0",
+        ResponseDescription: "ok",
+      });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await client.transactionStatus({
+      initiator: "testapi",
+      securityCredential: "cred",
+      transactionID: "NLJ7RT61SV",
+      partyA: "600992",
+      identifierType: "",
+      remarks: "reconcile",
+      resultURL: "https://a.com/r",
+      queueTimeOutURL: "https://a.com/t",
+    });
+
+    expect(capturedBody["IdentifierType"]).toBe("4");
+  });
+
+  it('applies CommandID default when commandID is "" (JS callers)', async () => {
+    let capturedBody: Record<string, unknown> = {};
+
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return jsonResponse({
+        OriginatorConversationID: "o",
+        ConversationID: "AG_1",
+        ResponseCode: "0",
+        ResponseDescription: "ok",
+      });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await client.transactionStatus({
+      initiator: "testapi",
+      securityCredential: "cred",
+      commandID: "" as unknown as CommandID,
+      transactionID: "NLJ7RT61SV",
+      partyA: "600992",
+      remarks: "reconcile",
+      resultURL: "https://a.com/r",
+      queueTimeOutURL: "https://a.com/t",
+    });
+
+    expect(capturedBody["CommandID"]).toBe(CommandID.TransactionStatusQuery.value);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fetch redirect contract — every call passes redirect:"error"
+// ---------------------------------------------------------------------------
+
+describe("Fetch redirect contract", () => {
+  it("passes redirect:'error' on OAuth + business calls via injected custom fetch", async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const customFetch = vi.fn(async (url: string, init: RequestInit) => {
+      seen.push({ url, init: { ...init } });
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      return jsonResponse({
+        MerchantRequestID: "mr",
+        CheckoutRequestID: "ws_CO_1",
+        ResponseCode: "0",
+        ResponseDescription: "ok",
+        CustomerMessage: "ok",
+      });
+    });
+
+    const client = new MpesaClient({
+      config: new Config({
+        consumerKey: CONSUMER_KEY,
+        consumerSecret: CONSUMER_SECRET,
+        shortcode: SHORTCODE,
+        passkey: PASSKEY,
+        environment: new Environment("sandbox", "https://sandbox.safaricom.co.ke"),
+      }),
+      timeoutMs: 5000,
+      now: () => nowMs,
+      fetch: customFetch as unknown as typeof globalThis.fetch,
+    });
+    await client.stkPush(validSTKPushRequest());
+
+    // Exactly two calls: OAuth GET + business POST — both must refuse redirects
+    // so a 307/308 can never replay the Basic/Bearer credential cross-origin.
+    expect(seen).toHaveLength(2);
+    expect(seen[0]!.url).toContain("/oauth/v1/generate");
+    expect(seen[0]!.init.redirect).toBe("error");
+    expect(seen[0]!.init.method).toBe("GET");
+    expect(seen[1]!.url).toContain("/mpesa/stkpush/v1/processrequest");
+    expect(seen[1]!.init.redirect).toBe("error");
+    expect(seen[1]!.init.method).toBe("POST");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Amount float rejection table — requirePositiveInt on all 5 amount endpoints
+// ---------------------------------------------------------------------------
+
+describe("Amount float rejection (requirePositiveInt)", () => {
+  it("rejects non-integer amounts on all 5 amount-taking endpoints before network", async () => {
+    let networkTouched = false;
+    fetchMock.mockImplementation(async () => {
+      networkTouched = true;
+      return new Response("should not reach", { status: 500 });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    const goodURLs = "https://a.com/";
+
+    const cases: Array<{ name: string; call: () => Promise<unknown> }> = [
+      {
+        name: "stkPush",
+        call: () => client.stkPush({ ...validSTKPushRequest(), amount: 10.5 }),
+      },
+      {
+        name: "b2cPayout",
+        call: () => client.b2cPayout({
+          initiatorName: "i", securityCredential: "c", commandID: CommandID.BusinessPayment,
+          amount: 100.5, partyA: "600992", partyB: "254705912645", remarks: "ok refund",
+          queueTimeOutURL: `${goodURLs}t`, resultURL: `${goodURLs}r`,
+        }),
+      },
+      {
+        name: "reversal",
+        call: () => client.reversal({
+          initiator: "i", securityCredential: "c", transactionID: "R1",
+          amount: 10.5, receiverParty: "600992", remarks: "wrong deposit",
+          resultURL: `${goodURLs}r`, queueTimeOutURL: `${goodURLs}t`,
+        }),
+      },
+      {
+        name: "c2bSimulate",
+        call: () => client.c2bSimulate({
+          commandID: CommandID.PayBill, amount: 5.5, msisdn: "0712345678",
+          billRefNumber: "acct-1",
+        }),
+      },
+      {
+        name: "generateQRCode",
+        call: () => client.generateQRCode({
+          merchantName: "m", refNo: "ref", amount: 1.5,
+          trxCode: QRTrxCode.BuyGoods, cpi: "174379", size: "300",
+        }),
+      },
+    ];
+
+    expect(cases).toHaveLength(5);
+    for (const tc of cases) {
+      await expect(tc.call(), tc.name).rejects.toThrow("positive whole number");
+    }
+    expect(networkTouched).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Empty-shortcode config + c2bSimulate default
+// ---------------------------------------------------------------------------
+
+describe("Empty-shortcode config", () => {
+  it("c2bSimulate defaults ShortCode to the config shortcode when omitted", async () => {
+    let capturedBody: Record<string, unknown> = {};
+
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return jsonResponse({
+        OriginatorCoversationID: "ack",
+        ResponseCode: "0",
+        ResponseDescription: "ok",
+      });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await client.c2bSimulate({
+      commandID: CommandID.PayGoods,
+      amount: 10,
+      msisdn: "0712345678",
+    });
+
+    expect(capturedBody["ShortCode"]).toBe(SHORTCODE);
+    expect(capturedBody["BillRefNumber"]).toBeUndefined();
+  });
+
+  it("empty-shortcode config is accepted and flows through as ShortCode", async () => {
+    let capturedBody: Record<string, unknown> = {};
+
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return jsonResponse({
+        OriginatorCoversationID: "ack",
+        ResponseCode: "0",
+        ResponseDescription: "ok",
+      });
+    });
+
+    const emptyClient = new MpesaClient({
+      config: new Config({
+        consumerKey: CONSUMER_KEY,
+        consumerSecret: CONSUMER_SECRET,
+        passkey: PASSKEY,
+      }),
+      timeoutMs: 5000,
+      now: () => nowMs,
+    });
+    await emptyClient.c2bSimulate({
+      commandID: CommandID.PayGoods,
+      amount: 10,
+      msisdn: "0712345678",
+    });
+
+    expect(capturedBody["ShortCode"]).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C2B Register URL — wire-correct Completed/Cancelled values
+// ---------------------------------------------------------------------------
+
+describe("C2B Register URL wire-correct values", () => {
+  async function registerWith(responseType: ResponseType): Promise<unknown> {
+    let capturedBody: Record<string, unknown> = {};
+
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return jsonResponse({
+        OriginatorCoversationID: "ack",
+        ResponseCode: "0",
+        ResponseDescription: "ok",
+      });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await client.c2bRegisterURL({
+      responseType,
+      confirmationURL: "https://a.com/c",
+      validationURL: "https://a.com/v",
+    });
+
+    return capturedBody["ResponseType"];
+  }
+
+  it("maps ResponseType.Completed to Completed on wire", async () => {
+    expect(await registerWith(ResponseType.Completed)).toBe("Completed");
+  });
+
+  it("maps ResponseType.Cancelled to Cancelled on wire", async () => {
+    expect(await registerWith(ResponseType.Cancelled)).toBe("Cancelled");
+  });
+});

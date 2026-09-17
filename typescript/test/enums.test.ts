@@ -192,6 +192,54 @@ describe("immutability", () => {
     expect(Object.isFrozen(ResponseType.ALL)).toBe(true);
     expect(Object.isFrozen(QRTrxCode.ALL)).toBe(true);
   });
+
+  it("ALL arrays are memoized (same reference on repeat access)", () => {
+    expect(TransactionType.ALL).toBe(TransactionType.ALL);
+    expect(CommandID.ALL).toBe(CommandID.ALL);
+    expect(ResponseType.ALL).toBe(ResponseType.ALL);
+    expect(QRTrxCode.ALL).toBe(QRTrxCode.ALL);
+  });
+
+  it("enum instances are frozen", () => {
+    expect(Object.isFrozen(TransactionType.BillPayGoods)).toBe(true);
+    expect(Object.isFrozen(TransactionType.BuyGoodsOnline)).toBe(true);
+    expect(Object.isFrozen(CommandID.BusinessPayment)).toBe(true);
+    expect(Object.isFrozen(CommandID.TransactionReversal)).toBe(true);
+    expect(Object.isFrozen(ResponseType.Completed)).toBe(true);
+    expect(Object.isFrozen(QRTrxCode.BuyGoods)).toBe(true);
+  });
+});
+
+describe("naming aliases (non-breaking, wire-identical)", () => {
+  it("TransactionType.PayBillOnline === BillPayGoods (identity, same wire)", () => {
+    expect(TransactionType.PayBillOnline).toBe(TransactionType.BillPayGoods);
+    expect(TransactionType.PayBillOnline.value).toBe("CustomerPayBillOnline");
+    expect(JSON.stringify({ t: TransactionType.PayBillOnline })).toBe(
+      JSON.stringify({ t: TransactionType.BillPayGoods }),
+    );
+  });
+
+  it("TransactionType.BuyGoodsOnline === BillPayGoodsGoods (identity, same wire)", () => {
+    expect(TransactionType.BuyGoodsOnline).toBe(TransactionType.BillPayGoodsGoods);
+    expect(TransactionType.BuyGoodsOnline.value).toBe("CustomerBuyGoodsOnline");
+    expect(JSON.stringify({ t: TransactionType.BuyGoodsOnline })).toBe(
+      JSON.stringify({ t: TransactionType.BillPayGoodsGoods }),
+    );
+  });
+
+  it("CommandID.TransactionReversal === ReverseTransaction, wire TransactionReversal", () => {
+    expect(CommandID.TransactionReversal).toBe(CommandID.ReverseTransaction);
+    expect(CommandID.TransactionReversal.value).toBe("TransactionReversal");
+    expect(`${CommandID.TransactionReversal}`).toBe("TransactionReversal");
+  });
+
+  it("ALL lengths unchanged (aliases share identity, not extra entries)", () => {
+    expect(TransactionType.ALL).toHaveLength(2);
+    expect(CommandID.ALL).toHaveLength(8);
+    expect(TransactionType.ALL).toContain(TransactionType.PayBillOnline);
+    expect(TransactionType.ALL).toContain(TransactionType.BuyGoodsOnline);
+    expect(CommandID.ALL).toContain(CommandID.TransactionReversal);
+  });
 });
 
 describe("export styles", () => {
