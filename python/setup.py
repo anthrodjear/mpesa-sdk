@@ -25,7 +25,7 @@ Requirements: Python >= 3.11.
 
 setup(
     name="mpesa-sdk",
-    version="0.1.0",
+    version="0.2.0",
     description=("Python SDK for the Safaricom M-Pesa Daraja API "
                  "(OAuth, STK Push/Query, B2C v3, C2B register/simulate, "
                  "Transaction Status, Reversal, Account Balance, Dynamic QR)"),

@@ -1,6 +1,6 @@
 {
   "name": "@mpesa-sdk/core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Zero-dependency TypeScript SDK engine for the Safaricom M-Pesa Daraja API (Node >=20 native fetch + node:crypto).",
   "license": "MIT",
   "type": "module",

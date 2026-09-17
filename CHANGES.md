@@ -1,4 +1,4 @@
-# Changes — audit fixes (unreleased)
+# Changes — 0.2.0 (2026-09-17)
 
 All three suites pass: Go `go vet` + `go test` ✅ · Python `479 passed` ✅ ·
 TypeScript `typecheck` + `403 passed` ✅.
