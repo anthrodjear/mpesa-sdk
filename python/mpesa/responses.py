@@ -27,7 +27,24 @@ __all__ = ["STKPushResponse", "STKQueryResponse", "ConversationResponse",
 
 _R = TypeVar("_R", bound="_Response")
 
-_MAX_BODY_CHARS = 1_048_576
+# Ingestion cap in BYTES (Go maxResponseLen / TS MAX_RESPONSE_LEN parity).
+# str bodies are measured as UTF-8 bytes: 1M CJK chars ~= 3 MiB and must
+# not bypass the bound. See _check_body_size().
+_MAX_BODY_BYTES = 1_048_576
+
+
+def _check_body_size(data: "bytes | bytearray | str", label: str = "response body") -> None:
+    """Reject bodies over the ingestion cap, measured in UTF-8 bytes.
+
+    bytes input is measured directly; str input is measured as
+    ``len(data.encode("utf-8"))`` so multi-byte payloads cannot smuggle
+    up to 4x the intended bound past a char-count check.
+    """
+    size = len(data) if isinstance(data, (bytes, bytearray)) else \
+        len(data.encode("utf-8"))
+    if size > _MAX_BODY_BYTES:
+        raise ValueError(
+            f"mpesa: {label} exceeds {_MAX_BODY_BYTES} bytes")
 
 
 @dataclass(frozen=True)
@@ -39,13 +56,11 @@ class _Response:
 
     @classmethod
     def from_json(cls: type[_R], data: "dict | bytes | str") -> _R:
+        if isinstance(data, (bytes, bytearray, str)):
+            _check_body_size(data, f"{cls.__name__} response")
         if isinstance(data, (bytes, bytearray)):
             data = data.decode("utf-8", errors="replace")
         if isinstance(data, str):
-            if len(data) > _MAX_BODY_CHARS:
-                raise ValueError(
-                    f"mpesa: {cls.__name__} response exceeds "
-                    f"{_MAX_BODY_CHARS} bytes")
             try:
                 data = json.loads(data, parse_int=safe_json_int)
             except json.JSONDecodeError as exc:

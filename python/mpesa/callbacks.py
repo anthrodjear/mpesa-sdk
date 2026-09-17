@@ -35,18 +35,32 @@ Usage::
 from __future__ import annotations
 
 import json
-import math
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from .classification import ResultClass, classify_result_code
-from .coercion import coerce_int, coerce_str, safe_json_int
+from .coercion import coerce_amount, coerce_int, coerce_str, first_wins, safe_json_int
 
 __all__ = ["StkCallbackResult", "MetadataItem"]
 
-_MAX_BODY_CHARS = 1_048_576  # characters, mirroring the framework body cap
-_AMOUNT_RE = re.compile(r"[+-]?[0-9]{1,12}(\.[0-9]{1,6})?", re.ASCII)
+# Ingestion cap in BYTES (Go maxResponseLen / TS MAX_RESPONSE_LEN parity).
+# str bodies are measured as UTF-8 bytes: 1M CJK chars ~= 3 MiB and must
+# not bypass the bound. See _check_body_size().
+_MAX_BODY_BYTES = 1_048_576
+
+
+def _check_body_size(data: "bytes | bytearray | str") -> None:
+    """Reject bodies over the ingestion cap, measured in UTF-8 bytes.
+
+    bytes input is measured directly; str input is measured as
+    ``len(data.encode("utf-8"))`` so multi-byte payloads cannot smuggle
+    up to 4x the intended bound past a char-count check.
+    """
+    size = len(data) if isinstance(data, (bytes, bytearray)) else \
+        len(data.encode("utf-8"))
+    if size > _MAX_BODY_BYTES:
+        raise ValueError(
+            f"mpesa: callback body exceeds {_MAX_BODY_BYTES} bytes")
 
 
 def _item_name(entry: dict[str, Any]) -> str:
@@ -84,13 +98,13 @@ class StkCallbackResult:
     def from_json(cls, data: "dict | bytes | str") -> "StkCallbackResult":
         """Parse the full envelope. Loud about SHAPE (missing keys raise
         ValueError naming them), tolerant about TYPES and about absent
-        CallbackMetadata."""
+        CallbackMetadata. Bodies over 1 MiB (UTF-8 bytes) are rejected
+        before parsing."""
+        if isinstance(data, (bytes, bytearray, str)):
+            _check_body_size(data)
         if isinstance(data, (bytes, bytearray)):
             data = data.decode("utf-8", errors="replace")
         if isinstance(data, str):
-            if len(data) > _MAX_BODY_CHARS:
-                raise ValueError(
-                    f"mpesa: callback body exceeds {_MAX_BODY_CHARS} chars")
             try:
                 data = json.loads(data, parse_int=safe_json_int)
             except (ValueError, RecursionError) as exc:
@@ -137,34 +151,17 @@ class StkCallbackResult:
 
             md = result.metadata()   # {'Amount': 1.0, ...}
         """
-        out: dict[str, Any] = {}
-        for item in self._items:
-            out.setdefault(item.name, item.value_raw)
-        return out
+        return first_wins([(i.name, i.value_raw) for i in self._items])
 
     def classify(self) -> ResultClass:
         """ADR-010 bucket for ``result_code`` (never auto-fail unknowns)."""
         return classify_result_code(self.result_code)
 
     def amount(self) -> float | None:
-        """Amount as float; bools, >2**53 ints (precision), non-finite
-        floats and non-decimal strings all yield None."""
-        value = self._lookup("Amount")
-        if isinstance(value, bool):
-            return None
-        if isinstance(value, int):
-            return float(value) if abs(value) <= 2 ** 53 else None
-        if isinstance(value, float):
-            return value if math.isfinite(value) else None
-        if isinstance(value, str):
-            text = value.strip()
-            if not _AMOUNT_RE.fullmatch(text):
-                return None
-            try:
-                return float(text)
-            except (ValueError, OverflowError):
-                return None
-        return None
+        """Amount as float via shared :func:`coerce_amount`; bools,
+        >2**53 ints (precision), non-finite floats and non-decimal
+        strings all yield None."""
+        return coerce_amount(self._lookup("Amount"))
 
     def mpesa_receipt(self) -> str | None:
         """M-PESA receipt string, or None when absent."""

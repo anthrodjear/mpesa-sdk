@@ -12,8 +12,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .enums import RECEIVER_IDENTIFIER_ORG, CommandID
-from .requests_sync import (_amount_int, _clean, _enum_value, _phone,
-                            _printable, _require, _sentinel, _url)
+from .requests_sync import (_amount_int, _clean, _ensure_validated, _enum_value,
+                            _phone, _printable, _require, _sentinel, _url)
 
 __all__ = ["B2CPayoutRequest", "TransactionStatusRequest",
            "ReversalRequest", "AccountBalanceRequest"]
@@ -29,11 +29,6 @@ def _safe(model: Any, *shown: str) -> str:
 
 def _secret() -> Any:
     return field(default="", repr=False)
-
-
-def _ensure_validated(model: Any) -> None:
-    if not model._validated:
-        raise RuntimeError("mpesa: call validate() before to_payload()")
 
 
 @dataclass

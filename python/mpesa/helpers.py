@@ -97,6 +97,15 @@ def security_credential(cert_pem_or_der: bytes, initiator_password: str) -> str:
     intentional divergence, only the certificate reaches key handling.
     Errors never include password/cert material.
 
+    Padding is PKCS#1 v1.5 because Daraja mandates it -- per the
+    pyca/cryptography docs OAEP is the recommended padding for RSA
+    encryption generally and PKCS1v15 is legacy (kept for compatibility,
+    not recommended for new applications), but Safaricom's gateway only
+    accepts v1.5 here, so OAEP must NOT be substituted. Passwords are
+    limited to 245 bytes (UTF-8): a 2048-bit key carries 256 bytes minus
+    11 bytes of v1.5 overhead; longer input cannot fit one block and the
+    encrypt call raises.
+
     Example::
 
         payload["SecurityCredential"] = security_credential(cert_bytes, pw)

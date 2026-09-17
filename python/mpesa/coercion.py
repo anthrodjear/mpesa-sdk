@@ -25,16 +25,23 @@ Divergences from go/coercion.go (intentional, documented):
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any
 
-__all__ = ["coerce_str", "coerce_int", "safe_json_int"]
+__all__ = ["coerce_str", "coerce_int", "safe_json_int", "coerce_amount",
+           "first_wins"]
 
 _MAX_STR_LEN = 4096
 
 # ASCII digits only, max 19 (int64 range): kills Unicode-Nd digits,
 # PEP 515 underscores, and overlong CPU-DoS digit runs on py<3.11.
 _INT_RE = re.compile(r"[+-]?[0-9]{1,19}", re.ASCII)
+
+# Shared amount shape: up to 12 int digits + optional 6dp fraction.
+# Single source for callbacks.amount() and results.amount() — previously
+# duplicated verbatim (38 lines) and already at risk of drift.
+_AMOUNT_RE = re.compile(r"[+-]?[0-9]{1,12}(\.[0-9]{1,6})?", re.ASCII)
 
 
 def safe_json_int(digits: str) -> int | None:
@@ -127,3 +134,53 @@ def coerce_int(raw: Any) -> int | None:
             text = text[1:-1].strip()
         return int(text) if _INT_RE.fullmatch(text) else None
     return None
+
+
+def coerce_amount(value: Any) -> float | None:
+    """Canonical Daraja amount as float, or None when hostile/unknown.
+
+    Shared by :meth:`callbacks.StkCallbackResult.amount` and
+    :meth:`results.AsyncResult.amount` (previously duplicated verbatim).
+    Guards, in order: bool -> None (bool is int subclass); int beyond
+    +/-2**53 -> None (precision loss); non-finite float -> None;
+    string must fully match ``[+-]?digits{1,12}(.digits{1,6})?``
+    (ASCII gate rejects "1_000", "0x10", Unicode digits); other types
+    -> None.
+
+    Example::
+
+        coerce_amount("10.50")  # -> 10.5
+        coerce_amount(True)     # -> None
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return float(value) if abs(value) <= 2 ** 53 else None
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        text = value.strip()
+        if not _AMOUNT_RE.fullmatch(text):
+            return None
+        try:
+            return float(text)
+        except (ValueError, OverflowError):
+            return None
+    return None
+
+
+def first_wins(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Flatten ``(key, value)`` pairs first-wins (Go Parameters parity).
+
+    Used by callback metadata and async-result parameters: on duplicate
+    keys the FIRST value wins; later values are shadowed (count them with
+    ``duplicate_keys()`` where available). O(n) single pass.
+
+    Example::
+
+        first_wins([("a", 1), ("a", 2)])  # -> {"a": 1}
+    """
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        out.setdefault(key, value)
+    return out
