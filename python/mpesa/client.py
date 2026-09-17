@@ -40,6 +40,8 @@ from .auth import TokenManager
 from .config import Config
 from .enums import CommandID
 from .exceptions import MpesaError
+from ._limits import MAX_BODY_BYTES as _MAX_RESPONSE_BYTES
+from ._limits import read_capped
 from .helpers import generate_password, new_originator_id
 from .requests_async import (
     AccountBalanceRequest,
@@ -76,7 +78,8 @@ ACCOUNT_BALANCE_PATH = "/mpesa/accountbalance/v1/query"
 QR_CODE_PATH = "/mpesa/qrcode/v1/generate"
 
 _ERR_INVALID_TOKEN = "401.003.01"
-_MAX_RESPONSE_BYTES = 1_048_576
+# NOTE: _MAX_RESPONSE_BYTES is re-exported from mpesa._limits (the single
+# source of truth); kept importable here for back-compat.
 
 _ModelT = TypeVar("_ModelT")
 
@@ -96,12 +99,19 @@ class _OAuthOnlySession:
 class MpesaClient:
     """Daraja API engine bound to one :class:`~mpesa.config.Config`.
 
-    Trust boundary: an injected ``http_client`` is shallow-cloned --
-    headers are snapshot-copied and adapters remounted -- so later
-    mutations of the caller's objects stay invisible here; do not mutate
-    them after first use either. The clone is forced ``verify=True``
-    per the config.py contract. Concurrency: TokenManager is fully
-    synchronized; share one Session per requests norms.
+    TRUST BOUNDARY: an injected ``http_client`` is shallow-cloned and then
+    HARDENED -- headers are snapshot-copied, adapters remounted, cookies
+    deep-copied (``requests.Session.prepare_request`` merges live session
+    cookies into every request, so a shared jar would leak cross-request
+    state both ways), ``auth`` reset to ``None`` (no ambient credential
+    pickup from the caller's session), ``proxies`` snapshotted into a new
+    dict, and ``trust_env`` forced to ``False`` (per the requests docs this
+    stops netrc/env credential and proxy pickup -- the clone only ever
+    talks where the SDK points it). Later mutations of the caller's
+    objects stay invisible here; do not mutate them after first use
+    either. The clone is forced ``verify=True`` per the config.py
+    contract. Concurrency: TokenManager is fully synchronized; share one
+    Session per requests norms.
     """
 
     def __init__(self, config: Config) -> None:
@@ -115,6 +125,30 @@ class MpesaClient:
         for prefix, adapter in dict(
                 source.adapters if source is not None else {}).items():
             self._session.mount(prefix, adapter)
+        if source is not None:
+            # Deep-copy the cookie jar: copy.copy above shares it, and
+            # prepare_request would otherwise merge the caller's live
+            # cookies into our requests (and ours back on real Sessions
+            # via response cookie extraction).
+            cookies = getattr(source, "cookies", None)
+            if cookies is not None:
+                self._session.cookies = copy.deepcopy(cookies)
+            # Drop ambient auth (Basic/Digest tuple or callable) so the
+            # caller's credential is never sent to Daraja hosts; the SDK
+            # injects its own per-request Authorization header instead.
+            if hasattr(self._session, "auth"):
+                self._session.auth = None
+            # Snapshot proxies: later caller edits must not reroute the
+            # clone's traffic (or vice versa).
+            proxies = getattr(source, "proxies", None)
+            if proxies is not None:
+                try:
+                    self._session.proxies = dict(proxies)
+                except (TypeError, ValueError):
+                    self._session.proxies = {}
+        # Refuse netrc/env pickup on OUR clone only (caller object untouched
+        # except where noted above); TLS stays forced on below.
+        self._session.trust_env = False
         self._session.verify = True  # forced on OUR clone only
         # Timeout clamp: non-positive values fall back to Go's 30s default.
         self._timeout = (config.timeout_seconds
@@ -154,31 +188,22 @@ class MpesaClient:
         """Authenticated round-trip returning ``(status_code,
         content_type, body)``.
 
-        True streaming cap: reads at most _MAX_RESPONSE_BYTES+1 via
-        iter_content (Go LimitReader parity). Plain values are returned
-        instead of the Response because ``Response.content`` is a
-        getter-only property -- writing it raises AttributeError on
+        True streaming cap via the shared mpesa._limits.read_capped
+        (Go LimitReader parity): reads at most _MAX_RESPONSE_BYTES+1 via
+        iter_content, aborting mid-stream on oversize bodies. Plain values
+        are returned instead of the Response because ``Response.content``
+        is a getter-only property -- writing it raises AttributeError on
         every real request (duck-typed fakes allowed attribute writes
         and masked the crash historically). The connection is released
-        in ``finally``, so aborts mid-read never leak sockets.
+        inside read_capped's ``finally``, so aborts mid-read never leak
+        sockets.
         """
         response = self._session.request(
             method, self._base_url + path, json=json_body, params=params,
             timeout=self._timeout, allow_redirects=False, stream=True,
             headers={"Authorization": f"Bearer {token}",
                      "Content-Type": "application/json"})
-        try:
-            chunks: list[bytes] = []
-            total = 0
-            for chunk in response.iter_content(_MAX_RESPONSE_BYTES + 1):
-                chunks.append(chunk)
-                total += len(chunk)
-                if total > _MAX_RESPONSE_BYTES:
-                    raise ValueError(f"mpesa: {path} response exceeds "
-                                     f"{_MAX_RESPONSE_BYTES} bytes")
-            body = b"".join(chunks)
-        finally:
-            response.close()
+        body = read_capped(response, f"{path} response")
         content_type = response.headers.get("content-type", "")
         return response.status_code, content_type, body
 
@@ -350,10 +375,16 @@ class MpesaClient:
         """Create a dynamic QR payload, fully synchronous
         (docs/apis/dynamic-qr.md).
 
+        The caller's request is treated as a VALUE: it is copied via
+        ``dataclasses.replace`` before ``validate()`` (which normalizes
+        trx_code/cpi/size in place), so the caller's object is never
+        mutated -- parity with the other 8 endpoints.
+
         Example::
 
             qr = client.generate_qr_code(QRCodeRequest(...))
         """
+        req = dataclasses.replace(req)
         req.validate()
         return self._post_model(QR_CODE_PATH, req.to_payload(),
                                 QRCodeResponse)

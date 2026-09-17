@@ -61,6 +61,22 @@ class Config:
     http_client: Optional[requests.Session] = None
 
     def __post_init__(self) -> None:
+        # Fail fast on credential SHAPE (Go config.go Validate() parity):
+        # a ':' in consumer_key would split the "key:secret" Basic-auth
+        # pair ambiguously at the gateway or a forward proxy, and non-ASCII
+        # bytes cannot round-trip the latin-1 Basic-auth encoding -- both
+        # are rejected here at construction instead of surfacing late as an
+        # OAuth 400. Empty credentials stay legal here (validate_credentials
+        # gates them before any endpoint call) so zero-config construction
+        # for offline model tests keeps working.
+        if ":" in self.consumer_key:
+            raise ValueError(
+                "mpesa: Config.consumer_key must not contain ':' "
+                "(Basic-auth separator)")
+        if not (self.consumer_key + self.consumer_secret).isascii():
+            raise ValueError(
+                "mpesa: Config.consumer_key and Config.consumer_secret "
+                "must be ASCII")
         if self.now is not None and not callable(self.now):
             raise TypeError("mpesa: Config.now must be callable or None")
         if getattr(self.http_client, "verify", True) is not True:

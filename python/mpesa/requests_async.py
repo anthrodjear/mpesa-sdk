@@ -61,10 +61,19 @@ class B2CPayoutRequest:
         return _safe(self, "party_a", "amount")
 
     def validate(self) -> None:
-        """Constraint parity with Go Validate(); normalizes PartyB."""
-        if self.originator_conversation_id:
-            _printable("OriginatorConversationID",
-                       self.originator_conversation_id, 32)
+        """Constraint parity with Go Validate(); normalizes PartyB.
+
+        Daraja contract on OriginatorConversationID: REQUIRED at validate
+        time and strictly shorter than 20 chars (``len <= 19``; overlong
+        values are rejected by the gateway). The client auto-fills an
+        empty value via :func:`~mpesa.helpers.new_originator_id` BEFORE
+        calling this, so direct ``validate()`` on a model with an empty
+        id fails while the client path always sends a fresh 16-char key.
+        """
+        if not (self.originator_conversation_id or "").strip():
+            raise ValueError("mpesa: OriginatorConversationID is required")
+        _printable("OriginatorConversationID",
+                   self.originator_conversation_id, 19)
         _require("InitiatorName", self.initiator_name)
         _require("SecurityCredential", self.security_credential)
         cmd = _enum_value(self.command_id)

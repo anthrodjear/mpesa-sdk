@@ -40,27 +40,15 @@ from typing import Any
 
 from .classification import ResultClass, classify_result_code
 from .coercion import coerce_amount, coerce_int, coerce_str, first_wins, safe_json_int
+from ._limits import MAX_BODY_BYTES as _MAX_BODY_BYTES
+from ._limits import check_body_size as _check_body_size
 
 __all__ = ["StkCallbackResult", "MetadataItem"]
-
-# Ingestion cap in BYTES (Go maxResponseLen / TS MAX_RESPONSE_LEN parity).
-# str bodies are measured as UTF-8 bytes: 1M CJK chars ~= 3 MiB and must
-# not bypass the bound. See _check_body_size().
-_MAX_BODY_BYTES = 1_048_576
-
-
-def _check_body_size(data: "bytes | bytearray | str") -> None:
-    """Reject bodies over the ingestion cap, measured in UTF-8 bytes.
-
-    bytes input is measured directly; str input is measured as
-    ``len(data.encode("utf-8"))`` so multi-byte payloads cannot smuggle
-    up to 4x the intended bound past a char-count check.
-    """
-    size = len(data) if isinstance(data, (bytes, bytearray)) else \
-        len(data.encode("utf-8"))
-    if size > _MAX_BODY_BYTES:
-        raise ValueError(
-            f"mpesa: callback body exceeds {_MAX_BODY_BYTES} bytes")
+# NOTE (limits centralisation): _MAX_BODY_BYTES / _check_body_size are
+# re-exported from mpesa._limits (the single source of truth) so existing
+# ``from mpesa.callbacks import _MAX_BODY_BYTES`` imports keep working.
+# Callers should pass label="callback body" to preserve this module's
+# historic error text ("mpesa: callback body exceeds ...").
 
 
 def _item_name(entry: dict[str, Any]) -> str:
@@ -101,7 +89,7 @@ class StkCallbackResult:
         CallbackMetadata. Bodies over 1 MiB (UTF-8 bytes) are rejected
         before parsing."""
         if isinstance(data, (bytes, bytearray, str)):
-            _check_body_size(data)
+            _check_body_size(data, "callback body")
         if isinstance(data, (bytes, bytearray)):
             data = data.decode("utf-8", errors="replace")
         if isinstance(data, str):
@@ -160,18 +148,28 @@ class StkCallbackResult:
     def amount(self) -> float | None:
         """Amount as float via shared :func:`coerce_amount`; bools,
         >2**53 ints (precision), non-finite floats and non-decimal
-        strings all yield None."""
-        return coerce_amount(self._lookup("Amount"))
+        strings all yield None.
+
+        First-wins lookup: the metadata dict is built once via
+        :meth:`metadata` (single O(n) ``first_wins`` pass) and the value
+        is an O(1) dict get -- no per-key linear scan.
+        """
+        return coerce_amount(self.metadata().get("Amount"))
 
     def mpesa_receipt(self) -> str | None:
-        """M-PESA receipt string, or None when absent."""
-        value = self._lookup("MpesaReceiptNumber")
-        return coerce_str(value)
+        """M-PESA receipt string, or None when absent.
+
+        First-wins O(1) dict get over :meth:`metadata` (see :meth:`amount`).
+        """
+        return coerce_str(self.metadata().get("MpesaReceiptNumber"))
 
     def transaction_date(self) -> int | None:
         """YYYYMMDDHHMMSS stamp as int; string-encoded accepted via
-        strict coercion; bools rejected."""
-        value = self._lookup("TransactionDate")
+        strict coercion; bools rejected.
+
+        First-wins O(1) dict get over :meth:`metadata` (see :meth:`amount`).
+        """
+        value = self.metadata().get("TransactionDate")
         if isinstance(value, bool):
             return None
         if isinstance(value, int):
@@ -181,17 +179,13 @@ class StkCallbackResult:
     def phone_number(self) -> str | None:
         """Payer MSISDN as ASCII-digit string; numeric encodings are
         stringified, hostile magnitudes decode to None via the parse_int
-        hook, non-digit/non-ASCII refused."""
-        value = self._lookup("PhoneNumber")
+        hook, non-digit/non-ASCII refused.
+
+        First-wins O(1) dict get over :meth:`metadata` (see :meth:`amount`).
+        """
+        value = self.metadata().get("PhoneNumber")
         if isinstance(value, bool):
             return None
         text = value.strip() if isinstance(value, str) else (
             str(value) if isinstance(value, int) else "")
         return text if text.isascii() and text.isdigit() else None
-
-    def _lookup(self, name: str) -> Any:
-        """First raw item value under *name*, else None."""
-        for item in self._items:
-            if item.name == name:
-                return item.value_raw
-        return None

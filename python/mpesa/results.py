@@ -26,29 +26,17 @@ from typing import Any
 
 from .classification import ResultClass, classify_result_code
 from .coercion import coerce_amount, coerce_int, coerce_str, first_wins, safe_json_int
+from ._limits import MAX_BODY_BYTES as _MAX_BODY_BYTES
+from ._limits import check_body_size as _check_body_size
 
 __all__ = ["AsyncResult", "Parameter", "ReferenceItem", "BalanceSegment",
            "parse_balance_segments"]
-
-# Ingestion cap in BYTES (Go maxResponseLen / TS MAX_RESPONSE_LEN parity).
-# str bodies are measured as UTF-8 bytes: 1M CJK chars ~= 3 MiB and must
-# not bypass the bound. See _check_body_size().
-_MAX_BODY_BYTES = 1_048_576
+# NOTE (limits centralisation): _MAX_BODY_BYTES / _check_body_size are
+# re-exported from mpesa._limits (the single source of truth) so existing
+# ``from mpesa.results import _MAX_BODY_BYTES`` imports keep working.
+# Callers should pass label="result body" to preserve this module's
+# historic error text ("mpesa: result body exceeds ...").
 _BALANCE_NUM_RE = re.compile(r"[+-]?[0-9]{1,18}(\.[0-9]{1,6})?", re.ASCII)
-
-
-def _check_body_size(data: "bytes | bytearray | str") -> None:
-    """Reject bodies over the ingestion cap, measured in UTF-8 bytes.
-
-    bytes input is measured directly; str input is measured as
-    ``len(data.encode("utf-8"))`` so multi-byte payloads cannot smuggle
-    up to 4x the intended bound past a char-count check.
-    """
-    size = len(data) if isinstance(data, (bytes, bytearray)) else \
-        len(data.encode("utf-8"))
-    if size > _MAX_BODY_BYTES:
-        raise ValueError(
-            f"mpesa: result body exceeds {_MAX_BODY_BYTES} bytes")
 
 
 @dataclass(frozen=True)
@@ -141,7 +129,7 @@ class AsyncResult:
         errors naming every missing scalar), tolerant about TYPES.
         Bodies over 1 MiB (UTF-8 bytes) are rejected before parsing."""
         if isinstance(data, (bytes, bytearray, str)):
-            _check_body_size(data)
+            _check_body_size(data, "result body")
         if isinstance(data, (bytes, bytearray)):
             data = data.decode("utf-8", errors="replace")
         if isinstance(data, str):
@@ -196,22 +184,28 @@ class AsyncResult:
         """ADR-010 bucket for ``result_code`` (never auto-fail unknowns)."""
         return classify_result_code(self.result_code)
 
-    def _param(self, name: str) -> Any:
-        for parameter in self._parameters:
-            if parameter.key == name:
-                return parameter.value_raw
-        return None
-
     def transaction_receipt(self) -> str | None:
-        """TransactionReceipt string, or None when absent."""
-        return coerce_str(self._param("TransactionReceipt"))
+        """TransactionReceipt string, or None when absent.
+
+        First-wins O(1) dict get over :meth:`parameters` (built once via
+        a single O(n) ``first_wins`` pass) -- no per-key linear scan.
+        """
+        return coerce_str(self.parameters().get("TransactionReceipt"))
 
     def transaction_status(self) -> str | None:
-        """TransactionStatus string (status APIs), or None when absent."""
-        return coerce_str(self._param("TransactionStatus"))
+        """TransactionStatus string (status APIs), or None when absent.
+
+        First-wins O(1) dict get over :meth:`parameters` (see
+        :meth:`transaction_receipt`).
+        """
+        return coerce_str(self.parameters().get("TransactionStatus"))
 
     def amount(self) -> float | None:
         """TransactionAmount as float via shared :func:`coerce_amount`;
         bools, >2**53 ints, non-finite floats and non-decimal strings
-        yield None (hostile-int guards)."""
-        return coerce_amount(self._param("TransactionAmount"))
+        yield None (hostile-int guards).
+
+        First-wins O(1) dict get over :meth:`parameters` (see
+        :meth:`transaction_receipt`).
+        """
+        return coerce_amount(self.parameters().get("TransactionAmount"))

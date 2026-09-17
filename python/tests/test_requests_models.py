@@ -65,7 +65,7 @@ def test_stk_query_payload():
 
 def test_b2c_official_spellings():
     req = B2CPayoutRequest(
-        originator_conversation_id="600997_Test_32et3241ed8yu",
+        originator_conversation_id="ocid-600997-1",
         initiator_name="testapi", security_credential="cred",
         command_id=CommandID.BUSINESS_PAYMENT, amount=10, party_a="600992",
         party_b="+254705912645", remarks="remarked",
@@ -223,7 +223,10 @@ def test_validate_rejection_table(req):
 # ---- consolidated-fix rounds -------------------------------------------------
 
 def _b2c(**over):
-    base = dict(initiator_name="testapi", security_credential="cred",
+    # OriginatorConversationID is REQUIRED at validate() time (Daraja
+    # contract <20 chars); the client auto-fills it, direct callers pass it.
+    base = dict(originator_conversation_id="ocid-123",
+                initiator_name="testapi", security_credential="cred",
                 command_id=CommandID.BUSINESS_PAYMENT, amount=10,
                 party_a="600992", party_b="254705912645", remarks="ok",
                 queue_time_out_url=CB, result_url=CB)

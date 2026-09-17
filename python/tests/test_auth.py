@@ -323,7 +323,10 @@ def test_adopt_path_rejects_expired_peer_token():
 def test_credential_hygiene():
     for key, secret in (("with:colon", "s"), ("k\u00e9y", "s\u00e9")):
         with pytest.raises(ValueError):
-            TokenManager(FakeSession([]), "https://x", key, secret)
+            # Sandbox host: fakes never hit the network, so the allowlist
+            # passes and the failure pins the credential check itself.
+            TokenManager(FakeSession([]),
+                         "https://sandbox.safaricom.co.ke", key, secret)
 
 
 def test_cadence_clamp_edges():

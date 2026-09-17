@@ -21,30 +21,18 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, TypeVar
 
 from .coercion import coerce_int, coerce_str, safe_json_int
+from ._limits import MAX_BODY_BYTES as _MAX_BODY_BYTES
+from ._limits import check_body_size as _check_body_size
 
 __all__ = ["STKPushResponse", "STKQueryResponse", "ConversationResponse",
            "B2CResponse", "C2BAckResponse", "QRCodeResponse", "OAuthToken"]
+# NOTE (limits centralisation): _MAX_BODY_BYTES / _check_body_size are
+# re-exported from mpesa._limits (the single source of truth) so existing
+# ``from mpesa.responses import _MAX_BODY_BYTES`` imports keep working.
+# _check_body_size keeps its (data, label="response body") signature via
+# the shared mpesa._limits.check_body_size.
 
 _R = TypeVar("_R", bound="_Response")
-
-# Ingestion cap in BYTES (Go maxResponseLen / TS MAX_RESPONSE_LEN parity).
-# str bodies are measured as UTF-8 bytes: 1M CJK chars ~= 3 MiB and must
-# not bypass the bound. See _check_body_size().
-_MAX_BODY_BYTES = 1_048_576
-
-
-def _check_body_size(data: "bytes | bytearray | str", label: str = "response body") -> None:
-    """Reject bodies over the ingestion cap, measured in UTF-8 bytes.
-
-    bytes input is measured directly; str input is measured as
-    ``len(data.encode("utf-8"))`` so multi-byte payloads cannot smuggle
-    up to 4x the intended bound past a char-count check.
-    """
-    size = len(data) if isinstance(data, (bytes, bytearray)) else \
-        len(data.encode("utf-8"))
-    if size > _MAX_BODY_BYTES:
-        raise ValueError(
-            f"mpesa: {label} exceeds {_MAX_BODY_BYTES} bytes")
 
 
 @dataclass(frozen=True)

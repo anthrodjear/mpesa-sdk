@@ -29,6 +29,8 @@ from typing import Callable
 import requests
 
 from .exceptions import MpesaError
+from ._limits import MAX_BODY_BYTES as _MAX_BODY_BYTES
+from ._limits import read_capped
 from .responses import OAuthToken
 
 __all__ = ["TokenManager"]
@@ -36,9 +38,19 @@ __all__ = ["TokenManager"]
 _OAUTH_PATH = "/oauth/v1/generate?grant_type=client_credentials"
 _CREDENTIALS_MSG = ("mpesa: Config.consumer_key and Config.consumer_secret "
                     "are required before calling any endpoint")
-# Local mirror of client._MAX_RESPONSE_BYTES: importing it would create a
-# circular import (client.py already imports TokenManager from this module).
-_MAX_BODY_CHARS = 1_048_576
+# Back-compat alias: the historic name for the ingestion cap. New code uses
+# _MAX_BODY_BYTES (imported from mpesa._limits, the single source of truth).
+_MAX_BODY_CHARS = _MAX_BODY_BYTES
+#: Daraja hosts this manager is willing to mint tokens against. The
+#: base_url MUST arrive from trusted config (Config.environment.base_url)
+#: -- never from user input -- so an attacker host can neither harvest the
+#: Basic-auth credential nor receive it via redirect (redirects are refused
+#: on every OAuth GET anyway). Trailing slashes are stripped before the
+#: membership test.
+_TRUSTED_BASE_URLS = frozenset({
+    "https://sandbox.safaricom.co.ke",
+    "https://api.safaricom.co.ke",
+})
 
 
 class TokenManager:
@@ -47,6 +59,15 @@ class TokenManager:
     The caller owns ``session`` (the Client passes its hardened
     session); ``timeout`` feeds every OAuth GET; ``now`` injects a UTC
     clock for tests.
+
+    TRUSTED-CONFIG BOUNDARY: ``base_url`` must come from trusted config
+    (``Config.environment.base_url`` -- sandbox or production) and is
+    validated against an allowlist at construction, because the OAuth leg
+    ships the Basic-auth credential (``consumer_key:consumer_secret``) to
+    it. A non-allowlisted host raises ``ValueError`` immediately -- before
+    any network use -- so a confused-deputy base URL can never harvest
+    credentials. Fakes in tests never hit the network, so they use the
+    sandbox host too.
 
     Example::
 
@@ -62,8 +83,14 @@ class TokenManager:
             raise ValueError("mpesa: consumer_key must not contain ':'")
         if not (consumer_key + consumer_secret).isascii():
             raise ValueError("mpesa: credentials must be ASCII")
+        normalized = base_url.rstrip("/")
+        if normalized not in _TRUSTED_BASE_URLS:
+            raise ValueError(
+                f"mpesa: refusing untrusted OAuth base_url {base_url!r} "
+                "(want https://sandbox.safaricom.co.ke or "
+                "https://api.safaricom.co.ke from Config.environment)")
         self._session = session
-        self._base_url = base_url.rstrip("/")
+        self._base_url = normalized
         self._consumer_key = consumer_key
         self._consumer_secret = consumer_secret
         self._timeout = float(timeout)
@@ -103,9 +130,10 @@ class TokenManager:
         clear the token and lead the hard refresh -- a Daraja-invalidated
         but clock-fresh token must never stay servable. Otherwise a peer
         already refreshed and we adopt its token, but ONLY while it is
-        still wall-clock fresh (intentional deviation from go/client.go:
-        Go trusts the peer unconditionally; an expired adopt would hand
-        back a dead bearer).
+        still wall-clock fresh (parity with go/client.go
+        ``refreshAfterInvalidToken``: Go freshness-gates the peer token
+        via ``tokenFresh()`` and force-refreshes when it is stale -- an
+        expired adopt would hand back a dead bearer).
 
         Example::
 
@@ -144,24 +172,13 @@ class TokenManager:
             f"{self._base_url}{_OAUTH_PATH}", timeout=self._timeout,
             headers={"Authorization": f"Basic {auth.decode('ascii')}"},
             allow_redirects=False, stream=True)
-        # Bounded streaming read (Go LimitReader parity with
-        # client._send): cap the DECOMPRESSED byte count during transfer
-        # via iter_content(MAX+1) so a gzip bomb aborts mid-stream instead
-        # of being fully materialised by a pre-read .content. The socket
-        # is released in ``finally`` so abort paths never leak it.
-        chunks: list[bytes] = []
-        total = 0
-        try:
-            for chunk in response.iter_content(_MAX_BODY_CHARS + 1):
-                chunks.append(chunk)
-                total += len(chunk)
-                if total > _MAX_BODY_CHARS:
-                    raise ValueError(
-                        f"mpesa: oauth/v1/generate response exceeds "
-                        f"{_MAX_BODY_CHARS} bytes")
-        finally:
-            response.close()
-        body = b"".join(chunks)
+        # Bounded streaming read via the shared mpesa._limits.read_capped
+        # (Go LimitReader parity): caps the DECOMPRESSED byte count during
+        # transfer via iter_content(MAX+1) so a gzip bomb aborts mid-stream
+        # instead of being fully materialised by a pre-read .content. The
+        # socket is released in ``finally`` inside read_capped so abort
+        # paths never leak it.
+        body = read_capped(response, "oauth/v1/generate response")
         if not 200 <= response.status_code <= 299:
             content_type = response.headers.get("content-type", "")
             raise MpesaError.from_response(
