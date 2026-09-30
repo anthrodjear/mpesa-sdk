@@ -5,10 +5,14 @@ package mpesa
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -32,6 +36,76 @@ const (
 	defaultTimeout = 30 * time.Second
 	maxResponseLen = 1 << 20
 )
+
+// pinnedSPKIHashes maps hostnames to their expected SPKI SHA-256 hashes.
+// A hostname may have multiple pins (e.g. current + backup key).
+var (
+	pinnedSPKIHashes = make(map[string][][]byte)
+	pinnedSPKIMutex  sync.RWMutex
+)
+
+// PinSPKI registers an expected SPKI SHA-256 hash for a hostname. When TLS
+// pinning is enabled and the client connects to this hostname, the server's
+// certificate SPKI hash must match one of the registered pins or the
+// connection is rejected.
+//
+// The hash is the SHA-256 of the DER-encoded SubjectPublicKeyInfo (SPKI)
+// of the server's RSA public key. Users should fetch the actual hash from
+// the live endpoint before pinning.
+func PinSPKI(hostname string, spkiHash []byte) {
+	pinnedSPKIMutex.Lock()
+	defer pinnedSPKIMutex.Unlock()
+	pinnedSPKIHashes[hostname] = append(pinnedSPKIHashes[hostname], spkiHash)
+}
+
+// verifySPKIPinning returns a tls.Config.VerifyPeerCertificate callback that
+// checks the server's SPKI hash against the pinned hashes for the given
+// hostname. If no pin exists for the hostname, the connection is allowed
+// (pinning is opt-in per-hostname).
+func verifySPKIPinning(hostname string) func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		if len(rawCerts) == 0 {
+			return fmt.Errorf("mpesa: no certificates presented by server")
+		}
+
+		leaf, err := x509.ParseCertificate(rawCerts[0])
+		if err != nil {
+			return fmt.Errorf("mpesa: failed to parse server certificate: %w", err)
+		}
+
+		spkiDER, err := x509.MarshalPKIXPublicKey(leaf.PublicKey)
+		if err != nil {
+			return fmt.Errorf("mpesa: failed to marshal server public key: %w", err)
+		}
+
+		hash := sha256.Sum256(spkiDER)
+
+		pinnedSPKIMutex.RLock()
+		defer pinnedSPKIMutex.RUnlock()
+
+		pins, ok := pinnedSPKIHashes[hostname]
+		if !ok {
+			return nil // No pin for this hostname, allow
+		}
+
+		for _, pin := range pins {
+			if bytes.Equal(hash[:], pin) {
+				return nil // Pin matches
+			}
+		}
+
+		return fmt.Errorf("mpesa: TLS certificate pinning failed for %s: SPKI hash mismatch", hostname)
+	}
+}
+
+// hostnameFromURL extracts the hostname from a URL string.
+func hostnameFromURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
 
 // Client is a concurrency-safe Daraja API engine. Create one per environment
 // and share it; the OAuth token cache is guarded internally.
@@ -121,6 +195,21 @@ func NewClient(cfg Config) (*Client, error) {
 			cloned.Timeout = cfg.Timeout
 		}
 		hc = &cloned
+	}
+	if cfg.TLSPinningEnabled {
+		hostname := hostnameFromURL(cfg.Environment.BaseURL())
+		tlsConfig := &tls.Config{
+			VerifyPeerCertificate: verifySPKIPinning(hostname),
+		}
+		// Preserve RootCAs from injected client's transport (e.g. test CAs).
+		if cfg.HTTPClient != nil {
+			if tr, ok := cfg.HTTPClient.Transport.(*http.Transport); ok {
+				if tr.TLSClientConfig != nil {
+					tlsConfig.RootCAs = tr.TLSClientConfig.RootCAs
+				}
+			}
+		}
+		hc.Transport = &http.Transport{TLSClientConfig: tlsConfig}
 	}
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse

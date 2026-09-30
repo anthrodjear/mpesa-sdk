@@ -18,14 +18,15 @@ import (
 // default when zero. Config contains credentials — never log directly;
 // GoString/Format redact.
 type Config struct {
-	ConsumerKey    string
-	ConsumerSecret string
-	Shortcode      string
-	Passkey        string
-	Environment    Environment
-	Timeout        time.Duration
-	Now            func() time.Time
-	HTTPClient     *http.Client
+	ConsumerKey       string
+	ConsumerSecret    string
+	Shortcode         string
+	Passkey           string
+	Environment       Environment
+	Timeout           time.Duration
+	Now               func() time.Time
+	HTTPClient        *http.Client
+	TLSPinningEnabled bool
 }
 
 // GoString redacts ConsumerSecret and Passkey for %#v formatting.
