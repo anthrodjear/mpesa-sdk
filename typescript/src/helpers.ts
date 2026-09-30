@@ -185,54 +185,32 @@ const MAX_RSA_PLAINTEXT_BYTES = 245;
  *   (≤ 245 bytes) — longer inputs are rejected with a length-only message
  *   that never echoes the password.
  *
- * **Argument order trap (documented divergence from Go/Python)**: this
- * function takes `(password, cert)` — password first, certificate
- * second. Go/Python take the reverse order. A fail-fast guard throws
- * when the first argument is not a string, which catches the common
- * swap where a Buffer/PEM certificate is passed as the password
- * (OWASP Input Validation: fail fast on allowlist violation rather
- * than emitting well-formed garbage).
+ * **Argument order**: `(certificatePem, initiatorPassword)` — certificate
+ * first, password second. This matches the Go and Python implementations.
  *
- * @param initiatorPassword - Raw UTF-8 initiator password to encrypt.
- *   MUST be a string; non-string first args throw an arg-order error.
- *   Must be non-blank and encode to ≤ 245 UTF-8 bytes.
  * @param certificatePem    - PEM or DER encoded M-Pesa certificate
  *   carrying an RSA public key.
+ * @param initiatorPassword - Raw UTF-8 initiator password to encrypt.
+ *   Must be non-blank and encode to ≤ 245 UTF-8 bytes.
  * @returns Base64-encoded ciphertext.
- * @throws {Error} Arg-order swap (first arg not a string), empty
- *   password, oversize password (> 245 UTF-8 bytes — message carries the
- *   byte count only, never the password), unparseable cert, or non-RSA key.
+ * @throws {Error} Unparseable cert, non-RSA key, empty password,
+ *   or oversize password (> 245 UTF-8 bytes — message carries the
+ *   byte count only, never the password).
  *
  * @example
  * ```ts
  * const cred = securityCredential(
- *   "my-initiator-password",
  *   certBuffer, // Buffer from fs.readFileSync
+ *   "my-initiator-password",
  * );
  * // cred is base64 string, ~344 chars for RSA-2048
  * ```
  * @see docs/apis/getting-started.md — "Security Credentials" section
  */
 export function securityCredential(
-  initiatorPassword: string,
   certificatePem: string | Buffer,
+  initiatorPassword: string,
 ): string {
-  if (typeof initiatorPassword !== "string") {
-    throw new Error(
-      "mpesa: securityCredential(password, cert) — arg order swapped? password first, certificate second",
-    );
-  }
-  if (!initiatorPassword.trim()) {
-    throw new Error("mpesa: initiator_password is required");
-  }
-  const passwordBytes = Buffer.from(initiatorPassword, "utf-8");
-  if (passwordBytes.byteLength > MAX_RSA_PLAINTEXT_BYTES) {
-    throw new Error(
-      `mpesa: initiator password too long for RSA-2048 PKCS#1 v1.5 ` +
-        `(${passwordBytes.byteLength} bytes, max ${MAX_RSA_PLAINTEXT_BYTES})`,
-    );
-  }
-
   const certInput = typeof certificatePem === "string"
     ? Buffer.from(certificatePem, "utf-8")
     : certificatePem;
@@ -247,6 +225,22 @@ export function securityCredential(
   const publicKey = cert.publicKey;
   if (!publicKey || publicKey.asymmetricKeyType !== "rsa") {
     throw new Error("mpesa: M-Pesa certificate carries non-RSA public key");
+  }
+
+  if (typeof initiatorPassword !== "string") {
+    throw new Error(
+      "mpesa: securityCredential(cert, password) — arg order swapped? certificate first, password second",
+    );
+  }
+  if (!initiatorPassword.trim()) {
+    throw new Error("mpesa: initiator_password is required");
+  }
+  const passwordBytes = Buffer.from(initiatorPassword, "utf-8");
+  if (passwordBytes.byteLength > MAX_RSA_PLAINTEXT_BYTES) {
+    throw new Error(
+      `mpesa: initiator password too long for RSA-2048 PKCS#1 v1.5 ` +
+        `(${passwordBytes.byteLength} bytes, max ${MAX_RSA_PLAINTEXT_BYTES})`,
+    );
   }
 
   let ciphertext: Buffer;
