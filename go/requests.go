@@ -328,12 +328,16 @@ func (r *STKPushRequest) Validate() error {
 	if r.Amount <= 0 {
 		return fmt.Errorf("mpesa: Amount must be a positive whole number, got %d", r.Amount)
 	}
-	if _, err := requireMSISDN("PartyA", r.PartyA); err != nil {
+	partyA, err := requireMSISDN("PartyA", r.PartyA)
+	if err != nil {
 		return err
 	}
-	if _, err := requireMSISDN("PhoneNumber", r.PhoneNumber); err != nil {
+	r.PartyA = partyA
+	phoneNumber, err := requireMSISDN("PhoneNumber", r.PhoneNumber)
+	if err != nil {
 		return err
 	}
+	r.PhoneNumber = phoneNumber
 	if err := requireURL("CallBackURL", r.CallBackURL); err != nil {
 		return err
 	}
