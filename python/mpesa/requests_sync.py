@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import ipaddress
 import re
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +24,31 @@ from .helpers import normalize_phone
 __all__ = ["STKPushRequest", "STKQueryRequest", "C2BRegisterRequest",
            "C2BSimulateRequest", "QRCodeRequest"]
 _URL_RE = re.compile(r"https?://[^\s\x00-\x1f]+")
+
+# Blocked host literals, spelled out range-by-range to stay in step with
+# go/requests.go requireURL and typescript/src/client.ts isBlockedIPv4 /
+# isBlockedIP. Enumerated deliberately instead of leaning on
+# ``ipaddress.is_private``: that predicate also covers CGNAT 100.64/10,
+# 198.18/15 and 240/4, which Go and TypeScript both ACCEPT -- reusing it
+# would close the gap by opening a reverse cross-language mismatch.
+# (network, reason) -- reason is descriptive, not wire-visible.
+_BLOCKED_NETWORKS: tuple[tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, str], ...] = (
+    (ipaddress.ip_network("127.0.0.0/8"), "loopback"),
+    (ipaddress.ip_network("10.0.0.0/8"), "private"),
+    (ipaddress.ip_network("172.16.0.0/12"), "private"),
+    (ipaddress.ip_network("192.168.0.0/16"), "private"),
+    (ipaddress.ip_network("169.254.0.0/16"), "link-local"),  # cloud metadata
+    (ipaddress.ip_network("224.0.0.0/4"), "multicast"),
+    (ipaddress.ip_network("fe80::/10"), "link-local"),
+    (ipaddress.ip_network("fc00::/7"), "unique-local"),
+    (ipaddress.ip_network("ff00::/8"), "multicast"),
+)
+# "Unspecified" is an exact address, not a range, in Go and TypeScript too.
+_BLOCKED_EXACT: dict[ipaddress.IPv4Address | ipaddress.IPv6Address, str] = {
+    ipaddress.ip_address("0.0.0.0"): "unspecified",
+    ipaddress.ip_address("::"): "unspecified",
+    ipaddress.ip_address("::1"): "loopback",
+}
 
 
 def _enum_value(value: Any) -> Any:
@@ -47,10 +74,83 @@ def _printable(field_name: str, value: str, cap: int) -> None:
             f"mpesa: {field_name} exceeds {cap} characters (got {len(value)})")
 
 
+def _ip_literals(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Every address *host* should be judged as, or ``[]`` if it is a name.
+
+    An IPv6 zone id ("fe80::1%eth0", percent-encoded as ``%25eth0``) is
+    stripped first -- :mod:`ipaddress` cannot parse the scoped form. An
+    IPv4-mapped literal ("::ffff:127.0.0.1") is unwrapped and returned
+    AHEAD of its parent so the embedded v4 address is judged on its own and
+    reports the accurate reason; Go reaches the same verdict through
+    ``IP.To4()`` and TypeScript through its explicit IPv4-tail check.
+    """
+    text = host.strip()
+    zone = text.find("%")
+    if zone != -1:
+        text = text[:zone]
+    try:
+        ip = ipaddress.ip_address(text)
+    except ValueError:
+        return []  # not an IP literal -- a DNS name
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return [mapped, ip] if mapped is not None else [ip]
+
+
+def _non_routable_reason(host: str) -> str | None:
+    """Why *host* is an internal address literal, else ``None``.
+
+    Consults :data:`_BLOCKED_EXACT` then :data:`_BLOCKED_NETWORKS`. DNS
+    names return ``None``: this guards the literal host, it is not a
+    DNS-rebinding filter (a name that resolves to 127.0.0.1 still passes,
+    exactly as in Go and TypeScript).
+    """
+    for ip in _ip_literals(host):
+        reason = _BLOCKED_EXACT.get(ip)
+        if reason is not None:
+            return reason
+        for network, why in _BLOCKED_NETWORKS:
+            if ip in network:  # cross-family membership is False, not an error
+                return why
+    return None
+
+
 def _url(field_name: str, value: str) -> None:
+    """Absolute, publicly routable http(s) URL.
+
+    Closes the SSRF gap where this validator accepted only a shape check:
+    an embedded ``user:pass@`` authority, a bare ``localhost`` and any
+    loopback/private/link-local/multicast IP literal now fail, matching
+    go/requests.go and typescript/src/client.ts. The shape gate runs first
+    so a non-http(s) scheme keeps its existing message; ``.port`` is
+    touched inside the try so a malformed port is reported as an invalid
+    URL rather than exploding at send time.
+    """
     if not _URL_RE.fullmatch(value):
         raise ValueError(f"mpesa: {field_name} must be an absolute http(s) URL "
                          "without whitespace/control characters")
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port  # ValueError on a non-numeric port
+    except ValueError:
+        raise ValueError(f"mpesa: {field_name} is not a valid URL") from None
+    if parsed.scheme.lower() not in ("http", "https"):
+        raise ValueError(f"mpesa: {field_name} must use the http or https "
+                         f"scheme, got {parsed.scheme!r}")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(
+            f"mpesa: {field_name} must not contain embedded credentials")
+    if not parsed.netloc:
+        raise ValueError(f"mpesa: {field_name} must have a non-empty host")
+    host = (parsed.hostname or "").strip()
+    if not host or not (port is None or 0 < port <= 65535):
+        raise ValueError(f"mpesa: {field_name} must have a valid host")
+    if host.rstrip(".").lower() == "localhost":
+        raise ValueError(f"mpesa: {field_name} must not point to localhost")
+    reason = _non_routable_reason(host)
+    if reason is not None:
+        raise ValueError(
+            f"mpesa: {field_name} must not point to an internal or private "
+            f"IP address ({reason})")
 
 
 def _phone(field_name: str, raw: str) -> str:
