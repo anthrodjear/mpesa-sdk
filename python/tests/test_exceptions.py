@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa.exceptions import MpesaError  # noqa: E402
+from mpesa.exceptions import MpesaError
 
 ENVELOPE = (
     b'{"requestId":"43169-3253970-1","errorCode":"500.001.1001",'

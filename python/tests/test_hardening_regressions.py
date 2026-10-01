@@ -19,21 +19,21 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa import MpesaClient  # noqa: E402
-from mpesa._limits import (  # noqa: E402
+from mpesa import MpesaClient
+from mpesa._limits import (
     MAX_BODY_BYTES,
     check_body_size,
     read_capped,
 )
-from mpesa.auth import TokenManager  # noqa: E402
-from mpesa.callbacks import StkCallbackResult  # noqa: E402
-from mpesa.coercion import coerce_amount  # noqa: E402
-from mpesa.config import Config  # noqa: E402
-from mpesa.enums import CommandID, QRTrxCode  # noqa: E402
-from mpesa.requests_async import B2CPayoutRequest  # noqa: E402
-from mpesa.requests_sync import QRCodeRequest  # noqa: E402
-from mpesa.responses import STKPushResponse  # noqa: E402
-from mpesa.results import AsyncResult  # noqa: E402
+from mpesa.auth import TokenManager
+from mpesa.callbacks import StkCallbackResult
+from mpesa.coercion import coerce_amount
+from mpesa.config import Config
+from mpesa.enums import CommandID, QRTrxCode
+from mpesa.requests_async import B2CPayoutRequest
+from mpesa.requests_sync import QRCodeRequest
+from mpesa.responses import STKPushResponse
+from mpesa.results import AsyncResult
 
 T0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 PASSKEY = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919"

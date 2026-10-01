@@ -7,8 +7,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa.callbacks import StkCallbackResult  # noqa: E402
-from mpesa.classification import ResultClass  # noqa: E402
+from mpesa.callbacks import StkCallbackResult
+from mpesa.classification import ResultClass
 
 SUCCESS_RAW = b"""{
     "Body": {"stkCallback": {

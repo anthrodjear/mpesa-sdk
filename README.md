@@ -1,6 +1,6 @@
 # M-Pesa Daraja SDK
 
-[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go&logoColor=white)](https://pkg.go.dev/github.com/anthrodjear/mpesa-sdk/go)
+[![Go](https://img.shields.io/badge/Go-1.26.8+-00ADD8?logo=go&logoColor=white)](https://pkg.go.dev/github.com/anthrodjear/mpesa-sdk/go)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://pypi.org/project/mpesa-sdk/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9+-3178C6?logo=typescript&logoColor=white)](https://www.npmjs.com/package/@mpesa-sdk/core)
 [![CI](https://github.com/anthrodjear/mpesa-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/anthrodjear/mpesa-sdk/actions/workflows/ci.yml)
@@ -11,7 +11,7 @@ A production-grade SDK for the Safaricom **M-Pesa Daraja API** in three language
 
 | Language   | Version  | Install                        | Import                                  | Runtime deps                          |
 |------------|----------|--------------------------------|-----------------------------------------|---------------------------------------|
-| Go         | 1.22+    | `go get github.com/anthrodjear/mpesa-sdk/go` | `import mpesa "github.com/anthrodjear/mpesa-sdk/go"` | none (stdlib only)                    |
+| Go         | 1.26.8+  | `go get github.com/anthrodjear/mpesa-sdk/go` | `import mpesa "github.com/anthrodjear/mpesa-sdk/go"` | none (stdlib only)                    |
 | Python     | 3.11+    | `pip install mpesa-sdk`        | `import mpesa`                           | `requests`, `cryptography`            |
 | TypeScript | Node ≥20 | `npm install @mpesa-sdk/core`  | `import { ... } from "@mpesa-sdk/core"`  | none (native `fetch` + `node:crypto`) |
 
@@ -450,7 +450,7 @@ Listed so log inspection doesn't panic you; the SDKs emit/accept these verbatim:
 | Python     | `cd python && pip install -e ".[dev]" && python -m pytest tests -v`    |
 | TypeScript | `cd typescript && npm ci && npm run typecheck && npm test`             |
 
-CI (GitHub Actions) runs all three suites in parallel on every push and pull request to `main` — Go vet + tests on Go 1.22, pytest on Python 3.11, and typecheck (including examples) + vitest on Node 20. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+CI (GitHub Actions) runs all three suites in parallel on every push and pull request to `main` — Go vet + tests on Go 1.26.8 (the same toolchain `govulncheck` scans), pytest on Python 3.11, and typecheck (including examples) + vitest on Node 20. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Documentation index
 

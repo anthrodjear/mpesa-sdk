@@ -1,4 +1,4 @@
-﻿"""Concurrency-safe Daraja transport (mirrors go/client.go).
+"""Concurrency-safe Daraja transport (mirrors go/client.go).
 
 Create one :class:`MpesaClient` per environment and share it -- the
 OAuth cache inside :class:`mpesa.auth.TokenManager` is synchronized and
@@ -36,12 +36,17 @@ from typing import Any, TypeVar
 
 import requests
 
+# Back-compat re-export from mpesa._limits (the single source of truth),
+# pinned by tests/test_hardening_regressions.py::
+#   test_limits_single_source_and_back_compat_reexports
+# The cap is enforced by read_capped below, not by reading this alias, so the
+# F401 suppression on the next line is scoped to it deliberately.
+from ._limits import MAX_BODY_BYTES as _MAX_RESPONSE_BYTES  # noqa: F401
+from ._limits import read_capped
 from .auth import TokenManager
 from .config import Config
 from .enums import CommandID
 from .exceptions import MpesaError
-from ._limits import MAX_BODY_BYTES as _MAX_RESPONSE_BYTES
-from ._limits import read_capped
 from .helpers import generate_password, new_originator_id
 from .requests_async import (
     AccountBalanceRequest,
@@ -78,8 +83,6 @@ ACCOUNT_BALANCE_PATH = "/mpesa/accountbalance/v1/query"
 QR_CODE_PATH = "/mpesa/qrcode/v1/generate"
 
 _ERR_INVALID_TOKEN = "401.003.01"  # nosec B105  # M-Pesa error code, not a token
-# NOTE: _MAX_RESPONSE_BYTES is re-exported from mpesa._limits (the single
-# source of truth); kept importable here for back-compat.
 
 _ModelT = TypeVar("_ModelT")
 

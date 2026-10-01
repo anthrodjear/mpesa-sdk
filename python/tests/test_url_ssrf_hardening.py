@@ -18,14 +18,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa.enums import CommandID, ResponseType, TransactionType  # noqa: E402
-from mpesa.requests_async import (  # noqa: E402
+from mpesa.enums import CommandID, ResponseType, TransactionType
+from mpesa.requests_async import (
     AccountBalanceRequest,
     B2CPayoutRequest,
     ReversalRequest,
     TransactionStatusRequest,
 )
-from mpesa.requests_sync import (  # noqa: E402
+from mpesa.requests_sync import (
     C2BRegisterRequest,
     STKPushRequest,
     _url,

@@ -38,10 +38,15 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+# Back-compat re-export from mpesa._limits (see the NOTE below), pinned by
+# tests/test_hardening_regressions.py::
+#   test_limits_single_source_and_back_compat_reexports
+# The cap is enforced by _check_body_size below, not by reading this alias, so
+# the F401 suppression on the next line is scoped to it deliberately.
+from ._limits import MAX_BODY_BYTES as _MAX_BODY_BYTES  # noqa: F401
+from ._limits import check_body_size as _check_body_size
 from .classification import ResultClass, classify_result_code
 from .coercion import coerce_amount, coerce_int, coerce_str, first_wins, safe_json_int
-from ._limits import MAX_BODY_BYTES as _MAX_BODY_BYTES
-from ._limits import check_body_size as _check_body_size
 
 __all__ = ["StkCallbackResult", "MetadataItem"]
 # NOTE (limits centralisation): _MAX_BODY_BYTES / _check_body_size are

@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa.coercion import coerce_int, coerce_str  # noqa: E402
+from mpesa.coercion import coerce_int, coerce_str
 
 
 @pytest.mark.parametrize(

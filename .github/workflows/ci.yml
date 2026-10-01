@@ -34,7 +34,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.22'
+          # Exact patch, matching the `go` directive in go/go.mod and the
+          # `security` job's govulncheck run below. The build toolchain and the
+          # scanned toolchain must be the same release: govulncheck matches
+          # standard-library CVEs against the Go version that built the code, so
+          # a mismatch hides every stdlib advisory in the line we actually ship.
+          go-version: '1.26.8'
       - name: Vet
         run: go vet ./...
         working-directory: go
@@ -119,9 +124,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # One toolchain for the whole job, pinned to the exact patch that the `go`
+      # job builds and tests with. govulncheck derives the standard-library
+      # version it checks against from the Go version compiling the packages, so
+      # building with 1.22 and scanning with `stable` meant the scanner never saw
+      # the advisories affecting the toolchain we ship.
+      #
+      # The two `setup-go` steps this replaced (one at '1.22', one at 'stable')
+      # were not merely redundant: the second one silently replaced the first for
+      # every subsequent step, which is how the scan ended up running on a
+      # different release than the build.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.22'
+          go-version: '1.26.8'
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -133,19 +148,20 @@ jobs:
           cache: 'npm'
           cache-dependency-path: typescript/package-lock.json
 
-      - name: Setup Go for govulncheck (newer toolchain, scanner only)
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: 'stable'
-
       - name: Install govulncheck
         # Pinned, not `@latest`. `@latest` resolved mutable upstream content at
         # run time, so the scanner's behaviour could change without a commit
-        # here. v1.1.4 builds and runs under the `stable` toolchain configured
-        # above, with GOTOOLCHAIN=auto available if it ever needs a newer one.
+        # here. v1.1.4 declares `go 1.22.0`, so it builds under the pinned
+        # 1.26.8 toolchain without any download.
+        #
+        # GOTOOLCHAIN=local, not `auto`: `auto` lets the go command silently
+        # fetch a newer toolchain when a module needs one, which is precisely
+        # the drift that made the scanner and the build disagree. With `local`
+        # an incompatible scanner fails the step loudly instead of quietly
+        # scanning something other than what we ship.
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
         env:
-          GOTOOLCHAIN: auto
+          GOTOOLCHAIN: local
 
       - name: Run govulncheck (Go)
         # Unchanged: govulncheck already exits non-zero only for vulnerabilities
@@ -153,7 +169,7 @@ jobs:
         run: govulncheck ./...
         working-directory: go
         env:
-          GOTOOLCHAIN: auto
+          GOTOOLCHAIN: local
 
       - name: Install bandit
         # Pinned, not bare `pip install bandit`, for the same reason as ruff.

@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import mpesa  # noqa: E402
+import mpesa
 
 
 def test_every_all_name_importable_and_not_none():

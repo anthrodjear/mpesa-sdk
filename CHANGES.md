@@ -7,10 +7,38 @@ auto-upgrade into an incompatible release — pin `0.3.0` explicitly.
 
 ## BREAKING
 
+- **Go minimum toolchain raised to 1.26.8** (`go/go.mod`): the `go` directive moves
+  from `1.22` to `1.26.8`, so consumers on an older patch must upgrade their Go
+  install (or let `GOTOOLCHAIN=auto` fetch 1.26.8) before `go get` will resolve.
+  No SDK API changed. The floor is a full patch version, not `1.26`, on purpose:
+  the advisories that forced this bump are stdlib CVEs fixed *within* the 1.26
+  line (`net/url` GO-2026-6218 and `crypto/tls` GO-2026-6090 are both fixed in
+  1.26.6), so a `go 1.26` floor would still admit toolchains that carry them. See
+  the Security entry below.
 - **TypeScript `securityCredential` arg order swapped to `(certificatePem, initiatorPassword)` for Go/Python parity** (`helpers.ts`): swap your two call-site args. The old `(password, cert)` order now throws a fail-fast `TypeError`.
 - **Go `Error` renamed to `MpesaError`**: update `var merr *mpesa.Error` to `*mpesa.MpesaError`. A deprecated `Error` type alias is kept for compatibility.
 
 ## Security
+
+- **govulncheck now scans the toolchain we actually ship** (`.github/workflows/ci.yml`,
+  `go/go.mod`): the `security` job built on Go 1.22 but scanned with `go-version:
+  stable`, and govulncheck matches standard-library CVEs against the Go version
+  that compiled the packages. Scanning the shipped line with a scanner built for a
+  different release reported **zero** findings while that same code reached **28**
+  reachable stdlib vulnerabilities under Go 1.22.12 — including
+  `crypto/tls` handshake DoS, `crypto/x509` chain-building work, `encoding/asn1`
+  recursion depth, `net/url` quadratic parse, and `net/http` request smuggling.
+  The `security` job now uses one pinned `setup-go` (1.26.8) shared with the `go`
+  job, `GOTOOLCHAIN: local` so the scanner can never silently fetch a different
+  toolchain, and `go/go.mod` raises the floor so the guarantee holds for consumers
+  too. No application code was reachable only through the old release, so this is
+  a toolchain-floor change rather than a patch to the SDK.
+- **`rsa.EncryptPKCS1v15` deprecation acknowledged, not "fixed"** (`go/helpers.go`):
+  Go 1.26 marks the function deprecated as general crypto hygiene. Daraja
+  specifies the initiator password as RSA/ECB/PKCS1Padding over the certificate's
+  public key, so switching to OAEP would emit ciphertext Safaricom cannot decrypt.
+  The call keeps PKCS#1 v1.5 with a scoped `//nolint:staticcheck` and an inline
+  rationale; this is a wire-format constraint, not an oversight.
 
 - **TLS SPKI certificate pinning, opt-in (Go)** (`go/client.go`, `go/config.go`):
   `PinSPKI(host, sha256SPKI)` registers an expected SubjectPublicKeyInfo hash;

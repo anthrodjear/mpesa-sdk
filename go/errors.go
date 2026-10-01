@@ -103,18 +103,3 @@ func sanitizeWireString(s string, limit int) string {
 	}
 	return b.String()
 }
-
-// asciiSnippet keeps only printable ASCII up to limit bytes for diagnostics.
-func asciiSnippet(s string, limit int) string {
-	var b strings.Builder
-	for _, r := range s {
-		if b.Len() >= limit {
-			break
-		}
-		if r < 0x20 || r > 0x7e {
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}

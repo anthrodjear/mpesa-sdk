@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa.helpers import (  # noqa: E402
+from mpesa.helpers import (
     generate_password,
     new_originator_id,
     normalize_phone,

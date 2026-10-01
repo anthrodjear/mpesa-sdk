@@ -1,0 +1,81 @@
+# Ruff configuration for the Python binding.
+#
+# This file IS the Python lint gate. `ruff check .` runs from this directory in
+# CI (`.github/workflows/ci.yml`, python job, ruff pinned to 0.16.9). There is
+# no `pyproject.toml` or `setup.cfg` anywhere in the repository, so before this
+# existed ruff fell back to its built-in defaults -- which are far broader than
+# the classic set and have shifted between minor releases. An unpinned tool
+# changing its defaults turns a green job red with no commit here, and a
+# narrower-than-documented selection silently stops catching real defects.
+#
+# Rule selection principle: correctness first, then the defect classes that
+# actually apply to a payments SDK. Nothing is selected for style.
+
+target-version = "py311" # matches setup-python '3.11' in the CI python job
+line-length = 88
+
+[lint]
+select = [
+    # ---- baseline: the classic correctness set -----------------------------
+    # E4 = E401 duplicate-import, E402 module-import-not-at-top-of-file.
+    "E4",
+    # E7 = E701..E743: `;`-joined statements, `== None`/`== True` comparisons,
+    # `not ... in`, bare `except:`, lambda assigned to a name.
+    "E7",
+    # E9 = E901/E902: syntax and IO errors. A file that cannot parse must not
+    # pass the gate just because the broken part is never imported.
+    "E9",
+    # F  = F401 unused-import, F811 redefinition, F821 undefined-name,
+    #      F841 unused-local, F632 is-literal. F821 is load-bearing here: in a
+    #      security-hardened SDK a typo'd helper name has to fail the build,
+    #      not surface as an AttributeError on a live Daraja call path.
+    "F",
+
+    # ---- additions beyond the baseline, each with its reason ---------------
+    # I = isort. Import order is the only machine-readable view of this
+    # package's internal dependency direction, and `mpesa/__init__.py` is a
+    # deliberate re-export hub whose order is reviewed by hand. Deterministic
+    # ordering also removes merge noise on the import block. Pure reordering,
+    # auto-fixable, no behaviour change.
+    "I",
+
+    # B = flake8-bugbear. Adds three defect classes the baseline cannot see and
+    # that matter in library code:
+    #   B006 mutable default argument (shared state across calls)
+    #   B008 call-in-default-argument (evaluated once, at def time)
+    #   B904 raise ... without `from` inside an `except` block, which silently
+    #        discards the original cause from the traceback
+    # plus B017 (assert on a blind `Exception`), which is how the one weak
+    # `pytest.raises(Exception)` in tests/ was found. Auto-fixable where a fix
+    # is mechanical; the rest must be fixed by hand.
+    "B",
+
+    # RUF100 unused-noqa. Makes every `# noqa` self-expiring: once the rule it
+    # silences is fixed, de-selected, or renamed, the dead directive is
+    # reported instead of lingering. This is the reason the whole `B`/`I`
+    # selection stays honest -- without it a stale `# noqa: BLE001` on a
+    # security check is an invisible, permanent hole.
+    "RUF100",
+]
+
+# E501 (line-too-long) is deliberately NOT selected. It lives in the E5 group,
+# which this selection does not include. Flagging it today would report 14
+# pre-existing long lines (max 97 in mpesa/, 114 in one test) that are all inside
+# docstrings, error messages and fixtures, producing pure churn with no defect
+# caught. `line-length` above still declares 88 as the target width for
+# `ruff format` and for editors; the gate does not enforce it retroactively.
+#
+# E731/E402 and the rest of E7/E4 stay ON everywhere, tests/ included: F and E
+# catch undefined names and unused imports, and a test with a broken import is
+# exactly as broken as a library with one. No per-file-ignores are needed --
+# every finding in tests/ under this selection is fixed in the code rather than
+# suppressed.
+#
+# The only suppressions in the tree are four line-scoped `# noqa: F401` on the
+# `MAX_BODY_BYTES` back-compat re-exports in mpesa/callbacks.py, mpesa/client.py,
+# mpesa/responses.py and mpesa/results.py. Those aliases are part of the module
+# contract (pinned by
+# tests/test_hardening_regressions.py::test_limits_single_source_and_back_compat_reexports),
+# each line carries its own rationale, and the rule is enabled so RUF100 keeps
+# them honest. A per-file-ignore was rejected here: it would also silence real
+# unused imports in those four files, whereas a line-scoped directive does not.

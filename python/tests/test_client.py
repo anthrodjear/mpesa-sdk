@@ -1,7 +1,6 @@
 """Tests for mpesa.client -- transport, defaults, retry-once auth."""
 
 import base64
-import copy
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,18 +9,17 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa.auth import TokenManager  # noqa: E402  # noqa: F401 (repr pin)
-from mpesa.client import MpesaClient  # noqa: E402
-from mpesa.config import Config  # noqa: E402
-from mpesa.enums import CommandID, QRTrxCode, ResponseType  # noqa: E402
-from mpesa.exceptions import MpesaError  # noqa: E402
-from mpesa.requests_async import (  # noqa: E402
+from mpesa.client import MpesaClient
+from mpesa.config import Config
+from mpesa.enums import CommandID, QRTrxCode, ResponseType
+from mpesa.exceptions import MpesaError
+from mpesa.requests_async import (
     AccountBalanceRequest,
     B2CPayoutRequest,
     ReversalRequest,
     TransactionStatusRequest,
 )
-from mpesa.requests_sync import (  # noqa: E402
+from mpesa.requests_sync import (
     C2BRegisterRequest,
     C2BSimulateRequest,
     QRCodeRequest,
@@ -126,7 +124,6 @@ def test_stk_push_path_bearer_and_single_clock_password():
     payload = call["json"]
     assert payload["BusinessShortCode"] == "174379"     # cfg default injected
     assert payload["Password"] and len(payload["Timestamp"]) == 14
-    import base64
     decoded = base64.b64decode(payload["Password"]).decode()
     assert decoded == f'174379{PASSKEY}{payload["Timestamp"]}'
     assert payload["Timestamp"] == "20260101150000"      # EAT = UTC+3
@@ -313,7 +310,6 @@ class StreamOnlyResponse:
     """Mimics a streamed response: no .content attr, only iter_content."""
 
     def __init__(self, status_code=200, text="{}", chunks=None):
-        import json as _json
         self.status_code = status_code
         self._payload = text
         self._chunks = chunks
@@ -440,7 +436,6 @@ def test_zero_timeout_clamps_to_thirty():
 
 
 def test_stk_query_default_shortcode_password_binding():
-    import base64
     client, session = make(oauth_then(FakeResponse(text=QUERY_OK)))
     client.stk_query(STKQueryRequest(checkout_request_id="ws_CO_1"))
     payload = [c for c in session.calls if c["kind"] == "POST"][0]["json"]

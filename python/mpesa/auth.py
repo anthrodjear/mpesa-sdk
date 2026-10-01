@@ -28,9 +28,9 @@ from typing import Callable
 
 import requests
 
-from .exceptions import MpesaError
 from ._limits import MAX_BODY_BYTES as _MAX_BODY_BYTES
 from ._limits import read_capped
+from .exceptions import MpesaError
 from .responses import OAuthToken
 
 __all__ = ["TokenManager"]
@@ -212,7 +212,7 @@ class TokenManager:
                     response.status_code, body, content_type)
             try:
                 payload = json.loads(body)
-            except Exception as exc:  # noqa: BLE001 - wrap any decoder blow-up
+            except Exception as exc:  # deliberate: wrap any decoder blow-up
                 raise ValueError(f"mpesa: decode oauth response: {exc}") from exc
             token_response = OAuthToken.from_json(payload)
             if not token_response.access_token:

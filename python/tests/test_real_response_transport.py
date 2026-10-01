@@ -15,7 +15,6 @@ through ``_send``/``_post_model`` end-to-end proving:
 """
 
 import io
-import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,15 +23,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from requests import Response  # noqa: E402
-from requests.structures import CaseInsensitiveDict  # noqa: E402
-from urllib3.response import HTTPResponse as Urllib3HTTPResponse  # noqa: E402
+from requests import Response
+from requests.structures import CaseInsensitiveDict
+from urllib3.response import HTTPResponse as Urllib3HTTPResponse
 
-from mpesa.auth import TokenManager  # noqa: E402
-from mpesa.client import MpesaClient  # noqa: E402
-from mpesa.config import Config  # noqa: E402
-from mpesa.exceptions import MpesaError  # noqa: E402
-from mpesa.requests_sync import STKPushRequest  # noqa: E402
+from mpesa.auth import TokenManager
+from mpesa.client import MpesaClient
+from mpesa.config import Config
+from mpesa.exceptions import MpesaError
+from mpesa.requests_sync import STKPushRequest
 
 T0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 PASSKEY = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919"

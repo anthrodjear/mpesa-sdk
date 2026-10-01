@@ -56,7 +56,6 @@ from .requests_sync import (
     STKPushRequest,
     STKQueryRequest,
 )
-from .results import AsyncResult, BalanceSegment, parse_balance_segments
 from .responses import (
     B2CResponse,
     C2BAckResponse,
@@ -66,6 +65,7 @@ from .responses import (
     STKPushResponse,
     STKQueryResponse,
 )
+from .results import AsyncResult, BalanceSegment, parse_balance_segments
 
 __version__ = "0.3.0"
 
@@ -93,6 +93,7 @@ __all__ = [
     "RECEIVER_IDENTIFIER_ORG",
     "ResponseType",
     "ResultClass",
+    "ReversalRequest",
     "STKPushRequest",
     "STKPushResponse",
     "STKQueryRequest",

@@ -102,7 +102,7 @@ class MpesaError(Exception):
         raw = {"requestId": "", "errorCode": "", "errorMessage": ""}
         try:
             parsed = json.loads(body.decode("utf-8", errors="replace"))
-        except Exception:  # noqa: BLE001 - deliberate fail-safe parse
+        except Exception:  # deliberate: a hostile body must still yield typed error
             parsed = None
         if isinstance(parsed, dict):
             for key in raw:
