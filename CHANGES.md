@@ -1,9 +1,61 @@
-# Changes — Unreleased
+# Changes — 0.3.0
+
+All three engines ship `0.3.0` together. This is a **minor** bump on purpose: under
+SemVer 0.x, breaking changes increment the minor version. Publishing the breaking
+changes below as `0.2.1` would have let existing `^0.2.0` / `~=0.2.0` consumers
+auto-upgrade into an incompatible release — pin `0.3.0` explicitly.
 
 ## BREAKING
 
 - **TypeScript `securityCredential` arg order swapped to `(certificatePem, initiatorPassword)` for Go/Python parity** (`helpers.ts`): swap your two call-site args. The old `(password, cert)` order now throws a fail-fast `TypeError`.
 - **Go `Error` renamed to `MpesaError`**: update `var merr *mpesa.Error` to `*mpesa.MpesaError`. A deprecated `Error` type alias is kept for compatibility.
+
+## Security
+
+- **TLS SPKI certificate pinning, opt-in (Go)** (`go/client.go`, `go/config.go`):
+  `PinSPKI(host, sha256SPKI)` registers an expected SubjectPublicKeyInfo hash;
+  `Config.TLSPinningEnabled` installs a `VerifyPeerCertificate` callback that
+  rejects any mismatch. Off by default — opt in per host you pin. Pinning is
+  skipped while the chain fails ordinary verification, so it is additive to
+  (never a replacement for) normal TLS validation. **Go only** in this release.
+- **Token memory zeroing + explicit `Close()` (Go, Python)**: `Client.Close()`
+  (Go) and `MpesaClient.close()` (Python) drop the cached OAuth token and
+  zero the old buffer before replacement. The TypeScript engine exposes no
+  `close()`/zeroing primitive yet — see the follow-up note below.
+- **Trusted base-URL allowlist (all three engines)** (`go/config.go`,
+  `python/mpesa/auth.py`, `typescript/src/config.ts`, `auth.ts`): the OAuth leg
+  sends `Basic key:secret` to `Environment.BaseURL()`, so a non-allowlisted base
+  URL is now rejected at construction — before any credential leaves the process
+  — rather than at request time. Only the two Safaricom hosts are accepted.
+- **OAuth refresh rate limiting (all three engines)** (`go/client.go`,
+  `python/mpesa/auth.py`, `typescript/src/auth.ts`): after 3 consecutive
+  refresh failures a client refuses further OAuth attempts for a 5s window,
+  breaking a crash-loop that would otherwise hammer the token endpoint. A
+  401-triggered forced refresh still bypasses the limit.
+- **SSRF-hardened callback URL validation (Go, TypeScript)** (`go/requests.go`,
+  `typescript/src/client.ts`): `CallBackURL` rejects `localhost` plus
+  loopback/private/link-local/multicast/unspecified addresses, including IPv6
+  and `::ffff:`-embedded IPv4 tails. Python validates the URL *shape* only
+  (`_URL_RE`: absolute http(s), no whitespace/control characters) — it does not
+  yet reject private IPs.
+- **Generic error messages (all three engines)** (`go/errors.go`,
+  `python/mpesa/exceptions.py`, `typescript/src/errors.ts`): non-2xx responses
+  surface a generic caller-facing message; content-type, body snippets and
+  response size stay in diagnostics instead of leaking into the returned error.
+  Python and TypeScript additionally sanitize every wire-derived error field
+  (Unicode Cc/Cf control runes stripped, length-capped) so a hostile gateway
+  cannot inject control sequences into logs.
+
+## CI
+
+- Go tests now run under the **race detector** (`go test -race -count=1 ./...`).
+- A dedicated **security** job runs `govulncheck ./...` (Go), `bandit -r mpesa/`
+  (Python) and `npm audit --audit-level=moderate` (TypeScript). These linters and
+  scanners are currently **advisory** (`continue-on-error`) — they report without
+  blocking the run.
+- `develop` is promoted to `main` only on a green CI run (`promote.yml` opens the
+  PR with auto-merge once the CI `workflow_run` concludes `success`), so the
+  `go`, `python` and `typescript` jobs gate what lands on `main`.
 
 # Changes — 0.2.0 (2026-09-17)
 
