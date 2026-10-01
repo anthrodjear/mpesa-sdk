@@ -1,7 +1,14 @@
 name: CI
 on:
+  # Push runs on `develop` only. A commit reaching `main` has already been
+  # tested twice - once on the develop push, once on the develop->main pull
+  # request - and nothing merges into `main` except promote.yml, which only
+  # does so after those go green. Re-running on the main push was a third
+  # full Go+Python+TypeScript+security cycle per release for no added safety.
   push:
-    branches: [main, develop]
+    branches: [develop]
+  # The pull_request run is NOT redundant: `required-checks.yml` is the gate
+  # `Protect main` requires, and a push run must never be able to satisfy it.
   pull_request:
     branches: [main, develop]
 
