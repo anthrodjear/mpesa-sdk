@@ -82,6 +82,20 @@ function validateField(value: unknown, name: string, check: (v: string) => boole
 }
 
 /**
+ * Daraja platform base URLs this SDK is willing to mint tokens against.
+ * The base URL MUST arrive from trusted config (Environment.SANDBOX or
+ * Environment.PRODUCTION) — never from user input — so an attacker host
+ * can neither harvest the Basic-auth credential nor receive it via
+ * redirect. Trailing slashes are stripped before the membership test.
+ * Mirrors python/mpesa/auth.py `_TRUSTED_BASE_URLS` and go/config.go
+ * `trustedBaseURLs`.
+ */
+export const TRUSTED_BASE_URLS: ReadonlySet<string> = new Set([
+  "https://sandbox.safaricom.co.ke",
+  "https://api.safaricom.co.ke",
+]);
+
+/**
  * ASCII gate for credential fields (Go `Config.Validate` parity — the
  * Basic-auth `key:secret` pair is base64'd verbatim, so non-ASCII bytes
  * would sign a different credential than the dashboard shows).
@@ -201,6 +215,19 @@ export class Config {
     validateField(this.shortcode, "shortcode", (v) => v.length === 0 || /^\d{5,10}$/.test(v),
       "must be a digits-only string of 5 to 10 characters (or empty when passed per-request)");
     validateField(this.passkey, "passkey", (v) => v.length > 0, "must be a non-empty string");
+    // Trusted-URL allowlist: the OAuth leg sends the Basic-auth credential
+    // to environment.baseUrl — reject any non-allowlisted host before any
+    // network use. Trailing slashes are stripped before the membership test
+    // (Python auth.py parity). Environment.baseUrl is derived from the
+    // Environment class, so this is a defense-in-depth guard against future
+    // Environment modifications.
+    const baseURL = this.environment.baseUrl.replace(/\/+$/, "");
+    if (!TRUSTED_BASE_URLS.has(baseURL)) {
+      throw new ConfigError(
+        `mpesa: refusing untrusted base_url ${JSON.stringify(baseURL)} ` +
+        `(want https://sandbox.safaricom.co.ke or https://api.safaricom.co.ke)`,
+      );
+    }
   }
 
   /**

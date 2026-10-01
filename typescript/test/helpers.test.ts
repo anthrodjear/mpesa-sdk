@@ -209,7 +209,7 @@ describe("securityCredential", () => {
   const PASSWORD = "test-initiator-password";
 
   it("encrypts and returns valid base64 of expected length", () => {
-    const cred = securityCredential(PASSWORD, SANDBOX_CERT_PEM);
+    const cred = securityCredential(SANDBOX_CERT_PEM, PASSWORD);
     // RSA-2048 PKCS#1 v1.5 → 256 bytes → 344 base64 chars
     expect(typeof cred).toBe("string");
     expect(cred.length).toBeGreaterThan(300);
@@ -222,18 +222,18 @@ describe("securityCredential", () => {
 
   it("accepts PEM string input", () => {
     const pemStr = SANDBOX_CERT_PEM.toString("utf-8");
-    const cred = securityCredential(PASSWORD, pemStr);
+    const cred = securityCredential(pemStr, PASSWORD);
     expect(cred).toMatch(/^[A-Za-z0-9+/]+=*$/);
   });
 
   it("accepts Buffer input", () => {
-    const cred = securityCredential(PASSWORD, SANDBOX_CERT_PEM);
+    const cred = securityCredential(SANDBOX_CERT_PEM, PASSWORD);
     expect(typeof cred).toBe("string");
   });
 
   it("produces same-length ciphertext for same input (PKCS#1 v1.5 uses random padding)", () => {
-    const cred1 = securityCredential(PASSWORD, SANDBOX_CERT_PEM);
-    const cred2 = securityCredential(PASSWORD, SANDBOX_CERT_PEM);
+    const cred1 = securityCredential(SANDBOX_CERT_PEM, PASSWORD);
+    const cred2 = securityCredential(SANDBOX_CERT_PEM, PASSWORD);
     // Different ciphertexts (random padding), but same byte length
     expect(Buffer.from(cred1, "base64").byteLength).toBe(
       Buffer.from(cred2, "base64").byteLength,
@@ -241,19 +241,19 @@ describe("securityCredential", () => {
   });
 
   it("rejects empty password", () => {
-    expect(() => securityCredential("", SANDBOX_CERT_PEM)).toThrow(
+    expect(() => securityCredential(SANDBOX_CERT_PEM, "")).toThrow(
       "mpesa: initiator_password is required",
     );
   });
 
   it("rejects whitespace-only password", () => {
-    expect(() => securityCredential("   ", SANDBOX_CERT_PEM)).toThrow(
+    expect(() => securityCredential(SANDBOX_CERT_PEM, "   ")).toThrow(
       "mpesa: initiator_password is required",
     );
   });
 
   it("rejects invalid certificate", () => {
-    expect(() => securityCredential(PASSWORD, "not-a-cert")).toThrow(
+    expect(() => securityCredential("not-a-cert", PASSWORD)).toThrow(
       "mpesa: parse M-Pesa certificate",
     );
   });
@@ -281,7 +281,7 @@ describe("securityCredential hardening", () => {
   ].join("\n");
 
   it("rejects EC certificates (Go *rsa.PublicKey / Python RSAPublicKey parity)", () => {
-    expect(() => securityCredential("password", EC_CERT_PEM)).toThrow(
+    expect(() => securityCredential(EC_CERT_PEM, "password")).toThrow(
       "mpesa: M-Pesa certificate carries non-RSA public key",
     );
   });
@@ -291,7 +291,7 @@ describe("securityCredential hardening", () => {
     expect(Buffer.from(secret, "utf-8").byteLength).toBeGreaterThan(245);
     let message = "";
     try {
-      securityCredential(secret, SANDBOX_CERT_PEM);
+      securityCredential(SANDBOX_CERT_PEM, secret);
       expect.fail("should have thrown");
     } catch (e) {
       message = (e as Error).message;
@@ -305,12 +305,12 @@ describe("securityCredential hardening", () => {
     const pw = "é".repeat(123); // 123 chars, 246 UTF-8 bytes
     expect(pw.length).toBe(123);
     expect(Buffer.from(pw, "utf-8").byteLength).toBe(246);
-    expect(() => securityCredential(pw, SANDBOX_CERT_PEM)).toThrow(/246 bytes/);
+    expect(() => securityCredential(SANDBOX_CERT_PEM, pw)).toThrow(/246 bytes/);
   });
 
   it("accepts exactly 245-byte passwords (RSA-2048 PKCS#1 v1.5 boundary)", () => {
     const pw = "a".repeat(245);
-    const cred = securityCredential(pw, SANDBOX_CERT_PEM);
+    const cred = securityCredential(SANDBOX_CERT_PEM, pw);
     expect(Buffer.from(cred, "base64").byteLength).toBe(256);
   });
 });

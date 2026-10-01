@@ -1,3 +1,10 @@
+# Changes — Unreleased
+
+## BREAKING
+
+- **TypeScript `securityCredential` arg order swapped to `(certificatePem, initiatorPassword)` for Go/Python parity** (`helpers.ts`): swap your two call-site args. The old `(password, cert)` order now throws a fail-fast `TypeError`.
+- **Go `Error` renamed to `MpesaError`**: update `var merr *mpesa.Error` to `*mpesa.MpesaError`. A deprecated `Error` type alias is kept for compatibility.
+
 # Changes — 0.2.0 (2026-09-17)
 
 All three suites pass: Go `go vet` + `go test` ✅ · Python `479 passed` ✅ ·

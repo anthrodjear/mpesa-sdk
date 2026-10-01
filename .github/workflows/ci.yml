@@ -1,9 +1,9 @@
 name: CI
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 jobs:
   go:
@@ -16,8 +16,14 @@ jobs:
       - name: Vet
         run: go vet ./...
         working-directory: go
+      - name: Lint (golangci-lint)
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
+        with:
+          version: latest
+          working-directory: go
+        continue-on-error: true
       - name: Test
-        run: go test -v -count=1 ./...
+        run: go test -race -v -count=1 ./...
         working-directory: go
 
   python:
@@ -33,6 +39,12 @@ jobs:
       - name: Test
         run: python -m pytest tests -v
         working-directory: python
+      - name: Lint (ruff)
+        run: |
+          pip install ruff
+          ruff check .
+        working-directory: python
+        continue-on-error: true
 
   typescript:
     runs-on: ubuntu-latest
@@ -54,4 +66,58 @@ jobs:
         working-directory: typescript
       - name: Test
         run: npm test
+        working-directory: typescript
+      - name: Lint (eslint if configured, else tsc)
+        run: |
+          if [ -f .eslintrc.json ] || [ -f .eslintrc.js ] || [ -f .eslintrc.cjs ] || [ -f .eslintrc.yml ] || [ -f .eslintrc.yaml ] || [ -f eslint.config.js ] || [ -f eslint.config.mjs ] || [ -f eslint.config.cjs ] || [ -f eslint.config.ts ] || grep -q '"eslint"' package.json; then
+            npx eslint .
+          else
+            echo "No ESLint config found, running tsc --noEmit as lint equivalent"
+            npx tsc --noEmit -p tsconfig.json
+          fi
+        working-directory: typescript
+        continue-on-error: true
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: typescript/package-lock.json
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck (Go)
+        run: govulncheck ./...
+        working-directory: go
+
+      - name: Install bandit
+        run: pip install bandit
+
+      - name: Run bandit (Python)
+        run: |
+          bandit -r mpesa/ -f json -o bandit-report.json || bandit -r mpesa/
+        working-directory: python
+
+      - name: Install dependencies (TypeScript)
+        run: npm ci
+        working-directory: typescript
+
+      - name: Run npm audit (TypeScript)
+        run: npm audit --audit-level=moderate
         working-directory: typescript

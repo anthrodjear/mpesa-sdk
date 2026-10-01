@@ -153,19 +153,19 @@ func TestNewClientRefusesInsecureSkipVerify(t *testing.T) {
 	nilTLS := &http.Transport{TLSClientConfig: nil}
 
 	// Direct insecure transport must be refused (original behavior).
-	if _, err := NewClient(Config{Environment: Sandbox, HTTPClient: &http.Client{Transport: insecure}}); err == nil ||
+	if _, err := NewClient(Config{ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox, HTTPClient: &http.Client{Transport: insecure}}); err == nil ||
 		!strings.Contains(err.Error(), "InsecureSkipVerify") {
 		t.Errorf("direct insecure transport err = %v, want InsecureSkipVerify refusal", err)
 	}
 	// Wrapped insecure transports must ALSO be refused (the HIGH fix):
 	// single and double wrapping.
 	wrapped := unwrapTransport{inner: insecure}
-	if _, err := NewClient(Config{Environment: Sandbox, HTTPClient: &http.Client{Transport: wrapped}}); err == nil ||
+	if _, err := NewClient(Config{ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox, HTTPClient: &http.Client{Transport: wrapped}}); err == nil ||
 		!strings.Contains(err.Error(), "InsecureSkipVerify") {
 		t.Errorf("wrapped insecure transport err = %v, want refusal", err)
 	}
 	doubleWrapped := unwrapTransport{inner: unwrapTransport{inner: insecure}}
-	if _, err := NewClient(Config{Environment: Sandbox, HTTPClient: &http.Client{Transport: doubleWrapped}}); err == nil ||
+	if _, err := NewClient(Config{ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox, HTTPClient: &http.Client{Transport: doubleWrapped}}); err == nil ||
 		!strings.Contains(err.Error(), "InsecureSkipVerify") {
 		t.Errorf("double-wrapped insecure transport err = %v, want refusal", err)
 	}
@@ -187,7 +187,7 @@ func TestNewClientRefusesInsecureSkipVerify(t *testing.T) {
 			} else {
 				hc = &http.Client{Transport: tc.rt}
 			}
-			if _, err := NewClient(Config{Environment: Sandbox, HTTPClient: hc}); err != nil {
+			if _, err := NewClient(Config{ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox, HTTPClient: hc}); err != nil {
 				t.Errorf("NewClient(%s) = %v, want success", tc.name, err)
 			}
 		})
@@ -273,7 +273,7 @@ func TestConfigMarshalJSONRedactsSecrets(t *testing.T) {
 // split ambiguously) and both credentials must be ASCII-only (non-ASCII
 // breaks Basic-auth byte encoding; Python auth.py + TS auth.ts parity).
 func TestConfigValidateRejectsColonInConsumerKey(t *testing.T) {
-	if err := (Config{ConsumerKey: "key:with:colon"}).Validate(); err == nil ||
+	if err := (Config{ConsumerKey: "key:with:colon", ConsumerSecret: "s"}).Validate(); err == nil ||
 		!strings.Contains(err.Error(), "':'") {
 		t.Fatalf("colon ConsumerKey err = %v, want Basic-auth separator rejection", err)
 	}

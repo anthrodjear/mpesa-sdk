@@ -5,10 +5,15 @@ package mpesa
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -29,9 +34,80 @@ const (
 
 	errCodeInvalidToken = "401.003.01"
 
-	defaultTimeout = 30 * time.Second
-	maxResponseLen = 1 << 20
+	defaultTimeout    = 30 * time.Second
+	maxResponseLen    = 1 << 20
+	refreshRateLimit  = 5 * time.Second // minimum time between OAuth refresh attempts
 )
+
+// pinnedSPKIHashes maps hostnames to their expected SPKI SHA-256 hashes.
+// A hostname may have multiple pins (e.g. current + backup key).
+var (
+	pinnedSPKIHashes = make(map[string][][]byte)
+	pinnedSPKIMutex  sync.RWMutex
+)
+
+// PinSPKI registers an expected SPKI SHA-256 hash for a hostname. When TLS
+// pinning is enabled and the client connects to this hostname, the server's
+// certificate SPKI hash must match one of the registered pins or the
+// connection is rejected.
+//
+// The hash is the SHA-256 of the DER-encoded SubjectPublicKeyInfo (SPKI)
+// of the server's RSA public key. Users should fetch the actual hash from
+// the live endpoint before pinning.
+func PinSPKI(hostname string, spkiHash []byte) {
+	pinnedSPKIMutex.Lock()
+	defer pinnedSPKIMutex.Unlock()
+	pinnedSPKIHashes[hostname] = append(pinnedSPKIHashes[hostname], spkiHash)
+}
+
+// verifySPKIPinning returns a tls.Config.VerifyPeerCertificate callback that
+// checks the server's SPKI hash against the pinned hashes for the given
+// hostname. If no pin exists for the hostname, the connection is allowed
+// (pinning is opt-in per-hostname).
+func verifySPKIPinning(hostname string) func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		if len(rawCerts) == 0 {
+			return fmt.Errorf("mpesa: no certificates presented by server")
+		}
+
+		leaf, err := x509.ParseCertificate(rawCerts[0])
+		if err != nil {
+			return fmt.Errorf("mpesa: failed to parse server certificate: %w", err)
+		}
+
+		spkiDER, err := x509.MarshalPKIXPublicKey(leaf.PublicKey)
+		if err != nil {
+			return fmt.Errorf("mpesa: failed to marshal server public key: %w", err)
+		}
+
+		hash := sha256.Sum256(spkiDER)
+
+		pinnedSPKIMutex.RLock()
+		defer pinnedSPKIMutex.RUnlock()
+
+		pins, ok := pinnedSPKIHashes[hostname]
+		if !ok {
+			return nil // No pin for this hostname, allow
+		}
+
+		for _, pin := range pins {
+			if bytes.Equal(hash[:], pin) {
+				return nil // Pin matches
+			}
+		}
+
+		return fmt.Errorf("mpesa: TLS certificate pinning failed for %s: SPKI hash mismatch", hostname)
+	}
+}
+
+// hostnameFromURL extracts the hostname from a URL string.
+func hostnameFromURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
 
 // Client is a concurrency-safe Daraja API engine. Create one per environment
 // and share it; the OAuth token cache is guarded internally.
@@ -49,9 +125,12 @@ type Client struct {
 	http    *http.Client
 
 	mu          sync.RWMutex
-	token       string
+	tokenBytes  []byte    // cached OAuth bearer token; zeroed on refresh/Close
 	tokenExpiry time.Time // now + clamp(ExpiresIn-60s); zero until first fetch
 	gen         uint64    // bumped on every successful refresh
+
+	lastRefreshAttempt time.Time // wall-clock of last refresh attempt (for rate limiting)
+	refreshFailures    int       // consecutive refresh failures; reset on success
 }
 
 // transportDisablesVerification walks the RoundTripper chain looking for any
@@ -85,6 +164,44 @@ func transportDisablesVerification(rt http.RoundTripper) bool {
 	}
 	return false
 }
+
+// effectiveTransport walks the RoundTripper chain (same Unwrap convention as
+// transportDisablesVerification) and returns the first concrete
+// *http.Transport, or nil when none is reachable (nil Transport, opaque
+// wrapper, or fully custom RoundTripper).
+func effectiveTransport(rt http.RoundTripper) *http.Transport {
+	for rt != nil {
+		if tr, ok := rt.(*http.Transport); ok {
+			return tr
+		}
+		unwrapper, ok := rt.(interface{ Unwrap() http.RoundTripper })
+		if !ok {
+			return nil
+		}
+		rt = unwrapper.Unwrap()
+	}
+	return nil
+}
+
+// pinningWrapper preserves a custom RoundTripper that has no reachable
+// concrete *http.Transport (test doubles, mocks, opaque wrappers). Replacing
+// it with a fresh *http.Transport would discard custom behavior; wrapping
+// keeps RoundTrip delegation intact while exposing Unwrap so verification
+// walks can still see through. TLS pinning itself can only be enforced on
+// *http.Transport stacks (via VerifyPeerCertificate) — for fully custom
+// transports there is no TLS handshake to hook, so preservation is the
+// reliability fix. The verify callback is retained to document that pinning
+// was requested for this client.
+type pinningWrapper struct {
+	inner  http.RoundTripper
+	verify func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
+}
+
+func (w *pinningWrapper) RoundTrip(r *http.Request) (*http.Response, error) {
+	return w.inner.RoundTrip(r)
+}
+
+func (w *pinningWrapper) Unwrap() http.RoundTripper { return w.inner }
 
 // NewClient returns a Client for cfg. Timeout defaults to 30s and Now to
 // time.Now when unset. An injected Config.HTTPClient is cloned (never
@@ -122,6 +239,45 @@ func NewClient(cfg Config) (*Client, error) {
 		}
 		hc = &cloned
 	}
+	if cfg.TLSPinningEnabled {
+		hostname := hostnameFromURL(cfg.Environment.BaseURL())
+		verify := verifySPKIPinning(hostname)
+		// applyPinning clones tr (preserving Proxy, DialContext,
+		// MaxIdleConns, RootCAs, etc.) and only installs the pinning
+		// callback, chaining any pre-existing VerifyPeerCertificate.
+		applyPinning := func(tr *http.Transport) *http.Transport {
+			cloned := tr.Clone()
+			if cloned.TLSClientConfig == nil {
+				cloned.TLSClientConfig = &tls.Config{}
+			}
+			if prev := cloned.TLSClientConfig.VerifyPeerCertificate; prev != nil {
+				cloned.TLSClientConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+					if err := prev(rawCerts, verifiedChains); err != nil {
+						return err
+					}
+					return verify(rawCerts, verifiedChains)
+				}
+			} else {
+				cloned.TLSClientConfig.VerifyPeerCertificate = verify
+			}
+			return cloned
+		}
+		if concrete := effectiveTransport(hc.Transport); concrete != nil {
+			// Clone the effective transport found via the Unwrap walk, so
+			// RootCAs (e.g. test CAs) and tuning survive even when wrapped.
+			hc.Transport = applyPinning(concrete)
+		} else if hc.Transport == nil {
+			if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+				hc.Transport = applyPinning(dt)
+			} else {
+				hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{VerifyPeerCertificate: verify}}
+			}
+		} else {
+			// No concrete *http.Transport reachable: wrap instead of
+			// replacing to preserve the custom RoundTripper.
+			hc.Transport = &pinningWrapper{inner: hc.Transport, verify: verify}
+		}
+	}
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
@@ -141,11 +297,35 @@ func (c *Client) Token(ctx context.Context) (string, error) {
 	return tok, err
 }
 
+// setToken securely replaces the cached token, zeroing the old value first
+// to minimise the window where the credential resides in memory.
+func (c *Client) setToken(newToken string) {
+	c.zeroToken()
+	c.tokenBytes = []byte(newToken)
+}
+
+// zeroToken overwrites the cached token bytes with zeros.
+func (c *Client) zeroToken() {
+	for i := range c.tokenBytes {
+		c.tokenBytes[i] = 0
+	}
+	c.tokenBytes = nil
+}
+
+// Close zeros the cached token and marks the client as closed. After Close
+// the client must not be reused.
+func (c *Client) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.zeroToken()
+	c.tokenExpiry = time.Time{}
+}
+
 // tokenWithGen pairs the cached bearer with its generation so callers can
 // detect a concurrent refresh later.
 func (c *Client) tokenWithGen(ctx context.Context) (string, uint64, error) {
 	c.mu.RLock()
-	tok, gen, fresh := c.token, c.gen, c.tokenFresh()
+	tok, gen, fresh := string(c.tokenBytes), c.gen, c.tokenFresh()
 	c.mu.RUnlock()
 	if fresh {
 		return tok, gen, nil
@@ -154,16 +334,16 @@ func (c *Client) tokenWithGen(ctx context.Context) (string, uint64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.tokenFresh() {
-		return c.token, c.gen, nil
+		return string(c.tokenBytes), c.gen, nil
 	}
-	if _, err := c.refreshLocked(ctx); err != nil {
+	if _, err := c.refreshLocked(ctx, false); err != nil {
 		return "", 0, err
 	}
-	return c.token, c.gen, nil
+	return string(c.tokenBytes), c.gen, nil
 }
 
 func (c *Client) tokenFresh() bool {
-	return c.token != "" && c.cfg.Now().Before(c.tokenExpiry)
+	return len(c.tokenBytes) > 0 && c.cfg.Now().Before(c.tokenExpiry)
 }
 
 // refreshCadence converts the OAuth TTL into an eager refresh window:
@@ -179,6 +359,14 @@ func refreshCadence(expiresIn FlexInt64) time.Duration {
 	if secs <= 0 {
 		return maxCadence
 	}
+	// Guard against integer overflow: time.Duration is int64 nanoseconds,
+	// so secs * time.Second overflows when secs > math.MaxInt64 / 1e9.
+	// Clamp to a safe maximum to prevent a negative duration that would
+	// bypass the minCadence floor and cause a refresh DoS.
+	const maxSecs = math.MaxInt64 / int64(time.Second)
+	if secs > maxSecs {
+		secs = maxSecs
+	}
 	d := time.Duration(secs)*time.Second - safety
 	if d < minCadence {
 		d = minCadence
@@ -189,43 +377,64 @@ func refreshCadence(expiresIn FlexInt64) time.Duration {
 	return d
 }
 
-func (c *Client) refreshLocked(ctx context.Context) (string, error) {
+func (c *Client) refreshLocked(ctx context.Context, force bool) (string, error) {
 	if c.cfg.ConsumerKey == "" || c.cfg.ConsumerSecret == "" {
 		return "", fmt.Errorf("mpesa: Config.ConsumerKey and Config.ConsumerSecret are required before calling any endpoint")
 	}
+
+	// Rate limit: only apply to non-forced refreshes after consecutive failures.
+	// 401-triggered refreshes (force=true) bypass the rate limit entirely —
+	// they are expected behavior when tokens are invalidated.
+	if !force {
+		now := c.cfg.Now()
+		if c.refreshFailures >= 3 && !c.lastRefreshAttempt.IsZero() && now.Sub(c.lastRefreshAttempt) < refreshRateLimit {
+			return "", fmt.Errorf("mpesa: refresh rate limited after %d consecutive failures (last attempt %v ago, need %v)",
+				c.refreshFailures, now.Sub(c.lastRefreshAttempt).Round(time.Millisecond), refreshRateLimit)
+		}
+		c.lastRefreshAttempt = now
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+oauthPath, nil)
 	if err != nil {
+		c.refreshFailures++
 		return "", err
 	}
 	req.SetBasicAuth(c.cfg.ConsumerKey, c.cfg.ConsumerSecret)
 	resp, err := c.http.Do(req)
 	if err != nil {
+		c.refreshFailures++
 		return "", fmt.Errorf("mpesa: oauth request: %w", err)
 	}
 	defer resp.Body.Close()
 	contentType := resp.Header.Get("Content-Type")
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseLen+1))
 	if err != nil {
+		c.refreshFailures++
 		return "", fmt.Errorf("mpesa: read oauth response: %w", err)
 	}
 	if len(body) > maxResponseLen {
+		c.refreshFailures++
 		return "", fmt.Errorf("mpesa: %s response exceeds %d bytes", oauthPath, maxResponseLen)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return "", parseError(resp.StatusCode, contentType, body)
+		c.refreshFailures++
+		return "", parseError(resp.StatusCode, contentType, body, c.cfg.ErrorLogger)
 	}
 	var tok oauthTokenResponse
 	if err := json.Unmarshal(body, &tok); err != nil {
+		c.refreshFailures++
 		return "", fmt.Errorf("mpesa: decode oauth response: %w", err)
 	}
 	if tok.AccessToken == "" {
+		c.refreshFailures++
 		return "", fmt.Errorf("mpesa: oauth response missing access_token")
 	}
 	now := c.cfg.Now()
-	c.token = tok.AccessToken
+	c.setToken(tok.AccessToken)
 	c.tokenExpiry = now.Add(refreshCadence(tok.ExpiresIn))
 	c.gen++
-	return c.token, nil
+	c.refreshFailures = 0
+	return string(c.tokenBytes), nil
 }
 
 // forceRefreshLocked discards the cached token unconditionally before
@@ -234,8 +443,8 @@ func (c *Client) refreshLocked(ctx context.Context) (string, error) {
 // moment ANY holder requests a new one (docs/apis/oauth.md) — including
 // sibling replicas sharing the credential.
 func (c *Client) forceRefreshLocked(ctx context.Context) (string, error) {
-	c.token = ""
-	return c.refreshLocked(ctx)
+	c.zeroToken()
+	return c.refreshLocked(ctx, true)
 }
 
 // refreshAfterInvalidToken resolves a 401.003.01 under the generation guard.
@@ -249,7 +458,7 @@ func (c *Client) refreshAfterInvalidToken(ctx context.Context, myGen uint64) (st
 		return c.forceRefreshLocked(ctx)
 	}
 	if c.tokenFresh() {
-		return c.token, nil
+		return string(c.tokenBytes), nil
 	}
 	return c.forceRefreshLocked(ctx)
 }
@@ -310,7 +519,7 @@ func (c *Client) post(ctx context.Context, path string, payload any, out any) er
 	}
 
 	if status < 200 || status > 299 {
-		return parseError(status, contentType, body)
+		return parseError(status, contentType, body, c.cfg.ErrorLogger)
 	}
 	if out == nil {
 		return nil

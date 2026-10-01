@@ -41,6 +41,11 @@ _CREDENTIALS_MSG = ("mpesa: Config.consumer_key and Config.consumer_secret "
 # Back-compat alias: the historic name for the ingestion cap. New code uses
 # _MAX_BODY_BYTES (imported from mpesa._limits, the single source of truth).
 _MAX_BODY_CHARS = _MAX_BODY_BYTES
+#: OAuth refresh rate-limit parity with go/client.go (`refreshRateLimit` +
+#: `refreshFailures` guard): after this many consecutive failures, non-forced
+#: refreshes are throttled for ``_REFRESH_RATE_LIMIT_SECONDS``.
+_REFRESH_FAILURE_THRESHOLD = 3
+_REFRESH_RATE_LIMIT_SECONDS = 5.0
 #: Daraja hosts this manager is willing to mint tokens against. The
 #: base_url MUST arrive from trusted config (Config.environment.base_url)
 #: -- never from user input -- so an attacker host can neither harvest the
@@ -100,6 +105,8 @@ class TokenManager:
         self._token: str | None = None
         self._expires_at: datetime | None = None
         self._gen = 0
+        self._failures = 0
+        self._last_attempt: datetime | None = None
 
     def get_token(self) -> str:
         """Valid cached bearer, refreshing single-flight when stale."""
@@ -121,7 +128,7 @@ class TokenManager:
         with self._lock:
             if self._token and self._expires_at and now < self._expires_at:
                 return self._token, self._gen
-            return self._refresh_locked(), self._gen
+            return self._refresh_locked(force=False), self._gen
 
     def refresh_after_invalid_token(self, my_gen: int) -> str:
         """Resolve a 401.003.01 under the generation guard.
@@ -142,11 +149,11 @@ class TokenManager:
         with self._lock:
             if self._gen == my_gen:
                 self._token = None          # forceRefreshLocked parity
-                return self._refresh_locked()
+                return self._refresh_locked(force=True)
             now = self._now()
             if self._token and self._expires_at and now < self._expires_at:
                 return self._token
-            return self._refresh_locked()
+            return self._refresh_locked(force=True)
 
     @staticmethod
     def _cadence(expires_in_seconds: int | None) -> float:
@@ -157,45 +164,69 @@ class TokenManager:
             return 3000.0
         return max(1.0, min(seconds - 60, 3000))
 
-    def _refresh_locked(self) -> str:
+    def _refresh_locked(self, force: bool = False) -> str:
         """Hard OAuth round-trip against
         ``{base}/oauth/v1/generate?grant_type=client_credentials``
         (docs/apis/oauth.md). Holds the write lock across the network
         call -- callers stall ~once per refresh window; that is the
         deliberate single-flight tradeoff (see go/client.go).
+
+        Rate-limit parity with ``go/client.go refreshLocked``: non-forced
+        refreshes are throttled after ``_REFRESH_FAILURE_THRESHOLD``
+        consecutive failures inside ``_REFRESH_RATE_LIMIT_SECONDS``;
+        401-triggered refreshes (``force=True``) bypass the guard entirely.
         """
         if not self._consumer_key or not self._consumer_secret:
             raise ValueError(_CREDENTIALS_MSG)
-        auth = base64.b64encode(
-            f"{self._consumer_key}:{self._consumer_secret}".encode("latin-1"))
-        response = self._session.get(
-            f"{self._base_url}{_OAUTH_PATH}", timeout=self._timeout,
-            headers={"Authorization": f"Basic {auth.decode('ascii')}"},
-            allow_redirects=False, stream=True)
-        # Bounded streaming read via the shared mpesa._limits.read_capped
-        # (Go LimitReader parity): caps the DECOMPRESSED byte count during
-        # transfer via iter_content(MAX+1) so a gzip bomb aborts mid-stream
-        # instead of being fully materialised by a pre-read .content. The
-        # socket is released in ``finally`` inside read_capped so abort
-        # paths never leak it.
-        body = read_capped(response, "oauth/v1/generate response")
-        if not 200 <= response.status_code <= 299:
-            content_type = response.headers.get("content-type", "")
-            raise MpesaError.from_response(
-                response.status_code, body, content_type)
+        # Rate limit: only applies to non-forced refreshes after
+        # consecutive failures (Go `if !force` verbatim).
+        if not force:
+            now_gate = self._now()
+            if (self._failures >= _REFRESH_FAILURE_THRESHOLD
+                    and self._last_attempt is not None
+                    and (now_gate - self._last_attempt).total_seconds()
+                    < _REFRESH_RATE_LIMIT_SECONDS):
+                elapsed = (now_gate - self._last_attempt).total_seconds()
+                raise RuntimeError(
+                    f"mpesa: refresh rate limited after {self._failures} "
+                    f"consecutive failures (last attempt {elapsed:.3f}s ago, "
+                    f"need {_REFRESH_RATE_LIMIT_SECONDS:.1f}s)")
+            self._last_attempt = now_gate
         try:
-            payload = json.loads(body)
-        except Exception as exc:  # noqa: BLE001 - wrap any decoder blow-up
-            raise ValueError(f"mpesa: decode oauth response: {exc}") from exc
-        token_response = OAuthToken.from_json(payload)
-        if not token_response.access_token:
-            raise ValueError("mpesa: oauth response missing access_token")
-        now = self._now()
-        self._token = token_response.access_token
-        self._expires_at = now + timedelta(
-            seconds=self._cadence(token_response.expires_in_seconds))
-        self._gen += 1
-        return self._token
+            auth = base64.b64encode(
+                f"{self._consumer_key}:{self._consumer_secret}".encode("latin-1"))
+            response = self._session.get(
+                f"{self._base_url}{_OAUTH_PATH}", timeout=self._timeout,
+                headers={"Authorization": f"Basic {auth.decode('ascii')}"},
+                allow_redirects=False, stream=True)
+            # Bounded streaming read via the shared mpesa._limits.read_capped
+            # (Go LimitReader parity): caps the DECOMPRESSED byte count during
+            # transfer via iter_content(MAX+1) so a gzip bomb aborts mid-stream
+            # instead of being fully materialised by a pre-read .content. The
+            # socket is released in ``finally`` inside read_capped so abort
+            # paths never leak it.
+            body = read_capped(response, "oauth/v1/generate response")
+            if not 200 <= response.status_code <= 299:
+                content_type = response.headers.get("content-type", "")
+                raise MpesaError.from_response(
+                    response.status_code, body, content_type)
+            try:
+                payload = json.loads(body)
+            except Exception as exc:  # noqa: BLE001 - wrap any decoder blow-up
+                raise ValueError(f"mpesa: decode oauth response: {exc}") from exc
+            token_response = OAuthToken.from_json(payload)
+            if not token_response.access_token:
+                raise ValueError("mpesa: oauth response missing access_token")
+            now = self._now()
+            self._token = token_response.access_token
+            self._expires_at = now + timedelta(
+                seconds=self._cadence(token_response.expires_in_seconds))
+            self._gen += 1
+            self._failures = 0
+            return self._token
+        except Exception:
+            self._failures += 1
+            raise
 
     @property
     def generation(self) -> int:

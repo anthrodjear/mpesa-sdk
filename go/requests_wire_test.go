@@ -129,6 +129,56 @@ func TestSTKPushRequestWireKeys(t *testing.T) {
 	}
 }
 
+func TestRequireURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		// Valid URLs
+		{name: "valid https", input: "https://example.com/callback", wantErr: false},
+		{name: "valid http", input: "http://example.com/path", wantErr: false},
+		{name: "valid with port", input: "https://example.com:8443/hook", wantErr: false},
+		{name: "valid with path and query", input: "https://api.example.com/v1/cb?token=abc", wantErr: false},
+
+		// Embedded credentials
+		{name: "credentials https", input: "https://user:pass@example.com/cb", wantErr: true},
+		{name: "credentials http", input: "http://admin:secret@localhost/hook", wantErr: true},
+
+		// Invalid schemes
+		{name: "file scheme", input: "file:///etc/passwd", wantErr: true},
+		{name: "gopher scheme", input: "gopher://example.com", wantErr: true},
+		{name: "ftp scheme", input: "ftp://example.com/file", wantErr: true},
+		{name: "no scheme", input: "example.com/callback", wantErr: true},
+
+		// Empty host
+		{name: "empty host https", input: "https:///path", wantErr: true},
+		{name: "empty host http", input: "http:///path", wantErr: true},
+
+		// Malformed URLs
+		{name: "malformed", input: "https://exam ple.com/sp ace", wantErr: true},
+		{name: "just text", input: "not-a-url", wantErr: true},
+		{name: "empty string", input: "", wantErr: true},
+
+		// Internal/private IPs (SSRF)
+		{name: "localhost", input: "http://localhost:8080/cb", wantErr: true},
+		{name: "loopback 127.0.0.1", input: "http://127.0.0.1/admin", wantErr: true},
+		{name: "private 10.x", input: "http://10.0.0.1/internal", wantErr: true},
+		{name: "private 192.168.x", input: "http://192.168.1.1/router", wantErr: true},
+		{name: "private 172.16.x", input: "http://172.16.0.1/service", wantErr: true},
+		{name: "unspecified 0.0.0.0", input: "http://0.0.0.0/", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := requireURL("TestURL", tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("requireURL(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestC2BWireKeys(t *testing.T) {
 	reg, _ := json.Marshal(C2BRegisterRequest{ShortCode: "174379", ResponseType: ResponseTypeCompleted, ConfirmationURL: "https://a.com/c", ValidationURL: "https://a.com/v"})
 	var regM map[string]json.RawMessage

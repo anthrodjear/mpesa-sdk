@@ -13,7 +13,7 @@ A production-grade SDK for the Safaricom **M-Pesa Daraja API** in three language
 |------------|----------|--------------------------------|-----------------------------------------|---------------------------------------|
 | Go         | 1.22+    | `go get github.com/anthrodjear/mpesa-sdk/go` | `import mpesa "github.com/anthrodjear/mpesa-sdk/go"` | none (stdlib only)                    |
 | Python     | 3.11+    | `pip install mpesa-sdk`        | `import mpesa`                           | `requests`, `cryptography`            |
-| TypeScript | Node ≥20 | `npm install @mpesa-sdk/core`  | `from "@mpesa-sdk/core"`                 | none (native `fetch` + `node:crypto`) |
+| TypeScript | Node ≥20 | `npm install @mpesa-sdk/core`  | `import { ... } from "@mpesa-sdk/core"`  | none (native `fetch` + `node:crypto`) |
 
 ## Getting credentials
 
@@ -300,7 +300,7 @@ B2C, Transaction Status, Reversal and Account Balance require an API-operator **
 |------------|--------------------------------------------------------------------------|
 | Go         | `mpesa.SecurityCredential(certPEMorDER []byte, initiatorPassword string)` |
 | Python     | `security_credential(cert_pem_or_der: bytes, initiator_password: str)`    |
-| TypeScript | `securityCredential(initiatorPassword: string, certificatePem)` — **password first!** |
+| TypeScript | `securityCredential(certificatePem, initiatorPassword)` — **cert first! Changed post-0.2.0 — swap your two args.** |
 
 ```python
 from pathlib import Path
@@ -384,7 +384,7 @@ except MpesaError as exc:   # exc.status_code / exc.error_code /
 
 ```go
 resp, err := client.STKPush(ctx, req)
-var merr *mpesa.Error       // merr.StatusCode / merr.ErrorCode /
+var merr *mpesa.MpesaError   // merr.StatusCode / merr.ErrorCode /
 if errors.As(err, &merr) {  // merr.ErrorMessage / merr.RequestID
     log.Print(merr)
 }
