@@ -960,10 +960,19 @@ func TestUnparseableBodyDiagnostics(t *testing.T) {
 		t.Fatalf("err = %v, want typed error", err)
 	}
 	msg := mpesaErr.Error()
-	for _, want := range []string{"text/html", fmt.Sprintf("%d bytes", len(body)), "blocked by WAF"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("diagnostic error %q missing %q", msg, want)
-		}
+	// The caller-facing error must be generic — no content-type, body snippet,
+	// or response size that could reveal WAF/proxy internals.
+	if strings.Contains(msg, "text/html") {
+		t.Errorf("error %q must not leak content-type", msg)
+	}
+	if strings.Contains(msg, "blocked by WAF") {
+		t.Errorf("error %q must not leak body content", msg)
+	}
+	if strings.Contains(msg, fmt.Sprintf("%d bytes", len(body))) {
+		t.Errorf("error %q must not leak response size", msg)
+	}
+	if !strings.Contains(msg, "unexpected error response from gateway") {
+		t.Errorf("error %q must contain generic gateway message", msg)
 	}
 }
 

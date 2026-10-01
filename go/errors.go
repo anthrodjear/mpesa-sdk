@@ -43,12 +43,20 @@ const (
 	maxSnippetBytes   = 200
 )
 
+// ErrorLogger receives detailed diagnostic information about non-standard
+// error responses (WAF pages, HTML errors, etc.). Implementations must be
+// safe for concurrent use. When nil, detailed diagnostics are discarded.
+type ErrorLogger interface {
+	LogError(status int, contentType string, body []byte)
+}
+
 // parseError converts a non-2xx response into the typed surface. Envelope
 // fields are sanitized (control runes stripped, byte-capped) so hostile or
 // corrupted gateway output can never inject newlines/escapes into logs. A
 // body that is not the envelope at all (WAF pages, HTML errors) yields a
-// diagnostic carrying content-type, byte length and an ASCII snippet.
-func parseError(status int, contentType string, body []byte) error {
+// generic error message for callers; detailed diagnostics (content-type,
+// byte length, ASCII snippet) are forwarded to the optional logger only.
+func parseError(status int, contentType string, body []byte, logger ErrorLogger) error {
 	var env errorEnvelope
 	_ = json.Unmarshal(body, &env)
 	e := &Error{
@@ -58,8 +66,10 @@ func parseError(status int, contentType string, body []byte) error {
 		ErrorMessage: sanitizeWireString(env.ErrorMessage, maxWireFieldBytes),
 	}
 	if env.ErrorCode == "" && env.ErrorMessage == "" && env.RequestID == "" {
-		e.ErrorMessage = fmt.Sprintf("unparseable error body (%d bytes, content-type %q): %q",
-			len(body), contentType, asciiSnippet(string(body), maxSnippetBytes))
+		e.ErrorMessage = "unexpected error response from gateway"
+		if logger != nil {
+			logger.LogError(status, contentType, body)
+		}
 	}
 	return e
 }

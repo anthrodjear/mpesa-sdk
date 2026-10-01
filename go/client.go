@@ -356,7 +356,7 @@ func (c *Client) refreshLocked(ctx context.Context, force bool) (string, error) 
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		c.refreshFailures++
-		return "", parseError(resp.StatusCode, contentType, body)
+		return "", parseError(resp.StatusCode, contentType, body, c.cfg.ErrorLogger)
 	}
 	var tok oauthTokenResponse
 	if err := json.Unmarshal(body, &tok); err != nil {
@@ -457,7 +457,7 @@ func (c *Client) post(ctx context.Context, path string, payload any, out any) er
 	}
 
 	if status < 200 || status > 299 {
-		return parseError(status, contentType, body)
+		return parseError(status, contentType, body, c.cfg.ErrorLogger)
 	}
 	if out == nil {
 		return nil

@@ -27,6 +27,10 @@ type Config struct {
 	Now               func() time.Time
 	HTTPClient        *http.Client
 	TLSPinningEnabled bool
+	// ErrorLogger optionally receives detailed diagnostics for non-standard
+	// error responses (content-type, body snippet). When nil, detailed
+	// diagnostics are discarded. Not serialized by GoString/Format/MarshalJSON.
+	ErrorLogger ErrorLogger
 }
 
 // GoString redacts ConsumerSecret and Passkey for %#v formatting.
