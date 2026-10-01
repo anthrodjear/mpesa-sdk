@@ -13,7 +13,7 @@ A production-grade SDK for the Safaricom **M-Pesa Daraja API** in three language
 |------------|----------|--------------------------------|-----------------------------------------|---------------------------------------|
 | Go         | 1.22+    | `go get github.com/anthrodjear/mpesa-sdk/go` | `import mpesa "github.com/anthrodjear/mpesa-sdk/go"` | none (stdlib only)                    |
 | Python     | 3.11+    | `pip install mpesa-sdk`        | `import mpesa`                           | `requests`, `cryptography`            |
-| TypeScript | Node ≥20 | `npm install @mpesa-sdk/core`  | `from "@mpesa-sdk/core"`                 | none (native `fetch` + `node:crypto`) |
+| TypeScript | Node ≥20 | `npm install @mpesa-sdk/core`  | `import { ... } from "@mpesa-sdk/core"`  | none (native `fetch` + `node:crypto`) |
 
 ## Getting credentials
 
