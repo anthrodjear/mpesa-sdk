@@ -243,6 +243,36 @@ class OAuthToken(_Response):
     _WIRE = {"access_token": "access_token", "expires_in_seconds": "expires_in"}
     _COERCE = {"access_token": str, "expires_in_seconds": coerce_int}
 
+    @classmethod
+    def from_json(cls, data: "dict | bytes | str") -> "OAuthToken":
+        """Tolerate a gateway reply omitting ``expires_in``.
+
+        Go leaves its FlexInt64 at 0 and TS maps a missing TTL to 0, both
+        falling back to the 50-minute cadence; absent here maps to
+        ``expires_in_seconds=None`` so :meth:`auth.TokenManager._cadence`
+        already yields the same 3000s fallback. All other shape errors
+        stay loud via the base decoder.
+        """
+        try:
+            return super().from_json(data)  # type: ignore[return-value]
+        except ValueError as exc:
+            if "expires_in" not in str(exc):
+                raise
+            payload: Any = data
+            if isinstance(payload, (bytes, bytearray)):
+                payload = bytes(payload).decode("utf-8", errors="replace")
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload, parse_int=safe_json_int)
+                except (ValueError, RecursionError):
+                    raise exc from None
+            if not isinstance(payload, dict):
+                raise exc from None
+            if "expires_in" in payload or "access_token" not in payload:
+                raise exc from None
+            return super().from_json(  # type: ignore[return-value]
+                {**payload, "expires_in": None})
+
     def __repr__(self) -> str:
         """Credential-safe: token length only, never the value."""
         token = f"<redacted {len(self.access_token)}ch>"
