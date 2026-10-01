@@ -9,8 +9,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa.classification import ResultClass  # noqa: E402
-from mpesa.results import (  # noqa: E402
+from mpesa.classification import ResultClass
+from mpesa.results import (
     AsyncResult,
     BalanceSegment,
     parse_balance_segments,

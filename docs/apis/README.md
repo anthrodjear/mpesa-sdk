@@ -8,8 +8,8 @@ casing is contractual because Safaricom's gateway is case-sensitive.
 
 | Doc | Covers |
 |---|---|
-| [getting-started.md](getting-started.md) | Environments, auth model, SecurityCredential algorithm, cert URLs, callback IP whitelist, go-live checklist, error envelope |
-| [oauth.md](oauth.md) | `GET /oauth/v1/generate` — token lifecycle & cache rules |
+| [getting-started.md](getting-started.md) | Environments, auth model, SecurityCredential algorithm, cert URLs, client-side callback URL validation, callback IP whitelist, go-live checklist, error envelope |
+| [oauth.md](oauth.md) | `GET /oauth/v1/generate` — token lifecycle, cache rules, refresh rate limit |
 | [stk-push.md](stk-push.md) | `POST /mpesa/stkpush/v1/processrequest` — push-to-pay, callback schema, ResultCode catalog |
 | [stk-query.md](stk-query.md) | `POST /mpesa/stkpushquery/v1/query` — status checks, polling strategy |
 | [b2c.md](b2c.md) | `POST /mpesa/b2c/v3/paymentrequest` — payouts, async Result schema |

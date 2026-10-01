@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa.callback_token import (  # noqa: E402
+from mpesa.callback_token import (
     callback_token_equal,
     new_callback_token,
 )

@@ -40,6 +40,37 @@ These certs are for API security credentials only — NOT for the M-PESA Organiz
 
 ## Callback URLs & Server Requirements
 
+### Callback URL validation (client-side)
+
+Before a request leaves the process, the SDK validates every URL you supply — `CallBackURL`,
+`ResultURL`, `QueueTimeOutURL`, `ValidationURL`, `ConfirmationURL` — and rejects:
+
+| Rejected | Examples |
+|---|---|
+| Embedded credentials | `https://user:pass@host/hook` |
+| `localhost` by name (case-insensitive) | `http://localhost:8000/hook` |
+| Loopback | `127.0.0.0/8`, `::1`, `::ffff:127.0.0.1` |
+| Private | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7` |
+| Link-local | `169.254.0.0/16` (cloud metadata), `fe80::/10` |
+| Multicast | `224.0.0.0/4`, `ff00::/8` |
+| Unspecified | `0.0.0.0`, `::` |
+
+The same blocked set is enforced in all three engines: `go/requests.go`, `python/mpesa/requests_sync.py`
+(`_BLOCKED_NETWORKS`/`_BLOCKED_EXACT`, enforced by `_url()`), and `typescript/src/client.ts`.
+
+> ⚠️ **This guards the host *literal* only — it is not a DNS-rebinding filter.** A name like
+> `internal.corp` that resolves to `10.0.0.5` is accepted, exactly as in all three engines. If you
+> need a genuine anti-rebinding control, resolve the name and check the address yourself before
+> registering it with Daraja.
+
+⚠️ **Consequence for internal testing:** if your test setup points callbacks at an internal host or
+uses split-horizon DNS whose public name resolves inside your network, you will see a rejection
+like `must not point to an internal or private IP address (loopback)`. Tunnel to a public host
+(Ngrok / LocalTunnel) instead of registering a private address — which is what Daraja requires anyway,
+since it must reach the URL from the public internet.
+
+### Server requirements
+
 - Asynchronous APIs POST results to `ResultURL` / `CallBackURL` / `QueueTimeOutURL`.
 - Deploy an HTTP(S) listener with POST endpoints that **ACK 200 immediately**.
 - If the server is unavailable, the gateway logs **503 and DISCARDS the result** — no redelivery

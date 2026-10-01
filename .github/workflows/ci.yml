@@ -5,6 +5,28 @@ on:
   pull_request:
     branches: [main, develop]
 
+# Least privilege for GITHUB_TOKEN, applied to every job in this file.
+#
+# This is the load-bearing fix. ci.yml runs `npm ci`, which executes
+# devDependency install scripts, plus pytest, bandit, govulncheck and tsc over
+# whatever a pull request contains. Without this block every one of those steps
+# inherits the repository's default GITHUB_TOKEN scope, so a malicious or
+# compromised dependency in a PR gets a credential rather than just code
+# execution. `contents: read` is the only scope anything here needs:
+#
+#   actions/checkout ............... read (clone)
+#   actions/setup-go | setup-node .. cache writes go through ACTIONS_RUNTIME_TOKEN,
+#                                   not GITHUB_TOKEN, so they are unaffected
+#   golangci-lint-action ........... read (annotations); pull-requests: read is
+#                                   only needed for `only-new-issues`, unused here
+#
+# Nothing in this workflow writes to the repository, opens a PR, or publishes a
+# package, so no write scope is granted anywhere.
+#
+# Note: any permission not listed here is implicitly `none`.
+permissions:
+  contents: read
+
 jobs:
   go:
     runs-on: ubuntu-latest
@@ -12,16 +34,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.22'
+          # Exact patch, matching the `go` directive in go/go.mod and the
+          # `security` job's govulncheck run below. The build toolchain and the
+          # scanned toolchain must be the same release: govulncheck matches
+          # standard-library CVEs against the Go version that built the code, so
+          # a mismatch hides every stdlib advisory in the line we actually ship.
+          go-version: '1.26.8'
       - name: Vet
         run: go vet ./...
         working-directory: go
       - name: Lint (golangci-lint)
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
         with:
-          version: latest
+          # Pinned, not `latest`. `latest` resolved mutable upstream content at
+          # run time, so a new release (or a supply-chain change to one) could
+          # start failing - or start passing - the gate without any commit to
+          # this repository. golangci-lint-action v9 requires golangci-lint v2.
+          version: v2.14.0
           working-directory: go
-        continue-on-error: true
       - name: Test
         run: go test -race -v -count=1 ./...
         working-directory: go
@@ -41,10 +71,12 @@ jobs:
         working-directory: python
       - name: Lint (ruff)
         run: |
-          pip install ruff
+          # Pinned, not bare `pip install ruff`, which resolved whatever ruff
+          # was newest on PyPI at run time. A ruff minor bump can add rules and
+          # turn a green job red with no change to this repository.
+          pip install ruff==0.16.9
           ruff check .
         working-directory: python
-        continue-on-error: true
 
   typescript:
     runs-on: ubuntu-latest
@@ -76,18 +108,35 @@ jobs:
             npx tsc --noEmit -p tsconfig.json
           fi
         working-directory: typescript
-        continue-on-error: true
 
   security:
     runs-on: ubuntu-latest
+    # This job is a hard gate: the job-level soft-fail flag that used to sit
+    # here is gone, so a real finding in govulncheck / bandit / npm audit fails
+    # the workflow and therefore fails the `required` job below. Thresholds are
+    # tightened rather than failures being suppressed, so routine noise stays
+    # out of the way while a real finding blocks.
+    #
+    # Consequence, intended: hitting this timeout is now itself a failure. A
+    # scanner that hangs (network stall, module proxy hang, a pathological
+    # analysis blow-up) fails the merge rather than silently reporting success.
     timeout-minutes: 10
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # One toolchain for the whole job, pinned to the exact patch that the `go`
+      # job builds and tests with. govulncheck derives the standard-library
+      # version it checks against from the Go version compiling the packages, so
+      # building with 1.22 and scanning with `stable` meant the scanner never saw
+      # the advisories affecting the toolchain we ship.
+      #
+      # The two `setup-go` steps this replaced (one at '1.22', one at 'stable')
+      # were not merely redundant: the second one silently replaced the first for
+      # every subsequent step, which is how the scan ended up running on a
+      # different release than the build.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.22'
+          go-version: '1.26.8'
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -99,28 +148,48 @@ jobs:
           cache: 'npm'
           cache-dependency-path: typescript/package-lock.json
 
-      - name: Setup Go for govulncheck (newer toolchain, scanner only)
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: 'stable'
-
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        # Pinned, not `@latest`. `@latest` resolved mutable upstream content at
+        # run time, so the scanner's behaviour could change without a commit
+        # here. v1.1.4 declares `go 1.22.0`, so it builds under the pinned
+        # 1.26.8 toolchain without any download.
+        #
+        # GOTOOLCHAIN=local, not `auto`: `auto` lets the go command silently
+        # fetch a newer toolchain when a module needs one, which is precisely
+        # the drift that made the scanner and the build disagree. With `local`
+        # an incompatible scanner fails the step loudly instead of quietly
+        # scanning something other than what we ship.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
         env:
-          GOTOOLCHAIN: auto
+          GOTOOLCHAIN: local
 
       - name: Run govulncheck (Go)
+        # Unchanged: govulncheck already exits non-zero only for vulnerabilities
+        # that are actually reachable from this code, so it needs no threshold.
         run: govulncheck ./...
         working-directory: go
         env:
-          GOTOOLCHAIN: auto
+          GOTOOLCHAIN: local
 
       - name: Install bandit
-        run: pip install bandit
+        # Pinned, not bare `pip install bandit`, for the same reason as ruff.
+        run: pip install bandit==1.9.4
 
       - name: Run bandit (Python)
-        run: |
-          bandit -r mpesa/ -f json -o bandit-report.json || bandit -r mpesa/
+        # -ll reports MEDIUM and above only: low-severity noise does not block a
+        # merge, a real medium+ finding does.
+        #
+        # JSON goes to stdout so it is captured in the run log and no
+        # untracked `bandit-report.json` is left in the working tree.
+        #
+        # Single invocation on purpose. The previous form was
+        #   bandit -r mpesa/ -f json -o bandit-report.json || bandit -r mpesa/
+        # in which the SECOND command's exit code decided the step. Any failure
+        # that produced no finding - an unwritable output path, a missing
+        # directory, a broken install - resolved to the fallback's exit code and
+        # became a pass, so a scanner error was indistinguishable from a clean
+        # scan.
+        run: bandit -r mpesa/ -ll -f json
         working-directory: python
 
       - name: Install dependencies (TypeScript)
@@ -128,5 +197,55 @@ jobs:
         working-directory: typescript
 
       - name: Run npm audit (TypeScript)
-        run: npm audit --audit-level=moderate
+        # Raised from `moderate` to `high`. A high or critical advisory in a
+        # shipped or dev dependency blocks; the moderate/low tail is reported in
+        # the log for triage instead of blocking every PR.
+        run: npm audit --audit-level=high
         working-directory: typescript
+
+  required:
+    name: required
+    # pull_request ONLY, and never a push.
+    #
+    # The bug this closes: `main`'s ruleset required the contexts go, python and
+    # typescript, and those are all satisfied by the push-to-`develop` run on
+    # the same head SHA. So `main` could merge a commit that no CI run had ever
+    # evaluated. A push run must therefore never be able to satisfy this check.
+    #
+    # always() is load-bearing. A bare `if:` here would be an expression with no
+    # status-check function, so GitHub would apply an implicit `success()` -
+    # and "if a job fails or is skipped, all jobs that need it are skipped
+    # unless the job uses a conditional that causes it to continue". The gate
+    # would then be SKIPPED rather than FAILED whenever a dependency failed,
+    # and a skipped required check is reported as "expected, waiting for
+    # status", which reads like an infrastructure hiccup instead of a real
+    # rejection. always() makes this job run and report the actual failure.
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    needs: [go, python, typescript, security]
+    steps:
+      - name: Require every job to have succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+
+          # No `| while read` loop here. This job is the only thing the `main`
+          # ruleset will require, so its decision must be a single, directly
+          # tested value: jq evaluates the whole `needs` object in one pass and
+          # we test the resulting boolean. A shell loop would be both harder to
+          # reason about and prone to reporting the pipeline's status instead of
+          # the worst individual job's.
+          #
+          # This step fails if ANY needed job did not conclude `success` -
+          # including `failure`, `skipped`, `cancelled`, or a missing
+          # `conclusion` key. Malformed input fails closed via `set -e`.
+          echo "Upstream job results:"
+          jq -r 'to_entries[] | "  \(.key): result=\(.value.result) conclusion=\(.value.conclusion // "n/a")"' <<<"$RESULTS"
+
+          if ! jq -e 'all(.[]; .result == "success" and .conclusion == "success")' <<<"$RESULTS" >/dev/null; then
+            echo "::error::At least one required job did not succeed - see the list above."
+            exit 1
+          fi
+
+          echo "All required jobs succeeded."

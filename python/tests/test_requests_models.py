@@ -9,19 +9,19 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa.enums import (  # noqa: E402
+from mpesa.enums import (
     CommandID,
     QRTrxCode,
     ResponseType,
     TransactionType,
 )
-from mpesa.requests_async import (  # noqa: E402
+from mpesa.requests_async import (
     AccountBalanceRequest,
     B2CPayoutRequest,
     ReversalRequest,
     TransactionStatusRequest,
 )
-from mpesa.requests_sync import (  # noqa: E402
+from mpesa.requests_sync import (
     C2BRegisterRequest,
     C2BSimulateRequest,
     QRCodeRequest,
@@ -327,15 +327,19 @@ def test_transaction_type_empty_string_is_required_message():
 
 
 def test_omission_pins():
-    b2c = _b2c(); b2c.validate()
+    b2c = _b2c()
+    b2c.validate()
     assert '"Occassion"' not in json.dumps(b2c.to_payload())
-    txs = _txs(); txs.validate()
+    txs = _txs()
+    txs.validate()
     txs_encoded = json.dumps(txs.to_payload())
     assert '"Occasion"' not in txs_encoded
     assert '"IdentifierType"' not in txs_encoded
-    rev = _rev(receiver_identifier_type=None); rev.validate()
+    rev = _rev(receiver_identifier_type=None)
+    rev.validate()
     assert '"RecieverIdentifierType": "11"' in json.dumps(rev.to_payload())
-    bal = _bal(); bal.validate()
+    bal = _bal()
+    bal.validate()
     assert '"IdentifierType"' not in json.dumps(bal.to_payload())
 
 

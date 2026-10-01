@@ -10,7 +10,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa.auth import TokenManager  # noqa: E402
+from mpesa.auth import TokenManager
+from mpesa.exceptions import MpesaError
 
 T0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -219,8 +220,11 @@ def test_failed_lead_refresh_untrusts_clock_fresh_token():
     tm, session, _ = make_multi([ok(), FakeResponse(status_code=500, body=b"x"), ok()])
     tm.get_token()
     stale_gen = tm.generation
-    with pytest.raises(Exception):
+    with pytest.raises(MpesaError) as excinfo:
         tm.refresh_after_invalid_token(stale_gen)
+    # Narrower than a blind `Exception`: a 500 from the token endpoint must
+    # surface as the typed Daraja error, carrying the gateway status.
+    assert excinfo.value.status_code == 500
     # The invalidated-but-clock-fresh token must NOT be servable now:
     next_token = tm.get_token()
     assert next_token.startswith("tok-")

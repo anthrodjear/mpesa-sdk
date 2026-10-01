@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa.enums import (  # noqa: E402
+from mpesa.enums import (
     ORGANIZATION_SHORTCODE,
     RECEIVER_IDENTIFIER_ORG,
     CommandID,

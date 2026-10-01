@@ -107,6 +107,11 @@ func SecurityCredential(certPEMorDER []byte, initiatorPassword string) (string, 
 			pwBytes[i] = 0
 		}
 	}()
+	// SA1019: Go 1.26 deprecates EncryptPKCS1v15 as general crypto hygiene.
+	// Daraja specifies the initiator password as RSA/ECB/PKCS1Padding over the
+	// certificate's public key, so OAEP would emit ciphertext Safaricom cannot
+	// decrypt. The primitive is fixed by the wire format, not chosen here.
+	//nolint:staticcheck // wire-format requirement, see the doc comment above
 	ct, err := rsa.EncryptPKCS1v15(rand.Reader, pub, pwBytes)
 	if err != nil {
 		return "", fmt.Errorf("mpesa: encrypt security credential: %w", err)

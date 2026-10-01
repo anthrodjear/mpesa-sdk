@@ -7,8 +7,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa.classification import ResultClass, classify_result_code  # noqa: E402
-from mpesa.responses_models import (  # noqa: E402
+from mpesa.classification import ResultClass, classify_result_code
+from mpesa.responses_models import (
     B2CResponse,
     C2BAckResponse,
     ConversationResponse,

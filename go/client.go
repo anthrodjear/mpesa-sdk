@@ -405,7 +405,10 @@ func (c *Client) refreshLocked(ctx context.Context, force bool) (string, error) 
 		c.refreshFailures++
 		return "", fmt.Errorf("mpesa: oauth request: %w", err)
 	}
-	defer resp.Body.Close()
+	// The body is always closed on return; a Close error here cannot change the
+	// outcome of a request whose response we have already read in full, so it is
+	// discarded explicitly rather than left unchecked.
+	defer func() { _ = resp.Body.Close() }()
 	contentType := resp.Header.Get("Content-Type")
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseLen+1))
 	if err != nil {
@@ -478,7 +481,10 @@ func (c *Client) attempt(ctx context.Context, token, path string, payload any) (
 	if err != nil {
 		return 0, "", nil, fmt.Errorf("mpesa: POST %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	// Explicit discard for the same reason as refreshLocked: the body is drained
+	// and closed before every return, and a Close error cannot affect the status,
+	// content type or bytes already returned to the caller.
+	defer func() { _ = resp.Body.Close() }()
 	ct := resp.Header.Get("Content-Type")
 	body, err = io.ReadAll(io.LimitReader(resp.Body, maxResponseLen+1))
 	if err != nil {

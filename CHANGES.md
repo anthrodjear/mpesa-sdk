@@ -7,10 +7,38 @@ auto-upgrade into an incompatible release — pin `0.3.0` explicitly.
 
 ## BREAKING
 
+- **Go minimum toolchain raised to 1.26.8** (`go/go.mod`): the `go` directive moves
+  from `1.22` to `1.26.8`, so consumers on an older patch must upgrade their Go
+  install (or let `GOTOOLCHAIN=auto` fetch 1.26.8) before `go get` will resolve.
+  No SDK API changed. The floor is a full patch version, not `1.26`, on purpose:
+  the advisories that forced this bump are stdlib CVEs fixed *within* the 1.26
+  line (`net/url` GO-2026-6218 and `crypto/tls` GO-2026-6090 are both fixed in
+  1.26.6), so a `go 1.26` floor would still admit toolchains that carry them. See
+  the Security entry below.
 - **TypeScript `securityCredential` arg order swapped to `(certificatePem, initiatorPassword)` for Go/Python parity** (`helpers.ts`): swap your two call-site args. The old `(password, cert)` order now throws a fail-fast `TypeError`.
 - **Go `Error` renamed to `MpesaError`**: update `var merr *mpesa.Error` to `*mpesa.MpesaError`. A deprecated `Error` type alias is kept for compatibility.
 
 ## Security
+
+- **govulncheck now scans the toolchain we actually ship** (`.github/workflows/ci.yml`,
+  `go/go.mod`): the `security` job built on Go 1.22 but scanned with `go-version:
+  stable`, and govulncheck matches standard-library CVEs against the Go version
+  that compiled the packages. Scanning the shipped line with a scanner built for a
+  different release reported **zero** findings while that same code reached **28**
+  reachable stdlib vulnerabilities under Go 1.22.12 — including
+  `crypto/tls` handshake DoS, `crypto/x509` chain-building work, `encoding/asn1`
+  recursion depth, `net/url` quadratic parse, and `net/http` request smuggling.
+  The `security` job now uses one pinned `setup-go` (1.26.8) shared with the `go`
+  job, `GOTOOLCHAIN: local` so the scanner can never silently fetch a different
+  toolchain, and `go/go.mod` raises the floor so the guarantee holds for consumers
+  too. No application code was reachable only through the old release, so this is
+  a toolchain-floor change rather than a patch to the SDK.
+- **`rsa.EncryptPKCS1v15` deprecation acknowledged, not "fixed"** (`go/helpers.go`):
+  Go 1.26 marks the function deprecated as general crypto hygiene. Daraja
+  specifies the initiator password as RSA/ECB/PKCS1Padding over the certificate's
+  public key, so switching to OAEP would emit ciphertext Safaricom cannot decrypt.
+  The call keeps PKCS#1 v1.5 with a scoped `//nolint:staticcheck` and an inline
+  rationale; this is a wire-format constraint, not an oversight.
 
 - **TLS SPKI certificate pinning, opt-in (Go)** (`go/client.go`, `go/config.go`):
   `PinSPKI(host, sha256SPKI)` registers an expected SubjectPublicKeyInfo hash;
@@ -18,12 +46,19 @@ auto-upgrade into an incompatible release — pin `0.3.0` explicitly.
   rejects any mismatch. Off by default — opt in per host you pin. Pinning is
   skipped while the chain fails ordinary verification, so it is additive to
   (never a replacement for) normal TLS validation. **Go only** in this release.
-- **Token memory zeroing + explicit `Close()` (Go, Python)**: `Client.Close()`
-  (Go) and `MpesaClient.close()` (Python) drop the cached OAuth token and
-  zero the old buffer before replacement. The TypeScript engine exposes no
-  `close()`/zeroing primitive yet — see the follow-up note below.
+- **Token memory zeroing + explicit `Close()` (Go only)**: `go/client.go` is the
+  only engine that erases token bytes. `setToken()` zeroes the previous buffer
+  before replacement, and `Client.Close()` zeroes the cached bearer and clears
+  its expiry. **Python's `MpesaClient.close()` releases the connection pool
+  only** — it calls `self._session.close()` and performs no token erasure, so
+  `TokenManager._token` is left intact. **TypeScript has neither**: no
+  `close()` and no zeroing primitive. Consumers who need token erasure on
+  shutdown should scope the client to a short-lived process or container.
 - **Trusted base-URL allowlist (all three engines)** (`go/config.go`,
-  `python/mpesa/auth.py`, `typescript/src/config.ts`, `auth.ts`): the OAuth leg
+  `python/mpesa/auth.py`, `typescript/src/config.ts`, `typescript/src/auth.ts`):
+  TypeScript enforces it in **both** files — `config.ts` at `Config`
+  construction, `auth.ts` in the `TokenManager` constructor — so a
+  hand-built `TokenManager` cannot bypass it. The OAuth leg
   sends `Basic key:secret` to `Environment.BaseURL()`, so a non-allowlisted base
   URL is now rejected at construction — before any credential leaves the process
   — rather than at request time. Only the two Safaricom hosts are accepted.
@@ -31,13 +66,21 @@ auto-upgrade into an incompatible release — pin `0.3.0` explicitly.
   `python/mpesa/auth.py`, `typescript/src/auth.ts`): after 3 consecutive
   refresh failures a client refuses further OAuth attempts for a 5s window,
   breaking a crash-loop that would otherwise hammer the token endpoint. A
-  401-triggered forced refresh still bypasses the limit.
-- **SSRF-hardened callback URL validation (Go, TypeScript)** (`go/requests.go`,
-  `typescript/src/client.ts`): `CallBackURL` rejects `localhost` plus
-  loopback/private/link-local/multicast/unspecified addresses, including IPv6
-  and `::ffff:`-embedded IPv4 tails. Python validates the URL *shape* only
-  (`_URL_RE`: absolute http(s), no whitespace/control characters) — it does not
-  yet reject private IPs.
+  401-triggered forced refresh still bypasses the limit. Documented for users
+  in [docs/apis/oauth.md](docs/apis/oauth.md).
+- **SSRF-hardened callback URL validation (all three engines)** (`go/requests.go`,
+  `python/mpesa/requests_sync.py`, `typescript/src/client.ts`): `CallBackURL`
+  (and every other SDK-supplied URL) rejects embedded `user:pass@` credentials,
+  a bare `localhost`, and loopback/private/link-local/multicast/unique-local/
+  unspecified IP literals — including IPv6 forms and `::ffff:`-embedded IPv4
+  tails. Python reached full parity in this release: `requests_sync.py` gained
+  `_BLOCKED_NETWORKS`/`_BLOCKED_EXACT`, `_ip_literals()` and
+  `_non_routable_reason()`, enforced from `_url()` on both the sync and async
+  credential paths, and `python/tests/test_url_ssrf_hardening.py` (293 lines,
+  13 tests) pins the behaviour against the Go and TypeScript validators. Like
+  the other two engines, this guards the host **literal** only — a DNS name
+  that resolves to a private address still passes, so it is not a DNS-rebinding
+  filter.
 - **Generic error messages (all three engines)** (`go/errors.go`,
   `python/mpesa/exceptions.py`, `typescript/src/errors.ts`): non-2xx responses
   surface a generic caller-facing message; content-type, body snippets and
@@ -49,13 +92,16 @@ auto-upgrade into an incompatible release — pin `0.3.0` explicitly.
 ## CI
 
 - Go tests now run under the **race detector** (`go test -race -count=1 ./...`).
-- A dedicated **security** job runs `govulncheck ./...` (Go), `bandit -r mpesa/`
-  (Python) and `npm audit --audit-level=moderate` (TypeScript). These linters and
-  scanners are currently **advisory** (`continue-on-error`) — they report without
-  blocking the run.
+- A dedicated **security** job runs `govulncheck ./...` (Go), `bandit -r mpesa/ -ll`
+  (Python) and `npm audit --audit-level=high` (TypeScript). It is a **hard gate**:
+  the job-level `continue-on-error` is gone, so a real finding fails the workflow,
+  and a 10-minute timeout on the job is itself a failure rather than a silent pass.
 - `develop` is promoted to `main` only on a green CI run (`promote.yml` opens the
   PR with auto-merge once the CI `workflow_run` concludes `success`), so the
-  `go`, `python` and `typescript` jobs gate what lands on `main`.
+  `go`, `python`, `typescript` and `security` jobs gate what lands on `main`. A
+  fifth `required` job, running only on `pull_request`, is the check the `main`
+  ruleset actually requires; it fails unless all four of those jobs concluded
+  `success`, so a push run can no longer satisfy a `main` merge.
 
 # Changes — 0.2.0 (2026-09-17)
 

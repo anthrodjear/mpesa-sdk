@@ -20,9 +20,14 @@ import json
 from dataclasses import dataclass
 from typing import Any, ClassVar, TypeVar
 
-from .coercion import coerce_int, coerce_str, safe_json_int
-from ._limits import MAX_BODY_BYTES as _MAX_BODY_BYTES
+# Back-compat re-export from mpesa._limits (see the NOTE below), pinned by
+# tests/test_hardening_regressions.py::
+#   test_limits_single_source_and_back_compat_reexports
+# The cap is enforced by _check_body_size below, not by reading this alias, so
+# the F401 suppression on the next line is scoped to it deliberately.
+from ._limits import MAX_BODY_BYTES as _MAX_BODY_BYTES  # noqa: F401
 from ._limits import check_body_size as _check_body_size
+from .coercion import coerce_int, coerce_str, safe_json_int
 
 __all__ = ["STKPushResponse", "STKQueryResponse", "ConversationResponse",
            "B2CResponse", "C2BAckResponse", "QRCodeResponse", "OAuthToken"]

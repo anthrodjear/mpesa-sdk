@@ -13,8 +13,8 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa.config import Config  # noqa: E402
-from mpesa.enums import Environment  # noqa: E402
+from mpesa.config import Config
+from mpesa.enums import Environment
 
 SECRET_KEY = "live-consumer-key-abc"
 SECRET_VALUE = "super-secret-value-dont-leak"

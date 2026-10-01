@@ -12,8 +12,17 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .enums import RECEIVER_IDENTIFIER_ORG, CommandID
-from .requests_sync import (_amount_int, _clean, _ensure_validated, _enum_value,
-                            _phone, _printable, _require, _sentinel, _url)
+from .requests_sync import (
+    _amount_int,
+    _clean,
+    _ensure_validated,
+    _enum_value,
+    _phone,
+    _printable,
+    _require,
+    _sentinel,
+    _url,
+)
 
 __all__ = ["B2CPayoutRequest", "TransactionStatusRequest",
            "ReversalRequest", "AccountBalanceRequest"]

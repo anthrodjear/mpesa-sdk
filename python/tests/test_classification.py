@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa.classification import ResultClass, classify_result_code  # noqa: E402
+from mpesa.classification import ResultClass, classify_result_code
 
 STK_SUCCESS = [0]
 STK_FAILURE = [1, 17, 1019, 1025, 1032, 2001, 9999]          # stk-push.md catalog
