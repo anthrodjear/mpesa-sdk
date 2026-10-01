@@ -59,7 +59,7 @@ func TestConfigValidateShortcode(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := Config{Shortcode: tc.short}
+			cfg := Config{ConsumerKey: "k", ConsumerSecret: "s", Shortcode: tc.short}
 			err := cfg.Validate()
 			if (err != nil) != tc.wantErr {
 				t.Errorf("Validate(%q) err = %v, wantErr = %v", tc.short, err, tc.wantErr)

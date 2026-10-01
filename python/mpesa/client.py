@@ -1,4 +1,4 @@
-"""Concurrency-safe Daraja transport (mirrors go/client.go).
+﻿"""Concurrency-safe Daraja transport (mirrors go/client.go).
 
 Create one :class:`MpesaClient` per environment and share it -- the
 OAuth cache inside :class:`mpesa.auth.TokenManager` is synchronized and
@@ -115,6 +115,13 @@ class MpesaClient:
     """
 
     def __init__(self, config: Config) -> None:
+        # Fail-fast credential validation (Go NewClient() cfg.Validate() parity):
+        # reject empty consumer_key/consumer_secret at construction time so
+        # misconfiguration surfaces immediately, not at first API call.
+        if not config.consumer_key or not config.consumer_secret:
+            raise ValueError(
+                "mpesa: Config.consumer_key and Config.consumer_secret "
+                "are required")
         self._cfg = config
         self._base_url = config.environment.base_url.rstrip("/")
         source = config.http_client
