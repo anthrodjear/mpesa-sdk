@@ -90,7 +90,7 @@ function validateField(value: unknown, name: string, check: (v: string) => boole
  * Mirrors python/mpesa/auth.py `_TRUSTED_BASE_URLS` and go/config.go
  * `trustedBaseURLs`.
  */
-const TRUSTED_BASE_URLS: ReadonlySet<string> = new Set([
+export const TRUSTED_BASE_URLS: ReadonlySet<string> = new Set([
   "https://sandbox.safaricom.co.ke",
   "https://api.safaricom.co.ke",
 ]);

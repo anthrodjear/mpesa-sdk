@@ -7,6 +7,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TokenManager, getAccessToken } from "../src/auth.js";
+import { ConfigError } from "../src/config.js";
 import { MpesaError } from "../src/errors.js";
 
 // ---------------------------------------------------------------------------
@@ -118,14 +119,28 @@ describe("TokenManager construction", () => {
   });
 
   it("strips trailing slashes from baseUrl", () => {
-    const tm = makeManager({ baseUrl: "https://example.com///" });
+    const tm = makeManager({ baseUrl: "https://sandbox.safaricom.co.ke///" });
     // Internal baseUrl should be trimmed — verified indirectly by fetch URL
     fetchMock.mockResolvedValue(jsonResponse(VALID_TOKEN_RESPONSE));
     void tm.getToken();
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://example.com/oauth/v1/generate?grant_type=client_credentials",
+      "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials",
       expect.anything(),
     );
+  });
+
+  it("rejects untrusted baseUrl hosts", () => {
+    const untrustedHosts = [
+      "https://evil.example.com",
+      "https://sandbox.safaricom.co.ke.evil.com",
+      "http://sandbox.safaricom.co.ke",
+      "https://sandbox.safaricom.co.ke.evil.com/",
+      "",
+    ];
+    for (const baseUrl of untrustedHosts) {
+      expect(() => makeManager({ baseUrl })).toThrow(ConfigError);
+      expect(() => makeManager({ baseUrl })).toThrow(/untrusted/);
+    }
   });
 });
 
@@ -623,6 +638,25 @@ describe("getAccessToken", () => {
     ).rejects.toThrow(
       "mpesa: Config.ConsumerKey and Config.ConsumerSecret are required",
     );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects untrusted baseUrl hosts without network", async () => {
+    const untrustedHosts = [
+      "https://evil.example.com",
+      "https://sandbox.safaricom.co.ke.evil.com",
+      "http://sandbox.safaricom.co.ke",
+      "https://sandbox.safaricom.co.ke.evil.com/",
+      "",
+    ];
+    for (const baseUrl of untrustedHosts) {
+      await expect(
+        getAccessToken(baseUrl, CONSUMER_KEY, CONSUMER_SECRET),
+      ).rejects.toThrow(ConfigError);
+      await expect(
+        getAccessToken(baseUrl, CONSUMER_KEY, CONSUMER_SECRET),
+      ).rejects.toThrow(/untrusted/);
+    }
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

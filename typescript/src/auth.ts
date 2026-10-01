@@ -32,6 +32,7 @@
  */
 
 import { MpesaError } from "./errors.js";
+import { ConfigError, TRUSTED_BASE_URLS } from "./config.js";
 import { readBodyBounded } from "./_bounded-read.js";
 import type { OAuthToken } from "./types.js";
 
@@ -134,6 +135,7 @@ export class TokenManager {
    * Build a TokenManager.
    *
    * @throws {Error} When credentials are missing or malformed.
+   * @throws {ConfigError} When baseUrl is not in the trusted allowlist.
    */
   constructor(opts: TokenManagerOptions) {
     const key = opts.consumerKey;
@@ -149,7 +151,15 @@ export class TokenManager {
       throw new Error("mpesa: credentials must be ASCII");
     }
 
-    this._baseUrl = opts.baseUrl.replace(/\/+$/, "");
+    const normalizedBaseUrl = opts.baseUrl.replace(/\/+$/, "");
+    if (!TRUSTED_BASE_URLS.has(normalizedBaseUrl)) {
+      throw new ConfigError(
+        `mpesa: refusing untrusted base_url ${JSON.stringify(normalizedBaseUrl)} ` +
+        `(want https://sandbox.safaricom.co.ke or https://api.safaricom.co.ke)`,
+      );
+    }
+
+    this._baseUrl = normalizedBaseUrl;
     this._consumerKey = key;
     this._consumerSecret = secret;
     this._timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs! > 0
