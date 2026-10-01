@@ -300,7 +300,7 @@ B2C, Transaction Status, Reversal and Account Balance require an API-operator **
 |------------|--------------------------------------------------------------------------|
 | Go         | `mpesa.SecurityCredential(certPEMorDER []byte, initiatorPassword string)` |
 | Python     | `security_credential(cert_pem_or_der: bytes, initiator_password: str)`    |
-| TypeScript | `securityCredential(initiatorPassword: string, certificatePem)` — **password first!** |
+| TypeScript | `securityCredential(certificatePem, initiatorPassword)` — **cert first! Changed post-0.2.0 — swap your two args.** |
 
 ```python
 from pathlib import Path
@@ -384,7 +384,7 @@ except MpesaError as exc:   # exc.status_code / exc.error_code /
 
 ```go
 resp, err := client.STKPush(ctx, req)
-var merr *mpesa.Error       // merr.StatusCode / merr.ErrorCode /
+var merr *mpesa.MpesaError   // merr.StatusCode / merr.ErrorCode /
 if errors.As(err, &merr) {  // merr.ErrorMessage / merr.RequestID
     log.Print(merr)
 }
