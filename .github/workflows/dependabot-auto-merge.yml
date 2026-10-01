@@ -1,0 +1,65 @@
+name: Dependabot Auto-Merge
+
+# Auto-merges ONLY patch bumps of development dependencies into `develop`.
+# Everything else -- production dependency patches, all minors, all majors --
+# is left untouched for manual owner review.
+on:
+  pull_request:
+    branches: [develop]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  dependabot:
+    runs-on: ubuntu-latest
+    # Dependabot-authored only, and never into `main` -- updates must land on
+    # develop first and be promoted by promote.yml after CI passes.
+    if: github.actor == 'dependabot[bot]' && github.base_ref == 'develop'
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2.5.0
+
+      # Both conditions are required, combined in a single step-level `if:`:
+      #   semver-patch -> excludes minor 1.x.0 and major x.0.0 bumps
+      #   development  -> excludes production runtime deps (python
+      #                  requests/cryptography). TypeScript is devDependencies
+      #                  only and Go is stdlib only, so those are safe to
+      #                  auto-merge; production runtime deps are not.
+      - name: Enable auto-merge
+        if: steps.metadata.outputs.update-type == 'version-update:semver-patch' && contains(steps.metadata.outputs.dependency-type, 'development')
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          # Prefer a fine-grained PAT: a merge performed with the default
+          # GITHUB_TOKEN does not trigger new workflow runs, so the push to
+          # develop would never fire CI, and promote.yml (which listens for
+          # `workflow_run` of CI on develop) would never promote the dependency
+          # update onward to main. With the PAT the push -> CI -> promote chain
+          # continues. Falls back to GITHUB_TOKEN so the merge still lands (but
+          # stalls the chain) if the secret is missing.
+          GH_TOKEN: ${{ secrets.PROMOTE_PAT || secrets.GITHUB_TOKEN }}
+
+      # Mirrors the condition above so skipped PRs are visible rather than
+      # silent. `always()` because when the merge step is skipped this is the
+      # only thing that runs.
+      - name: Summary
+        if: always()
+        env:
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          DEPENDENCY_TYPE: ${{ steps.metadata.outputs.dependency-type }}
+          ENABLED: ${{ steps.metadata.outputs.update-type == 'version-update:semver-patch' && contains(steps.metadata.outputs.dependency-type, 'development') }}
+        run: |
+          set -euo pipefail
+          if [ "$ENABLED" = "true" ]; then
+            echo "::notice::Auto-merge enabled: $UPDATE_TYPE / $DEPENDENCY_TYPE"
+            printf '### Dependabot auto-merge: ENABLED\n\nSquash-merging patch bump of a development dependency (`%s` / `%s`) into `develop`.\n' "$UPDATE_TYPE" "$DEPENDENCY_TYPE" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$UPDATE_TYPE" != "version-update:semver-patch" ]; then
+            echo "::notice::Skipped auto-merge: update-type '$UPDATE_TYPE' is not version-update:semver-patch (minor/major bumps need manual review)."
+            printf '### Dependabot auto-merge: SKIPPED\n\nupdate-type is `%s`, not `version-update:semver-patch`. Minor and major bumps are left for manual owner review.\n' "$UPDATE_TYPE" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::notice::Skipped auto-merge: dependency-type '$DEPENDENCY_TYPE' is a production dependency (manual review required)."
+            printf '### Dependabot auto-merge: SKIPPED\n\ndependency-type is `%s`, which is not a development dependency. Production runtime dependencies are left for manual owner review.\n' "$DEPENDENCY_TYPE" >> "$GITHUB_STEP_SUMMARY"
+          fi
