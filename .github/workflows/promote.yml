@@ -55,14 +55,113 @@ jobs:
           # NOTE: use /commits/{ref} (not /git/commits/{ref}) - the git data
           # endpoint does not resolve branch names and returns 404, which would
           # abort the job under `set -e`.
-          MAIN_TREE=$(gh api "repos/${{ github.repository }}/commits/main" --jq '.commit.tree.sha')
-          DEVELOP_TREE=$(gh api "repos/${{ github.repository }}/commits/develop" --jq '.commit.tree.sha')
-          echo "main tree:   $MAIN_TREE"
-          echo "develop tree: $DEVELOP_TREE"
+          MAIN_INFO=$(gh api "repos/${{ github.repository }}/commits/main" --jq '"\(.sha) \(.commit.tree.sha)"')
+          read -r MAIN_SHA MAIN_TREE <<< "$MAIN_INFO"
+          DEVELOP_INFO=$(gh api "repos/${{ github.repository }}/commits/develop" --jq '"\(.sha) \(.commit.tree.sha)"')
+          read -r DEVELOP_SHA DEVELOP_TREE <<< "$DEVELOP_INFO"
+          echo "main    ${MAIN_SHA} (tree ${MAIN_TREE})"
+          echo "develop ${DEVELOP_SHA} (tree ${DEVELOP_TREE})"
+
+          # -------------------------------------------------------------------
+          # develop auto-sync (identical trees only, and BEFORE the PR stage)
+          #
+          # WHY this exists: a promotion squash-merges develop into main, so
+          # main ends up holding a commit develop does not contain. The file
+          # trees are then byte-identical while the commit graphs are not, and
+          # GitHub renders develop as "N commits behind main" - which reads like
+          # unreviewed work is queued on develop when in fact every develop
+          # commit is already live on main. Fast-forwarding develop's ref onto
+          # main's SHA clears that misleading banner. This is its only purpose.
+          #
+          # WHY it is safe: trees are byte-identical, so develop already holds
+          # every byte of main's content. A fast-forward can therefore only move
+          # develop across content main already holds - it cannot introduce
+          # unreviewed code into main. force=false below means the GitHub API
+          # itself rejects the update unless it is a genuine fast-forward, so a
+          # concurrent push to develop fails the job instead of being
+          # overwritten.
+          #
+          # WHY it runs here, before the PR stage: an earlier draft waited for
+          # the promotion PR to reach MERGED before syncing. That raced the
+          # asynchronous auto-merge - `gh pr merge --auto` only arms the merge,
+          # which fires later when the required checks go green and can easily
+          # exceed any sane wait. On timeout the sync silently never happened
+          # and there was no later retry, so the banner stayed uncleared
+          # indefinitely. This run starts right after the previous promotion
+          # merged, which is exactly when the trees are identical and develop
+          # needs catching up, so there is nothing to wait for.
+          #
+          # No actions/checkout and no local git: the ref moves in a single
+          # PATCH to the git refs API, which needs only contents:write.
+          # -------------------------------------------------------------------
           if [ "$MAIN_TREE" = "$DEVELOP_TREE" ]; then
-            echo "Nothing to promote: main and develop have identical trees."
+            echo "Trees identical: develop already contains everything on main. Nothing to promote."
+            BEFORE=$(gh api "repos/$GH_REPO/compare/main...develop" --jq '"\(.status) \(.ahead_by) \(.behind_by)"')
+            read -r STATUS AHEAD BEHIND <<< "$BEFORE"
+            echo "compare main...develop (before sync): ${BEFORE}"
+
+            # Only a strict "behind" with 0 ahead offers a fast-forward to
+            # attempt. "identical" means there is nothing to move; anything else
+            # (ahead / diverged) means main is not a descendant of develop, so
+            # force=false would refuse anyway - do not spend a request on it.
+            if [ "$STATUS" = "identical" ]; then
+              echo "develop is already at main - no sync needed."
+              {
+                echo "### develop auto-sync"
+                echo ""
+                echo "- Outcome: **no-op - develop already at main**"
+                echo "- compare main...develop: \`${BEFORE}\` (ahead_by=${AHEAD}, behind_by=${BEHIND})"
+                echo "- develop was **not** modified."
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            if [ "$STATUS" != "behind" ] || [ "$AHEAD" != "0" ]; then
+              echo "::warning::compare main...develop is '${STATUS}' (ahead_by=${AHEAD}) - no clean fast-forward to main exists. Leaving develop untouched."
+              {
+                echo "### develop auto-sync"
+                echo ""
+                echo "- Outcome: **skipped - no fast-forward available**"
+                echo "- compare main...develop: \`${BEFORE}\` (ahead_by=${AHEAD}, behind_by=${BEHIND})"
+                echo "- develop was **not** modified."
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+
+            echo "Trees identical and develop is ${BEHIND} commit(s) behind main with 0 ahead. Fast-forwarding."
+            echo "develop ${DEVELOP_SHA} -> ${MAIN_SHA}"
+
+            # Fail loud on purpose: under `set -euo pipefail` a rejected sync
+            # must fail the job so the maintainer sees it. No `|| true`.
+            # -F sends a real JSON boolean for force.
+            NEW_DEVELOP=$(gh api --method PATCH "repos/$GH_REPO/git/refs/heads/develop" \
+              -F sha="$MAIN_SHA" -F force=false --jq '.object.sha')
+            if [ "$NEW_DEVELOP" != "$MAIN_SHA" ]; then
+              echo "::error::PATCH returned develop=${NEW_DEVELOP}, expected ${MAIN_SHA} - the ref did not move as intended."
+              exit 1
+            fi
+            AFTER=$(gh api "repos/$GH_REPO/compare/main...develop" --jq '"\(.status) \(.ahead_by) \(.behind_by)"')
+            read -r POST_STATUS POST_AHEAD POST_BEHIND <<< "$AFTER"
+            echo "develop is now ${NEW_DEVELOP} (${AFTER})"
+
+            {
+              echo "### develop auto-sync"
+              echo ""
+              echo "- Outcome: **synced - develop fast-forwarded to main**"
+              echo "- develop \`${DEVELOP_SHA:0:7}\` -> \`${MAIN_SHA:0:7}\` (fast-forward, force=false)"
+              echo "- trees verified identical: \`${MAIN_TREE}\`"
+              echo "- before: \`${STATUS}\`, ahead_by=${AHEAD}, behind_by=${BEHIND}"
+              echo "- after: \`${POST_STATUS}\`, ahead_by=${POST_AHEAD}, behind_by=${POST_BEHIND}"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+
+          # Trees DIFFER: develop holds genuine unreviewed work that was never
+          # promoted. Do NOT sync - moving develop onto main there could discard
+          # that work. This is the normal promotion path.
+          echo "Trees differ: develop holds work that was never promoted. Opening the promotion PR (no sync)."
           EXISTING=$(gh pr list --head develop --base main --state open --json number --jq '.[0].number // empty')
           if [ -z "$EXISTING" ]; then
             echo "No open develop->main PR, creating..."
