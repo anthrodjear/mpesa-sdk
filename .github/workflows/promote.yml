@@ -188,10 +188,77 @@ jobs:
             echo "::warning::PROMOTE_PAT missing - running auto-merge with GITHUB_TOKEN. This is expected to FAIL; the failure below is intentional and loud."
           fi
           AUTO_MERGE_ALREADY=$(gh pr view "$EXISTING" --json autoMergeRequest --jq '.autoMergeRequest != null')
+          AUTO_MERGE_ATTEMPTS=0
+          MERGE_MAX_ATTEMPTS=10
+          MERGE_RETRY_SECONDS=15
+
+          # Progress reporter for the retry loop below. Prints which status
+          # checks GitHub can currently see on the head commit, so the run log
+          # shows the required checks arriving instead of looking like a hang.
+          # A failed query here is reported but never breaks the step - and it
+          # never masks the real auto-merge error, because each call is guarded
+          # by its own `if` (deliberately no `|| true`).
+          log_check_registration() {
+            local detail=""
+            if detail=$(gh pr view "$EXISTING" --json headRefOid,statusCheckRollup \
+              --jq '"head \(.headRefOid) sees: " + ([.statusCheckRollup[]? | (.context // .name // "unknown")] | if length == 0 then "no status checks registered yet" else join(", ") end)' 2>&1); then
+              echo "    required-check registration -> ${detail}"
+            else
+              echo "    required-check registration -> could not query (${detail})"
+            fi
+          }
+
           if [ "$AUTO_MERGE_ALREADY" = "true" ]; then
             echo "Auto-merge already enabled on PR #$EXISTING - skipping enable call."
           else
-            echo "Enabling auto-merge (merge) on PR #$EXISTING"
-            gh pr merge "$EXISTING" --auto --merge
+            # WHY THIS RETRIES: `gh pr create` returns as soon as the PR exists,
+            # but GitHub then needs a moment to register the required status
+            # checks (go / python / typescript) on the new head commit. A
+            # freshly created PR has NOT yet had its required checks registered,
+            # so a `gh pr merge --auto` issued inside that window is rejected as
+            # a ruleset violation ("GraphQL: Repository rule violations found").
+            # The PR still merges once CI finishes, but auto-merge was never
+            # armed, so the job reports failure for a condition that resolves
+            # itself - exactly what happened on run 36848605990 for PR #19.
+            #
+            # Rule violations are that expected transient case; every other
+            # genuine error is retried too so one flaky call cannot lose the
+            # promotion. Nothing is swallowed: if the final attempt fails the
+            # captured stderr is re-emitted on both stdout and stderr and the
+            # step exits non-zero. There is no `|| true` in this path.
+            attempt=1
+            while true; do
+              echo "Enabling auto-merge (merge) on PR #$EXISTING (attempt ${attempt}/${MERGE_MAX_ATTEMPTS})"
+              # `set -e` does not fire for a command sitting in an `if`
+              # condition, so the failure is captured here and handled
+              # explicitly below rather than aborting the step.
+              if MERGE_ERR=$(gh pr merge "$EXISTING" --auto --merge 2>&1); then
+                AUTO_MERGE_ATTEMPTS=$attempt
+                echo "Auto-merge enabled on PR #$EXISTING after ${AUTO_MERGE_ATTEMPTS} attempt(s)."
+                if [ -n "$MERGE_ERR" ]; then
+                  echo "${MERGE_ERR}"
+                fi
+                break
+              fi
+
+              AUTO_MERGE_ATTEMPTS=$attempt
+              echo "gh pr merge --auto failed on attempt ${attempt}/${MERGE_MAX_ATTEMPTS}:"
+              echo "${MERGE_ERR}"
+              if [ "$attempt" -ge "$MERGE_MAX_ATTEMPTS" ]; then
+                echo "::error::auto-merge enable failed on PR #${EXISTING} after ${AUTO_MERGE_ATTEMPTS} attempts ${MERGE_RETRY_SECONDS}s apart. Either the required checks never registered or this is a genuine failure - see the error output above."
+                echo "LAST gh pr merge --auto ERROR (PR #${EXISTING}):" >&2
+                echo "${MERGE_ERR}" >&2
+                exit 1
+              fi
+
+              echo "::warning::auto-merge enable attempt ${attempt}/${MERGE_MAX_ATTEMPTS} failed on PR #${EXISTING} - retrying."
+              echo "Required-check registration so far:"
+              log_check_registration
+              sleep "$MERGE_RETRY_SECONDS"
+              attempt=$(( attempt + 1 ))
+            done
           fi
+          {
+            echo "- Auto-merge enable attempts on PR #$EXISTING: **${AUTO_MERGE_ATTEMPTS}** (limit ${MERGE_MAX_ATTEMPTS}, ${MERGE_RETRY_SECONDS}s apart)"
+          } >> "$GITHUB_STEP_SUMMARY"
           gh pr view "$EXISTING" --json number,autoMergeRequest,state,mergeable
