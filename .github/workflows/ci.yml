@@ -113,9 +113,15 @@ jobs:
     runs-on: ubuntu-latest
     # This job is a hard gate: the job-level soft-fail flag that used to sit
     # here is gone, so a real finding in govulncheck / bandit / npm audit fails
-    # the workflow and therefore fails the `required` job below. Thresholds are
+    # the workflow and therefore fails the `required` check. Thresholds are
     # tightened rather than failures being suppressed, so routine noise stays
     # out of the way while a real finding blocks.
+    #
+    # That `required` check is not a job in this file. It lives in
+    # required-checks.yml, on a pull_request-only trigger, and reads this job's
+    # result back over the API. It has to be a separate workflow: a `required`
+    # job here would also be created by the push-to-develop run, and GitHub
+    # counts a skipped required check as satisfied.
     #
     # Consequence, intended: hitting this timeout is now itself a failure. A
     # scanner that hangs (network stall, module proxy hang, a pathological
@@ -202,65 +208,3 @@ jobs:
         # the log for triage instead of blocking every PR.
         run: npm audit --audit-level=high
         working-directory: typescript
-
-  required:
-    name: required
-    # pull_request ONLY, and never a push.
-    #
-    # The bug this closes: `main`'s ruleset required the contexts go, python and
-    # typescript, and those are all satisfied by the push-to-`develop` run on
-    # the same head SHA. So `main` could merge a commit that no CI run had ever
-    # evaluated. A push run must therefore never be able to satisfy this check.
-    #
-    # always() is load-bearing. A bare `if:` here would be an expression with no
-    # status-check function, so GitHub would apply an implicit `success()` -
-    # and "if a job fails or is skipped, all jobs that need it are skipped
-    # unless the job uses a conditional that causes it to continue". The gate
-    # would then be SKIPPED rather than FAILED whenever a dependency failed,
-    # and a skipped required check is reported as "expected, waiting for
-    # status", which reads like an infrastructure hiccup instead of a real
-    # rejection. always() makes this job run and report the actual failure.
-    if: ${{ always() && github.event_name == 'pull_request' }}
-    runs-on: ubuntu-latest
-    needs: [go, python, typescript, security]
-    steps:
-      - name: Require every job to have succeeded
-        env:
-          RESULTS: ${{ toJSON(needs) }}
-        run: |
-          set -euo pipefail
-
-          # No `| while read` loop here. This job is the only thing the `main`
-          # ruleset will require, so its decision must be a single, directly
-          # tested value: jq evaluates the whole `needs` object in one pass and
-          # we test the resulting boolean. A shell loop would be both harder to
-          # reason about and prone to reporting the pipeline's status instead of
-          # the worst individual job's.
-          #
-          # Gate on `.result` ALONE. It is the authoritative field in the `needs`
-          # context and is one of: success | failure | cancelled | skipped.
-          # Requiring `.conclusion` as well would fail every run: `conclusion` is
-          # not populated here, so the extra clause is always false. `result`
-          # already covers every state we care about - a skipped or cancelled
-          # dependency is not `success` and is therefore rejected.
-          #
-          # The count guard is NOT redundant. `all()` over an EMPTY array is
-          # true in jq, so a malformed or empty `RESULTS` would otherwise pass
-          # this gate and hand `main` a green `required` check that verified
-          # nothing. Requiring at least one job is what makes this fail closed.
-          echo "Upstream job results:"
-          jq -r 'to_entries[] | "  \(.key): \(.value.result)"' <<<"$RESULTS"
-
-          JOB_COUNT=$(jq 'length' <<<"$RESULTS")
-          echo "Jobs in needs: $JOB_COUNT"
-          if [ "$JOB_COUNT" -lt 1 ]; then
-            echo "::error::No job results were reported - refusing to pass an unverified gate."
-            exit 1
-          fi
-
-          if ! jq -e 'all(.[]; .result == "success")' <<<"$RESULTS" >/dev/null; then
-            echo "::error::At least one required job did not succeed - see the list above."
-            exit 1
-          fi
-
-          echo "All required jobs succeeded."

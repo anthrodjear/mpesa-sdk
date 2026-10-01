@@ -1,0 +1,316 @@
+name: Required checks
+
+# `pull_request` ONLY, and that is the entire point of this file.
+#
+# The job below is named `required`, which is the single context `Protect main`
+# (ruleset 23525701) requires. That context must be producible ONLY by a run
+# that actually evaluated ci.yml's jobs, so the trigger must never include
+# anything that fires on a push.
+#
+# Why this gate was moved out of ci.yml
+# -------------------------------------
+# `required` used to be a job in ci.yml, gated with
+#
+#     if: ${{ always() && github.event_name == 'pull_request' }}
+#
+# On PR #26 the head SHA c1844d3 carried two check runs named `required`:
+#
+#     110399350035  success  <- the pull_request run
+#     110398793459  skipped  <- the push-to-develop run
+#
+# GitHub counts a SKIPPED required check as satisfied, so the push run's skipped
+# `required` could satisfy `Protect main` before any pull_request run had
+# evaluated the commit - the precise outcome the gate existed to prevent. An
+# `if:` cannot fix this: a conditionally-skipped job still creates a check run.
+# Only removing the job from the push-triggered workflow removes the check run.
+#
+# Why the trigger list below is exactly this, and must stay this way:
+#
+#   push ................. would create a second `required` check run, which is
+#                          the bug this file exists to remove
+#   workflow_run ......... fires whenever ci.yml runs, push included, and would
+#                          reintroduce the same skipped-run hazard
+#   workflow_dispatch .... lands a `required` check on an arbitrary ref, and a
+#                          manually dispatched required check does count towards
+#                          branch protection
+#
+# Do not add any of them.
+on:
+  pull_request:
+    branches: [main, develop]
+
+# Least privilege for GITHUB_TOKEN, declared explicitly.
+#
+#   checks: read   REQUIRED. `GET /repos/{owner}/{repo}/commits/{ref}/check-runs`
+#                  is documented as needing "Checks" repository permissions
+#                  (read); `contents: read` does NOT imply it. Without this
+#                  scope the API call returns 403 and this gate fails closed on
+#                  every pull request - a 403 here is a missing scope, not a
+#                  passing check.
+#   contents: read  Matched to ci.yml so both read-only workflows use the same
+#                  token shape. This job checks out no code, so nothing here
+#                  actually consumes it.
+#
+# Everything not listed is implicitly `none`: no write scope is granted, so the
+# gate cannot rewrite the status it is judging.
+permissions:
+  contents: read
+  checks: read
+
+jobs:
+  required:
+    # No `name:` override, deliberately.
+    #
+    # A GitHub Actions check run is named after the job's `name:` if it has one,
+    # and after the job id if it does not. ci.yml's `go`, `python`,
+    # `typescript` and `security` jobs all omit `name:` and produce bare
+    # contexts - verified against PR #26's head SHA, where the check runs are
+    # literally `go`, `python`, `typescript`, `security`. This job id is
+    # `required` and also omits `name:`, so the context is the bare string
+    # `required` - exactly what `Protect main` requires.
+    #
+    # Adding `name: required / gate` here, or renaming the job, silently breaks
+    # every merge to main. Leave the id alone.
+    runs-on: ubuntu-latest
+    # The poll loop below is the only reason this job runs long. If it ever
+    # hangs past its own budget this is the backstop that fails the check.
+    timeout-minutes: 30
+
+    env:
+      # Repo and SHA arrive through env, never through `${{ }}` inside the
+      # script. GitHub expands expressions before bash sees the step, so an
+      # expression embedded in `run:` is a way for a field to reach the shell
+      # without the quoting the runner would otherwise apply.
+      GH_REPO: ${{ github.repository }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      # gh reads the runner's token from the environment; no credential is
+      # passed on a command line or written to a file.
+      GH_TOKEN: ${{ github.token }}
+
+      # The single source of truth for what this gate requires. ci.yml owns the
+      # definitions; this list is the only place the expectation is written
+      # down, and every check in the step reads it from here instead of
+      # repeating the names. Adding a fifth CI job means one line here, not an
+      # edit to the jq filters as well - a second hand-written copy of this list
+      # is exactly how a gate ends up checking something ci.yml stopped running.
+      EXPECTED_CHECKS: '["go","python","typescript","security"]'
+
+      # How long to wait for ci.yml's jobs before giving up and failing closed.
+      # ci.yml's slowest job is capped at 10 minutes (`security`), so 25 minutes
+      # of budget is generous; it exists to absorb scheduling delay and runner
+      # queueing, not to extend any deadline.
+      WAIT_SECONDS: '1500'
+      POLL_SECONDS: '10'
+
+    steps:
+      - name: Require every CI job to have succeeded for the PR head SHA
+        run: |
+          set -euo pipefail
+
+          # Every deliberate failure path below routes through fail(): it prints
+          # the ::error:: annotation AND records the same text in the job summary,
+          # then exits 1, so no judgement of "this commit is not ready" reaches
+          # the log without saying which check caused it. (An unexpected crash -
+          # OOM, a killed shell - still fails the step, just without an
+          # annotation. That is the safe direction, so it needs no handling.)
+          TABLE="_no check runs were read_"
+          fail() {
+            echo "::error::$1"
+            {
+              echo "### \`required\` gate: FAILED"
+              echo
+              echo "$1"
+              echo
+              echo "- repository: \`$GH_REPO\`"
+              echo "- head SHA:   \`$HEAD_SHA\`"
+              echo
+              echo "$TABLE"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          # Every page of the commit's check runs, 100 per page. `gh api
+          # --paginate` prints one JSON object per page instead of merging them,
+          # so page_facts slurps the stream back into a single array. Reading
+          # only the first page would be deciding on a truncated view of the
+          # commit, which is the same class of bug as the skipped-check one this
+          # workflow was written to eliminate.
+          #
+          # `gh` rather than a curl-and-jq action: the GitHub CLI ships in the
+          # ubuntu-latest runner image, so this file needs no `uses:` at all -
+          # no third-party action, nothing to SHA-pin, one fewer thing to trust
+          # with a token.
+          fetch_pages() {
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/$GH_REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
+              --paginate
+          }
+
+          # Reduce the pages to the three facts the decision uses: how many runs
+          # exist, how many we actually read, and the expected checks with the
+          # two fields the decision reads.
+          page_facts() {
+            jq -s '
+              map(.check_runs // []) as $lists
+              | {
+                  total_count: (map(.total_count // 0) | max),
+                  fetched:     ($lists | map(length) | add // 0),
+                  runs:        ($lists | add // [])
+                }
+              | .runs = [.runs[] | { name, status, conclusion }]
+            '
+          }
+
+          # Classify the expected checks into three buckets.
+          #   missing - an expected name with no run at all
+          #   pending - a run that has not reached a terminal conclusion
+          #   failed  - a terminal run whose conclusion is not `success`
+          #
+          # Both the push-to-develop run and the pull_request run report check
+          # runs under these same four names on the same head SHA, and
+          # check_suite.head_branch is `develop` for both, so the suite cannot
+          # tell them apart. Rather than guess which is which, every run under
+          # an expected name must succeed. A red `develop` therefore also holds
+          # the merge, which is the conservative direction to be wrong in.
+          #
+          # The `and` has to live INSIDE the select(). Written as
+          # `select(.status == "completed") and (...)` it does not mean what it
+          # looks like: jq binds `and` tighter than the array-constructor pipe,
+          # so each matching run gets coerced to a boolean and `failed` fills up
+          # with bare `false` values instead of runs - which then makes the
+          # `.failed[]` report below index a boolean and abort the step with no
+          # annotation at all. Keep the parenthesis.
+          classify() {
+            jq -c --argjson want "$EXPECTED_CHECKS" '
+              [ .runs[] | select(.name as $n | $want | index($n)) ] as $mine
+              | {
+                  missing: [ $want[] as $n
+                             | select( ([ $mine[] | select(.name == $n) ] | length) == 0 )
+                             | $n ],
+                  pending: [ $mine[] | select(.status != "completed") ],
+                  failed:  [ $mine[]
+                             | select( .status == "completed"
+                                       and (.conclusion // "") != "success" ) ]
+                }
+            '
+          }
+
+          # The summary table is rendered from what the API returned, not from
+          # what this script expected, so the report shows GitHub's answer. A
+          # check with no run reads as _not reported_ rather than silently
+          # vanishing from the table.
+          render_table() {
+            jq -r --argjson want "$EXPECTED_CHECKS" '
+              . as $f
+              | ([ "| check | status | conclusion |", "| --- | --- | --- |" ]
+                 + [ $want[] as $n
+                     | ( [ $f.runs[] | select(.name == $n) ] ) as $m
+                     | if ($m | length) == 0
+                       then "| \($n) | _not reported_ | _not reported_ |"
+                       else "| \($n) | "
+                            + ($m | map(.status) | join(", ")) + " | "
+                            + ($m | map(.conclusion // "null") | join(", ")) + " |"
+                       end ])
+              | join("\n")
+            '
+          }
+
+          # This workflow is a sibling of ci.yml, not a dependant of it.
+          # `needs:` cannot cross a workflow boundary, so both workflows start
+          # when the pull_request event fires and this one would otherwise read
+          # the commit before any check run exists. Waiting is not a weakening:
+          # the deadline is hard, and anything still missing or unfinished at
+          # the deadline falls through to the verdict below and fails.
+          deadline=$(( SECONDS + WAIT_SECONDS ))
+          FACTS=""
+          VERDICT=""
+          last_error=""
+
+          while : ; do
+            if PAYLOAD="$(fetch_pages 2>&1)"; then
+              last_error=""
+            else
+              last_error="Could not read check runs for $HEAD_SHA in $GH_REPO: $PAYLOAD"
+            fi
+
+            if [ -z "$last_error" ]; then
+              if FACTS="$(page_facts <<<"$PAYLOAD")"; then
+                TOTAL="$(jq -r '.total_count' <<<"$FACTS")"
+                FETCHED="$(jq -r '.fetched' <<<"$FACTS")"
+
+                if [ "$FETCHED" -lt 1 ]; then
+                  last_error="No check runs are reported for $HEAD_SHA at all - refusing to pass an unverified gate."
+                elif [ "$TOTAL" -ne "$FETCHED" ]; then
+                  last_error="Only $FETCHED of $TOTAL check runs for $HEAD_SHA could be read - refusing to decide on a partial view."
+                else
+                  VERDICT="$(classify <<<"$FACTS")"
+                  TABLE="$(render_table <<<"$FACTS")"
+                fi
+              else
+                last_error="Could not parse the check-run response for $HEAD_SHA."
+              fi
+            fi
+
+            if [ -z "$last_error" ]; then
+              OUTSTANDING="$(jq '[.missing, .pending] | map(length) | add' <<<"$VERDICT")"
+              if [ "$OUTSTANDING" -eq 0 ]; then
+                break
+              fi
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                break
+              fi
+              echo "::notice::waiting on CI checks for $HEAD_SHA - $OUTSTANDING expected check(s) missing or unfinished, $(( deadline - SECONDS ))s of budget left."
+              sleep "$POLL_SECONDS"
+              continue
+            fi
+
+            # A failed read is retried rather than trusted, and still fails at
+            # the deadline. An unreachable API is not a passing gate.
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              break
+            fi
+            echo "::notice::$last_error Retrying."
+            sleep "$POLL_SECONDS"
+          done
+
+          if [ -n "$last_error" ]; then
+            fail "$last_error"
+          fi
+
+          MISSING="$(jq -r '.missing | join(" ")' <<<"$VERDICT")"
+          if [ -n "$MISSING" ]; then
+            for name in $MISSING; do
+              echo "::error::No check run named '$name' was reported for $HEAD_SHA."
+            done
+            fail "required check(s) never reported for $HEAD_SHA: $MISSING"
+          fi
+
+          PENDING="$(jq -r '.pending | map(.name) | join(" ")' <<<"$VERDICT")"
+          if [ -n "$PENDING" ]; then
+            for name in $PENDING; do
+              echo "::error::required check '$name' has not reached a terminal conclusion for $HEAD_SHA."
+            done
+            fail "required check(s) did not finish for $HEAD_SHA: $PENDING"
+          fi
+
+          FAILED="$(jq -r '.failed | length' <<<"$VERDICT")"
+          if [ "$FAILED" -ne 0 ]; then
+            jq -r --arg sha "$HEAD_SHA" '
+              .failed[]
+              | "::error::required check `\(.name)` concluded `\(.conclusion // "null")` for "
+                + $sha + " - expected `success`."
+            ' <<<"$VERDICT"
+            fail "$FAILED required check(s) did not report success for $HEAD_SHA - see the list above."
+          fi
+
+          {
+            echo "### \`required\` gate: PASSED"
+            echo
+            echo "Every CI check reported \`success\` for \`$HEAD_SHA\`."
+            echo
+            echo "$TABLE"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "All required checks reported success for $HEAD_SHA"
