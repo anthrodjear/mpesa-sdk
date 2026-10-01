@@ -128,10 +128,86 @@ function requireNonEmpty(field: string, value: string): void {
   }
 }
 
+function isBlockedIPv4(host: string): boolean {
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const octets = m.slice(1).map(Number);
+  if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  const [a, b, c, d] = octets;
+  if (a === 127) return true; // 127.0.0.0/8 loopback
+  if (a === 10) return true; // 10.0.0.0/8 private
+  if (a === 192 && b === 168) return true; // 192.168.0.0/16 private
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12 private
+  if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local
+  if (a === 0 && b === 0 && c === 0 && d === 0) return true; // 0.0.0.0 unspecified
+  if (a >= 224 && a <= 239) return true; // 224.0.0.0/4 multicast
+  return false;
+}
+
+function isBlockedIP(host: string): boolean {
+  let h = host.toLowerCase();
+  if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1);
+  const pct = h.indexOf("%");
+  if (pct !== -1) h = h.slice(0, pct); // strip IPv6 zone id (fe80::1%eth0)
+  if (h === "::" || h === "::1") return true; // unspecified / loopback
+  if (h.includes(":")) {
+    // Any ":" means an IP literal (DNS names never contain ":").
+    // Embedded IPv4 tail (e.g. ::ffff:127.0.0.1) — check the tail.
+    const tail = h.slice(h.lastIndexOf(":") + 1);
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(tail) && isBlockedIPv4(tail)) return true;
+    // First hextet numeric checks for ULA / link-local / multicast.
+    const firstGroup = h.split(":").find((g) => g.length > 0) ?? "";
+    const v = Number.parseInt(firstGroup, 16);
+    if (Number.isInteger(v)) {
+      if ((v & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local
+      if ((v & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+      if ((v & 0xff00) === 0xff00) return true; // ff00::/8 multicast
+    } else if (h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80") || h.startsWith("ff")) {
+      return true; // conservative fallback for non-standard forms
+    }
+    return false;
+  }
+  return isBlockedIPv4(h);
+}
+
 function requireURL(field: string, value: string): void {
   requireNonEmpty(field, value);
-  if (!value.startsWith("http://") && !value.startsWith("https://")) {
-    throw new Error(`mpesa: ${field} must be an absolute http(s) URL`);
+  if (/\s/.test(value)) {
+    throw new Error(`mpesa: ${field} must not contain whitespace`);
+  }
+  let u: URL;
+  try {
+    u = new URL(value);
+  } catch {
+    throw new Error(`mpesa: ${field} is not a valid URL`);
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    throw new Error(
+      `mpesa: ${field} must use http or https scheme, got ${JSON.stringify(u.protocol.slice(0, -1))}`,
+    );
+  }
+  // Reject embedded credentials — mirrors Go `u.User != nil` (any "@" in authority).
+  const schemeEnd = value.indexOf("://");
+  const authority = (schemeEnd !== -1 ? value.slice(schemeEnd + 3) : value).split(/[/?#]/, 1)[0] ?? "";
+  if (authority.includes("@") || u.username !== "" || u.password !== "") {
+    throw new Error(`mpesa: ${field} must not contain embedded credentials`);
+  }
+  const rawHost = u.hostname;
+  if (!rawHost) {
+    throw new Error(`mpesa: ${field} must have a non-empty host`);
+  }
+  let host = rawHost.toLowerCase();
+  if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
+  const zoneIdx = host.indexOf("%");
+  if (zoneIdx !== -1) host = host.slice(0, zoneIdx);
+  if (host === "") {
+    throw new Error(`mpesa: ${field} must have a valid host`);
+  }
+  if (host === "localhost" || host === "localhost.") {
+    throw new Error(`mpesa: ${field} must not point to localhost`);
+  }
+  if (isBlockedIP(host)) {
+    throw new Error(`mpesa: ${field} must not point to an internal or private IP address`);
   }
 }
 
