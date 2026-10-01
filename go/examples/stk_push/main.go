@@ -33,6 +33,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("bad config: %v", err)
 	}
+	// Close() zeroes the cached bearer token in memory; the client must not be reused after it.
+	defer client.Close()
 
 	// 3. Send the STK Push prompt.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

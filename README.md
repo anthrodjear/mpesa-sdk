@@ -406,6 +406,7 @@ catch (err) {
 - **Secrets are redacted in every text form** of `Config` and credential-bearing requests — but `pickle`/`asdict`/raw struct copies still carry them; redact at the log boundary.
 - **Tokens live in memory only**, generation-guarded against cross-replica invalidation; nothing touches disk.
 - **Transport is hardened**: TLS verification forced on injected sessions (Python), redirects refused (all engines), response sizes capped.
+- **Transport pinning (Go only)** — opt-in SPKI certificate pinning is the flagship transport control. Set `Config.TLSPinningEnabled = true` and register each expected host's pin with `mpesa.PinSPKI(hostname, spkiHash)`, where `spkiHash` is the SHA-256 of the DER-encoded SubjectPublicKeyInfo of the server's RSA public key. A host with no registered pin is unaffected, so you can roll pins one host at a time and keep a current + backup pin per host. Pinning is **additive to** ordinary TLS verification, never a replacement: a chain that fails normal validation is rejected before pinning is consulted, and the client refuses transports with `InsecureSkipVerify`. There is no built-in helper to compute the hash — the practical starting point is to fetch the live endpoint's certificate and hash its SPKI with `openssl x509 -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary`, then verify the derived hash against a channel you trust before registering it. (Go only: `PinSPKI` and `Config.TLSPinningEnabled` exist in no other engine.)
 
 ## Behavior guarantees
 
@@ -415,6 +416,7 @@ catch (err) {
 | Response cap         | Bodies larger than **1 MiB** are rejected before any parsing                                 |
 | Redirect refusal     | 307/308-style redirects are never followed (they would replay bodies at an arbitrary host)   |
 | Token caching        | Cached bearer refreshed eagerly and single-flight; a generation guard resolves `401.003.01` across replicas without stampedes, and the failed call is retried once with the fresh token — transparently |
+| Refresh rate limit   | After **3 consecutive** OAuth refresh failures within **5 s**, further (unforced) refreshes are refused with `mpesa: refresh rate limited ...` — this breaks a crash-loop rather than hammering the token endpoint. The counter resets on the first success, and a 401-triggered forced refresh always bypasses it. All three engines. Details: [docs/apis/oauth.md](docs/apis/oauth.md#refresh-rate-limiting--mpesa-refresh-rate-limited-) |
 | Concurrency          | Go `Client` is safe to share across goroutines; Python `TokenManager` is lock-synchronized; TypeScript dedups refreshes via a shared in-flight promise |
 | Value semantics      | Request objects are copied, never mutated — injected defaults stay local to the call          |
 | Secret hygiene       | `Config`/request reprs redact `consumerSecret`, `passkey`, `securityCredential`, tokens      |
@@ -432,13 +434,17 @@ Listed so log inspection doesn't panic you; the SDKs emit/accept these verbatim:
 
 ```
 .
-├── go/                     # Go engine (module github.com/anthrodjear/mpesa-sdk/go) — examples/stk_push/, testdata/
+├── go/                     # Go engine (module github.com/anthrodjear/mpesa-sdk/go) — version.go, examples/stk_push/, testdata/
 ├── python/                 # PyPI mpesa-sdk — mpesa/ package, examples/, tests/
 ├── typescript/             # npm @mpesa-sdk/core — src/, examples/, test/
 ├── docs/apis/              # per-endpoint reference — source of truth for wire contracts
 ├── assets/certs/           # SandboxCertificate.cer · ProductionCertificate.cer
-├── .github/workflows/      # ci.yml — vet + test matrix for all three engines
+├── .github/
+│   ├── dependabot.yml      # weekly updates for npm · pip · gomod · github-actions, all targeting `develop`
+│   └── workflows/          # ci.yml · promote.yml · dependabot-auto-merge.yml
 ├── ADR-010-m-pesa-adapter.md
+├── CHANGES.md              # per-release changelog (0.3.0 is current)
+├── SECURITY.md             # vulnerability reporting · supported versions · release automation · hardening notes
 └── LICENSE
 ```
 
@@ -446,20 +452,57 @@ Listed so log inspection doesn't panic you; the SDKs emit/accept these verbatim:
 
 | Engine     | Commands                                                              |
 |------------|-----------------------------------------------------------------------|
-| Go         | `cd go && go vet ./... && go test -v -count=1 ./...`                   |
+| Go         | `cd go && go vet ./... && go test -race -v -count=1 ./...`             |
 | Python     | `cd python && pip install -e ".[dev]" && python -m pytest tests -v`    |
 | TypeScript | `cd typescript && npm ci && npm run typecheck && npm test`             |
 
-CI (GitHub Actions) runs all three suites in parallel on every push and pull request to `main` — Go vet + tests on Go 1.26.8 (the same toolchain `govulncheck` scans), pytest on Python 3.11, and typecheck (including examples) + vitest on Node 20. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+Reproduce the exact commands CI runs, including the flags:
+
+- **`-race` on the Go suite is not optional.** CI runs `go test -race -v -count=1 ./...`, so a
+  data race fails the build even when the suite is otherwise green. Run it locally before pushing —
+  a race that only reproduces in CI is much more expensive to chase. The other two flags matter too:
+  `-v` because the failure you need is often in a subtest name, and `-count=1` because the Go test
+  cache will otherwise happily replay a green result instead of re-running.
+- **Lint and types are part of the gate**, not a separate chore: `golangci-lint` (Go), `ruff` (Python)
+  and `tsc`/ESLint (TypeScript) all run in CI.
+
+### Branch workflow: `develop` is where you push
+
+`develop` is the integration branch, not `main`. **Push to `develop`**; `main` is a release branch
+that only ever receives promoted, CI-green commits.
+
+- Owner review is required on every `develop` pull request — nothing merges without it.
+- On a green `develop` CI run, `.github/workflows/promote.yml` opens (or reuses) a `develop` → `main`
+  pull request and enables auto-merge, so `main` moves on its own once the required checks pass.
+- `.github/workflows/dependabot-auto-merge.yml` handles routine dependency patches; see
+  [SECURITY.md](SECURITY.md#dependency-update-automation) for exactly what auto-merges, what is
+  deliberately left for manual review, and the `PROMOTE_PAT` requirement both flows share.
+
+### The four CI jobs
+
+CI (GitHub Actions) runs **four jobs** in parallel on every push and pull request to **`main` and
+`develop`** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+
+| Job | What it runs |
+|---|---|
+| `go` | `go vet`, `golangci-lint`, and `go test -race -v -count=1 ./...` on **Go 1.26.8** — the same toolchain `govulncheck` scans, so build and scan cannot drift |
+| `python` | `pytest` on Python 3.11, then `ruff check` |
+| `typescript` | `npm ci`, typecheck (including examples), `vitest`, then ESLint or `tsc --noEmit` |
+| `security` | `govulncheck ./...` (Go), `bandit -r mpesa/ -ll` (Python), `npm audit --audit-level=high` (TypeScript) — **a hard gate**, and a timeout here is itself a failure |
+
+A fifth job, `required`, is the one the `main` ruleset actually requires. It runs only on
+`pull_request` events and fails unless *all four* of the jobs above concluded `success` — including
+on `failure`, `skipped`, or `cancelled`. Because it never runs on a push, a `main` merge can no
+longer be satisfied by a push-run result that no PR ever evaluated.
 
 ## Documentation index
 
-- [getting-started.md](docs/apis/getting-started.md) — environments, SecurityCredential recipe, callback URLs & IP whitelist, go-live checklist
+- [getting-started.md](docs/apis/getting-started.md) — environments, SecurityCredential recipe, callback URL validation & IP whitelist, go-live checklist
 - [stk-push.md](docs/apis/stk-push.md) — prompt fields, two-clock bug, ResultCode catalog · [stk-query.md](docs/apis/stk-query.md) — polling semantics
 - [b2c.md](docs/apis/b2c.md) — payout flow, initiator rules, async Result shape · [c2b.md](docs/apis/c2b.md) — registration + simulation
 - [transaction-status.md](docs/apis/transaction-status.md) · [reversal.md](docs/apis/reversal.md) — receipt/conversation queries · C2B-only reversal
 - [account-balance.md](docs/apis/account-balance.md) — balance blob parsing · [dynamic-qr.md](docs/apis/dynamic-qr.md) — TrxCode matrix
-- [oauth.md](docs/apis/oauth.md) — token TTL, invalidation-on-refresh, generation guard
+- [oauth.md](docs/apis/oauth.md) — token TTL, invalidation-on-refresh, generation guard, refresh rate limit (`mpesa: refresh rate limited ...`)
 
 ## FAQ
 
