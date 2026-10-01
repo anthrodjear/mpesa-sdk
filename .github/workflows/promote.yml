@@ -1,0 +1,49 @@
+name: Promote develop to main
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [develop]
+
+concurrency:
+  group: promote-develop-main
+  cancel-in-progress: false
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  promote:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Auto-open and auto-merge develop -> main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "Promote triggered by CI conclusion: ${{ github.event.workflow_run.conclusion }} on ${{ github.event.workflow_run.head_branch }} @ ${{ github.event.workflow_run.head_sha }}"
+          if [ "${{ github.event.workflow_run.head_branch }}" != "develop" ]; then
+            echo "Skipping: head_branch is not develop"
+            exit 0
+          fi
+          AHEAD=$(gh api repos/${{ github.repository }}/compare/main...develop --jq '.ahead_by')
+          echo "develop ahead_by main: $AHEAD"
+          if [ "$AHEAD" = "0" ]; then
+            echo "Nothing to promote."
+            exit 0
+          fi
+          EXISTING=$(gh pr list --head develop --base main --state open --json number --jq '.[0].number // empty')
+          if [ -z "$EXISTING" ]; then
+            echo "No open develop->main PR, creating..."
+            gh pr create --base main --head develop --title "chore: promote develop to main" --body "Auto-promotion: develop CI green (${{ github.event.workflow_run.head_sha }}). Merging develop into main via auto-merge."
+            EXISTING=$(gh pr list --head develop --base main --state open --json number --jq '.[0].number // empty')
+            echo "Created PR #$EXISTING"
+          else
+            echo "Found existing open PR #$EXISTING"
+          fi
+          echo "Enabling auto-merge (merge) on PR #$EXISTING"
+          gh pr merge "$EXISTING" --auto --merge || echo "auto-merge already enabled or failed, continuing"
+          gh pr view "$EXISTING" --json number,autoMergeRequest,state,mergeable
