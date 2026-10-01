@@ -1139,6 +1139,111 @@ func TestC2BAckRawMisspelledBytesThroughHTTP(t *testing.T) {
 	}
 }
 
+// TestRefreshRateLimit verifies that rate limiting only kicks in after
+// consecutive OAuth endpoint failures, and that 401-triggered refreshes
+// bypass the rate limit entirely.
+func TestRefreshRateLimit(t *testing.T) {
+	var mu sync.Mutex
+	oauthHits := 0
+	now := fixedClock
+	currentNow := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/v1/generate", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		oauthHits++
+		mu.Unlock()
+		writeJSON(t, w, http.StatusOK, map[string]any{"access_token": "tok-rl", "expires_in": "3599"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c, err := NewClient(Config{
+		ConsumerKey: "test-key", ConsumerSecret: "test-secret",
+		Shortcode: testShortcode, Passkey: testPasskey,
+		Environment: Sandbox, Now: currentNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.baseURL = srv.URL
+	ctx := context.Background()
+
+	// 1. Normal refresh works
+	tok, err := c.Token(ctx)
+	if err != nil {
+		t.Fatalf("initial token: %v", err)
+	}
+	if tok != "tok-rl" {
+		t.Fatalf("token = %q, want tok-rl", tok)
+	}
+	if oauthHits != 1 {
+		t.Fatalf("oauthHits = %d, want 1 after initial refresh", oauthHits)
+	}
+
+	// 2. Rapid successive refresh succeeds when there are no failures
+	mu.Lock()
+	now = fixedClock.Add(51 * time.Minute)
+	mu.Unlock()
+	_, err = c.Token(ctx)
+	if err != nil {
+		t.Fatalf("refresh after expiry: %v", err)
+	}
+	if oauthHits != 2 {
+		t.Fatalf("oauthHits = %d, want 2 after refresh post-expiry", oauthHits)
+	}
+	// Force expiry again and try immediately — should succeed (no failures yet)
+	c.mu.Lock()
+	c.tokenExpiry = now.Add(-1 * time.Second)
+	c.mu.Unlock()
+	_, err = c.Token(ctx)
+	if err != nil {
+		t.Fatalf("rapid refresh without failures should succeed: %v", err)
+	}
+	if oauthHits != 3 {
+		t.Fatalf("oauthHits = %d, want 3 (no rate limit without failures)", oauthHits)
+	}
+
+	// 3. After 3+ consecutive failures, rate limiting kicks in
+	c.mu.Lock()
+	c.refreshFailures = 3
+	c.mu.Unlock()
+	c.mu.Lock()
+	c.tokenExpiry = now.Add(-1 * time.Second)
+	c.mu.Unlock()
+	_, err = c.Token(ctx)
+	if err == nil {
+		t.Fatal("expected rate limit error after consecutive failures")
+	}
+	if !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("error = %v, want rate limit error", err)
+	}
+	if oauthHits != 3 {
+		t.Fatalf("oauthHits = %d, want still 3 (rate limited)", oauthHits)
+	}
+
+	// 4. After the rate limit window passes, refresh works again
+	mu.Lock()
+	now = now.Add(6 * time.Second)
+	mu.Unlock()
+	c.mu.Lock()
+	c.tokenExpiry = now.Add(-1 * time.Second)
+	c.mu.Unlock()
+	tok, err = c.Token(ctx)
+	if err != nil {
+		t.Fatalf("refresh after rate limit window: %v", err)
+	}
+	if tok != "tok-rl" {
+		t.Errorf("token = %q, want tok-rl", tok)
+	}
+	if oauthHits != 4 {
+		t.Fatalf("oauthHits = %d, want 4 after rate limit window passed", oauthHits)
+	}
+}
+
 // TestRefreshCadenceOverflowGuard verifies that refreshCadence does not
 // overflow when expires_in is near math.MaxInt64, and that the result is
 // always within [minCadence, maxCadence].

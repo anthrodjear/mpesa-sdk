@@ -34,8 +34,9 @@ const (
 
 	errCodeInvalidToken = "401.003.01"
 
-	defaultTimeout = 30 * time.Second
-	maxResponseLen = 1 << 20
+	defaultTimeout    = 30 * time.Second
+	maxResponseLen    = 1 << 20
+	refreshRateLimit  = 5 * time.Second // minimum time between OAuth refresh attempts
 )
 
 // pinnedSPKIHashes maps hostnames to their expected SPKI SHA-256 hashes.
@@ -127,6 +128,9 @@ type Client struct {
 	tokenBytes  []byte    // cached OAuth bearer token; zeroed on refresh/Close
 	tokenExpiry time.Time // now + clamp(ExpiresIn-60s); zero until first fetch
 	gen         uint64    // bumped on every successful refresh
+
+	lastRefreshAttempt time.Time // wall-clock of last refresh attempt (for rate limiting)
+	refreshFailures    int       // consecutive refresh failures; reset on success
 }
 
 // transportDisablesVerification walks the RoundTripper chain looking for any
@@ -270,7 +274,7 @@ func (c *Client) tokenWithGen(ctx context.Context) (string, uint64, error) {
 	if c.tokenFresh() {
 		return string(c.tokenBytes), c.gen, nil
 	}
-	if _, err := c.refreshLocked(ctx); err != nil {
+	if _, err := c.refreshLocked(ctx, false); err != nil {
 		return "", 0, err
 	}
 	return string(c.tokenBytes), c.gen, nil
@@ -311,42 +315,63 @@ func refreshCadence(expiresIn FlexInt64) time.Duration {
 	return d
 }
 
-func (c *Client) refreshLocked(ctx context.Context) (string, error) {
+func (c *Client) refreshLocked(ctx context.Context, force bool) (string, error) {
 	if c.cfg.ConsumerKey == "" || c.cfg.ConsumerSecret == "" {
 		return "", fmt.Errorf("mpesa: Config.ConsumerKey and Config.ConsumerSecret are required before calling any endpoint")
 	}
+
+	// Rate limit: only apply to non-forced refreshes after consecutive failures.
+	// 401-triggered refreshes (force=true) bypass the rate limit entirely —
+	// they are expected behavior when tokens are invalidated.
+	if !force {
+		now := c.cfg.Now()
+		if c.refreshFailures >= 3 && !c.lastRefreshAttempt.IsZero() && now.Sub(c.lastRefreshAttempt) < refreshRateLimit {
+			return "", fmt.Errorf("mpesa: refresh rate limited after %d consecutive failures (last attempt %v ago, need %v)",
+				c.refreshFailures, now.Sub(c.lastRefreshAttempt).Round(time.Millisecond), refreshRateLimit)
+		}
+		c.lastRefreshAttempt = now
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+oauthPath, nil)
 	if err != nil {
+		c.refreshFailures++
 		return "", err
 	}
 	req.SetBasicAuth(c.cfg.ConsumerKey, c.cfg.ConsumerSecret)
 	resp, err := c.http.Do(req)
 	if err != nil {
+		c.refreshFailures++
 		return "", fmt.Errorf("mpesa: oauth request: %w", err)
 	}
 	defer resp.Body.Close()
 	contentType := resp.Header.Get("Content-Type")
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseLen+1))
 	if err != nil {
+		c.refreshFailures++
 		return "", fmt.Errorf("mpesa: read oauth response: %w", err)
 	}
 	if len(body) > maxResponseLen {
+		c.refreshFailures++
 		return "", fmt.Errorf("mpesa: %s response exceeds %d bytes", oauthPath, maxResponseLen)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		c.refreshFailures++
 		return "", parseError(resp.StatusCode, contentType, body)
 	}
 	var tok oauthTokenResponse
 	if err := json.Unmarshal(body, &tok); err != nil {
+		c.refreshFailures++
 		return "", fmt.Errorf("mpesa: decode oauth response: %w", err)
 	}
 	if tok.AccessToken == "" {
+		c.refreshFailures++
 		return "", fmt.Errorf("mpesa: oauth response missing access_token")
 	}
 	now := c.cfg.Now()
 	c.setToken(tok.AccessToken)
 	c.tokenExpiry = now.Add(refreshCadence(tok.ExpiresIn))
 	c.gen++
+	c.refreshFailures = 0
 	return string(c.tokenBytes), nil
 }
 
@@ -357,7 +382,7 @@ func (c *Client) refreshLocked(ctx context.Context) (string, error) {
 // sibling replicas sharing the credential.
 func (c *Client) forceRefreshLocked(ctx context.Context) (string, error) {
 	c.zeroToken()
-	return c.refreshLocked(ctx)
+	return c.refreshLocked(ctx, true)
 }
 
 // refreshAfterInvalidToken resolves a 401.003.01 under the generation guard.

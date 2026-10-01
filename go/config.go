@@ -89,7 +89,12 @@ func (c Config) MarshalJSON() ([]byte, error) {
 // ConsumerSecret must be ASCII-only (Python auth.py + TS auth.ts parity):
 // non-ASCII breaks Basic-auth encoding, which is defined over bytes, and
 // would otherwise produce gateway-dependent credential corruption.
+// ConsumerKey and ConsumerSecret must be non-empty (fail-fast at
+// construction, Python MpesaClient.__init__ + TS Config constructor parity).
 func (c Config) Validate() error {
+	if c.ConsumerKey == "" || c.ConsumerSecret == "" {
+		return fmt.Errorf("mpesa: Config.ConsumerKey and Config.ConsumerSecret are required")
+	}
 	if c.Shortcode != "" {
 		if ok, _ := regexp.MatchString(`^\d{5,10}$`, c.Shortcode); !ok {
 			return fmt.Errorf("mpesa: invalid shortcode %q: must be 5–10 digits", c.Shortcode)
