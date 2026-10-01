@@ -570,7 +570,7 @@ export class MpesaClient {
       const parsed = JSON.parse(body) as STKQueryResponse;
       // Normalize the string|number wire trap to string (parseAsyncResult
       // pattern) so callers always observe `ResultCode: string`.
-      return { ...parsed, ResultCode: String(parsed.ResultCode) };
+      return { ...parsed, ResultCode: String(parsed.ResultCode ?? "") };
     });
   }
 
