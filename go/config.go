@@ -85,6 +85,17 @@ func (c Config) MarshalJSON() ([]byte, error) {
 	})
 }
 
+// trustedBaseURLs is the allowlist of Daraja platform base URLs. The OAuth
+// leg ships the Basic-auth credential (consumer_key:consumer_secret) to
+// this host, so a non-allowlisted base URL must be rejected before any
+// network use — a confused-deputy base URL could otherwise harvest
+// credentials. Mirrors python/mpesa/auth.py _TRUSTED_BASE_URLS and
+// typescript/src/config.ts TRUSTED_BASE_URLS.
+var trustedBaseURLs = map[string]bool{
+	"https://sandbox.safaricom.co.ke": true,
+	"https://api.safaricom.co.ke":     true,
+}
+
 // Validate checks that the Config fields are well-formed. An empty Shortcode
 // is allowed (some APIs don't require one), but when present it must be 5–10
 // digits. ConsumerKey must not contain ':' — it becomes the Basic-auth
@@ -95,6 +106,8 @@ func (c Config) MarshalJSON() ([]byte, error) {
 // would otherwise produce gateway-dependent credential corruption.
 // ConsumerKey and ConsumerSecret must be non-empty (fail-fast at
 // construction, Python MpesaClient.__init__ + TS Config constructor parity).
+// The Environment's base URL must be in the trusted allowlist (Python
+// auth.py _TRUSTED_BASE_URLS + TS TRUSTED_BASE_URLS parity).
 func (c Config) Validate() error {
 	if c.ConsumerKey == "" || c.ConsumerSecret == "" {
 		return fmt.Errorf("mpesa: Config.ConsumerKey and Config.ConsumerSecret are required")
@@ -119,6 +132,16 @@ func (c Config) Validate() error {
 		if r > 0x7F {
 			return fmt.Errorf("mpesa: invalid ConsumerSecret: must be ASCII-only (non-ASCII breaks Basic-auth)")
 		}
+	}
+	// Trusted-URL allowlist: the OAuth leg sends the Basic-auth credential
+	// to Environment.BaseURL() — reject any non-allowlisted host before any
+	// network use. Trailing slashes are stripped before the membership test
+	// (Python auth.py parity). Environment.BaseURL() is derived from the
+	// Environment enum, so this is a defense-in-depth guard against future
+	// enum modifications or custom Environment values.
+	baseURL := strings.TrimRight(c.Environment.BaseURL(), "/")
+	if !trustedBaseURLs[baseURL] {
+		return fmt.Errorf("mpesa: refusing untrusted base_url %q (want https://sandbox.safaricom.co.ke or https://api.safaricom.co.ke)", baseURL)
 	}
 	return nil
 }
