@@ -45,10 +45,22 @@ jobs:
             echo "Skipping: head_branch is not develop"
             exit 0
           fi
-          AHEAD=$(gh api repos/${{ github.repository }}/compare/main...develop --jq '.ahead_by')
-          echo "develop ahead_by main: $AHEAD"
-          if [ "$AHEAD" = "0" ]; then
-            echo "Nothing to promote."
+          # Compare root TREE SHAs, not commit counts. A squash merge of develop
+          # into main gives the two branches identical file trees but completely
+          # different commit history, so `compare/main...develop` reports
+          # status=diverged with a non-zero ahead_by even though there is nothing
+          # to promote, and GitHub rejects the resulting PR with "No commits
+          # between main and develop". Root tree SHAs match exactly when the
+          # branches have the same content, regardless of history.
+          # NOTE: use /commits/{ref} (not /git/commits/{ref}) - the git data
+          # endpoint does not resolve branch names and returns 404, which would
+          # abort the job under `set -e`.
+          MAIN_TREE=$(gh api "repos/${{ github.repository }}/commits/main" --jq '.commit.tree.sha')
+          DEVELOP_TREE=$(gh api "repos/${{ github.repository }}/commits/develop" --jq '.commit.tree.sha')
+          echo "main tree:   $MAIN_TREE"
+          echo "develop tree: $DEVELOP_TREE"
+          if [ "$MAIN_TREE" = "$DEVELOP_TREE" ]; then
+            echo "Nothing to promote: main and develop have identical trees."
             exit 0
           fi
           EXISTING=$(gh pr list --head develop --base main --state open --json number --jq '.[0].number // empty')
