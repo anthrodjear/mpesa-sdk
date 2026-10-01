@@ -240,7 +240,10 @@ class OAuthToken(_Response):
     access_token: str = ""
     expires_in_seconds: int | None = None
 
-    _WIRE = {"access_token": "access_token", "expires_in_seconds": "expires_in"}
+    _WIRE = {
+        "access_token": "access_token",  # nosec B105  # JSON key name, not a credential
+        "expires_in_seconds": "expires_in",
+    }
     _COERCE = {"access_token": str, "expires_in_seconds": coerce_int}
 
     @classmethod
