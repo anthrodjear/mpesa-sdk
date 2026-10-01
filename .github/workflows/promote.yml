@@ -22,6 +22,7 @@ jobs:
       - name: Auto-open and auto-merge develop -> main
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           echo "Promote triggered by CI conclusion: ${{ github.event.workflow_run.conclusion }} on ${{ github.event.workflow_run.head_branch }} @ ${{ github.event.workflow_run.head_sha }}"
@@ -40,6 +41,11 @@ jobs:
             echo "No open develop->main PR, creating..."
             gh pr create --base main --head develop --title "chore: promote develop to main" --body "Auto-promotion: develop CI green (${{ github.event.workflow_run.head_sha }}). Merging develop into main via auto-merge."
             EXISTING=$(gh pr list --head develop --base main --state open --json number --jq '.[0].number // empty')
+            if [ -z "$EXISTING" ]; then
+              echo "ERROR: gh pr create reported success but no open develop->main PR was found." >&2
+              echo "       Refusing to continue with an empty PR number." >&2
+              exit 1
+            fi
             echo "Created PR #$EXISTING"
           else
             echo "Found existing open PR #$EXISTING"
