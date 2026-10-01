@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -677,7 +678,7 @@ func TestPartyBDefaultAndPassthrough(t *testing.T) {
 	}
 }
 
-// K4: zero-config clients fail with an actionable message before any network I/O.
+// K4: zero-config clients fail at construction time with an actionable message.
 func TestZeroConfigSurfacesActionableError(t *testing.T) {
 	totalHits := 0
 	mux := http.NewServeMux()
@@ -692,21 +693,10 @@ func TestZeroConfigSurfacesActionableError(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c, err := NewClient(Config{Environment: Sandbox})
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.baseURL = srv.URL
-
-	if _, err := c.Token(context.Background()); err == nil ||
+	_, err := NewClient(Config{Environment: Sandbox})
+	if err == nil ||
 		!strings.Contains(err.Error(), "Config.ConsumerKey and Config.ConsumerSecret are required") {
-		t.Fatalf("Token err = %v, want actionable config error", err)
-	}
-	req := validSTKPushRequest()
-	req.BusinessShortCode = testShortcode
-	if _, err := c.STKPush(context.Background(), req); err == nil ||
-		!strings.Contains(err.Error(), "Config.ConsumerKey and Config.ConsumerSecret are required") {
-		t.Fatalf("STKPush err = %v, want same actionable config error", err)
+		t.Fatalf("NewClient err = %v, want actionable config error", err)
 	}
 	if totalHits != 0 {
 		t.Fatalf("network hits = %d, want 0", totalHits)
@@ -981,7 +971,7 @@ func TestUnparseableBodyDiagnostics(t *testing.T) {
 // the no-redirect policy plus a timeout default when zero.
 func TestHTTPClientInjection(t *testing.T) {
 	injected := &http.Client{Timeout: 5 * time.Second}
-	c, err := NewClient(Config{Environment: Sandbox, HTTPClient: injected})
+	c, err := NewClient(Config{ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox, HTTPClient: injected})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -996,7 +986,7 @@ func TestHTTPClientInjection(t *testing.T) {
 		t.Error("injected client must inherit ErrUseLastResponse redirect policy")
 	}
 
-	def, err := NewClient(Config{Environment: Sandbox})
+	def, err := NewClient(Config{ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1004,7 +994,7 @@ func TestHTTPClientInjection(t *testing.T) {
 		t.Errorf("default timeout = %v, want %v", def.http.Timeout, defaultTimeout)
 	}
 	zero := &http.Client{}
-	c2, err := NewClient(Config{Environment: Sandbox, HTTPClient: zero})
+	c2, err := NewClient(Config{ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox, HTTPClient: zero})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1146,5 +1136,55 @@ func TestC2BAckRawMisspelledBytesThroughHTTP(t *testing.T) {
 	}
 	if ack.OriginatorConversationID != "raw-bytes-check" {
 		t.Fatalf("OriginatorConversationID = %q, want raw-bytes-check", ack.OriginatorConversationID)
+	}
+}
+
+// TestRefreshCadenceOverflowGuard verifies that refreshCadence does not
+// overflow when expires_in is near math.MaxInt64, and that the result is
+// always within [minCadence, maxCadence].
+func TestRefreshCadenceOverflowGuard(t *testing.T) {
+	const (
+		maxCadence = 50 * time.Minute
+		minCadence = time.Second
+		safety     = time.Minute
+	)
+
+	tests := []struct {
+		name     string
+		expiresIn FlexInt64
+		want     time.Duration
+	}{
+		// Normal values: TTL - 60s safety margin, clamped to [1s, 50min]
+		{"normal_3599s", FlexInt64(3599), maxCadence}, // 3539s > 50min, clamped
+		{"normal_3600s", FlexInt64(3600), maxCadence}, // 3540s > 50min, clamped
+		{"normal_120s", FlexInt64(120), 60 * time.Second},
+		{"normal_61s", FlexInt64(61), minCadence}, // 61-60=1s, clamped to minCadence
+		{"normal_60s", FlexInt64(60), minCadence}, // 60-60=0s, clamped to minCadence
+
+		// Edge: zero and negative fall back to maxCadence
+		{"zero", FlexInt64(0), maxCadence},
+		{"negative", FlexInt64(-1), maxCadence},
+
+		// Overflow guard: values near math.MaxInt64 must not overflow
+		{"max_int64", FlexInt64(math.MaxInt64), maxCadence},
+		{"max_int64_minus_1", FlexInt64(math.MaxInt64 - 1), maxCadence},
+		{"near_overflow_threshold", FlexInt64(math.MaxInt64 / int64(time.Second)), maxCadence},
+		{"just_above_threshold", FlexInt64(math.MaxInt64/int64(time.Second) + 1), maxCadence},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := refreshCadence(tc.expiresIn)
+			if got != tc.want {
+				t.Errorf("refreshCadence(%d) = %v, want %v", int64(tc.expiresIn), got, tc.want)
+			}
+			// Result must always be within [minCadence, maxCadence]
+			if got < minCadence {
+				t.Errorf("refreshCadence(%d) = %v, below minCadence %v", int64(tc.expiresIn), got, minCadence)
+			}
+			if got > maxCadence {
+				t.Errorf("refreshCadence(%d) = %v, above maxCadence %v", int64(tc.expiresIn), got, maxCadence)
+			}
+		})
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"sync"
@@ -291,6 +292,14 @@ func refreshCadence(expiresIn FlexInt64) time.Duration {
 	secs := int64(expiresIn)
 	if secs <= 0 {
 		return maxCadence
+	}
+	// Guard against integer overflow: time.Duration is int64 nanoseconds,
+	// so secs * time.Second overflows when secs > math.MaxInt64 / 1e9.
+	// Clamp to a safe maximum to prevent a negative duration that would
+	// bypass the minCadence floor and cause a refresh DoS.
+	const maxSecs = math.MaxInt64 / int64(time.Second)
+	if secs > maxSecs {
+		secs = maxSecs
 	}
 	d := time.Duration(secs)*time.Second - safety
 	if d < minCadence {
