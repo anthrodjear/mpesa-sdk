@@ -713,7 +713,7 @@ export class MpesaClient {
       QueueTimeOutURL: r.queueTimeOutURL,
       ResultURL: r.resultURL,
     };
-    if (r.occasion !== undefined) {
+    if (r.occasion) {
       payload["Occassion"] = r.occasion;
     }
 
@@ -788,7 +788,7 @@ export class MpesaClient {
     if (r.originalConversationID !== undefined) {
       payload["OriginalConversationID"] = r.originalConversationID;
     }
-    if (r.occasion !== undefined) {
+    if (r.occasion) {
       payload["Occasion"] = r.occasion;
     }
 
@@ -1008,7 +1008,7 @@ export class MpesaClient {
       Amount: r.amount,
       Msisdn: r.msisdn,
     };
-    if (r.billRefNumber !== undefined) {
+    if (r.billRefNumber) {
       payload["BillRefNumber"] = r.billRefNumber;
     }
 
