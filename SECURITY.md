@@ -2,13 +2,13 @@
 
 ## Supported Versions
 
-All three SDK engines are currently released as `0.1.x`. Security fixes are applied to the **latest release only** — older patch lines do not receive backports.
+All three SDK engines are currently released as `0.3.0`. Security fixes are applied to the **latest release only** — older patch lines do not receive backports.
 
 | Engine     | Path         | Version | Supported                          |
 |------------|--------------|---------|------------------------------------|
-| Go         | `go/`        | 0.1.x   | :white_check_mark: latest only     |
-| Python     | `python/`    | 0.1.x   | :white_check_mark: latest only     |
-| TypeScript | `typescript/`| 0.1.x   | :white_check_mark: latest only     |
+| Go         | `go/`        | 0.3.0   | :white_check_mark: latest only     |
+| Python     | `python/`    | 0.3.0   | :white_check_mark: latest only     |
+| TypeScript | `typescript/`| 0.3.0   | :white_check_mark: latest only     |
 
 ## Reporting a Vulnerability
 
