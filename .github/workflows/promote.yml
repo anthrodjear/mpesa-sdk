@@ -1,10 +1,32 @@
 name: Promote develop to main
 
 on:
+  # Trigger A - the ordinary path. A green CI run on this repository's own
+  # develop branch promotes develop to main and then syncs develop onto main.
   workflow_run:
     workflows: [CI]
     types: [completed]
     branches: [develop]
+
+  # Trigger B - the convergence net for the develop auto-sync.
+  #
+  # WHY THIS EXISTS. Trigger A only fires when a CI run on `develop` completes.
+  # The promotion PR's own CI run is the one most likely to complete, and if it
+  # completes BEFORE auto-merge lands, the merge itself produces no further
+  # `workflow_run` on develop. Nothing is left to fire, so the sync below never
+  # runs and develop stays "N commits behind main" indefinitely - which is
+  # precisely the misleading banner the sync exists to clear. The gate was
+  # "hope a later run happens to come along".
+  #
+  # A schedule makes convergence unconditional instead of incidental. Hourly,
+  # at minute 17 rather than :00, because every repository in every other
+  # repository's fleet uses :00 and the shared scheduler is badly contended at
+  # the top of the hour.
+  #
+  # The job guard below is written so this event reaches the sync without
+  # needing a `workflow_run.conclusion` that does not exist for a `schedule`.
+  schedule:
+    - cron: '17 * * * *'
 
 concurrency:
   group: promote-develop-main
@@ -16,71 +38,138 @@ permissions:
 
 jobs:
   promote:
-    # SECURITY: `head_repository.full_name == github.repository` is what makes this
-    # job safe on a public repo. `on.workflow_run.branches` filters on branch NAME
-    # only, and an attacker can name a branch in their own fork `develop` and
-    # open `attacker/mpesa-sdk:develop` -> `main`. Their PR runs their own tests
-    # (which they also control), goes green, fires this workflow, and without the
-    # repository check below the job would merge it with the maintainer's own
-    # PROMOTE_PAT. All three clauses are required; keep them together.
+    # SECURITY: `head_repository.full_name == github.repository` is what makes
+    # this job safe on a public repo. `on.workflow_run.branches` filters on
+    # branch NAME only, and an attacker can name a branch in their own fork
+    # `develop` and open `attacker/mpesa-sdk:develop` -> `main`. Their PR runs
+    # their own tests (which they also control), goes green, fires this
+    # workflow, and without the repository check below the job would merge it
+    # with the maintainer's own PROMOTE_PAT. All three workflow_run clauses are
+    # required; keep them together.
+    #
+    # The `schedule` disjunct is additive and does not weaken any of them: it
+    # cannot supply a conclusion, a head branch or a head repository, and the
+    # scheduled path below never opens or merges a pull request at all. It only
+    # runs the develop auto-sync. The fork guard still holds in full for every
+    # `workflow_run` event.
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'develop' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      github.event_name == 'schedule' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'develop' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
+    # Must comfortably exceed the longest path this job can take, so the
+    # verification wait always gets to report its own failure rather than being
+    # killed by the job timeout with nothing said. Budget:
+    #   PR discovery retry ..... 5 x 3s                 =  0.25 min
+    #   auto-merge arming ..... 10 attempts x 15s      ~  2.5 min + API latency
+    #   merge verification ... 12 min                   = 12    min
+    #   runner start + API latency headroom            ~  3    min
+    #   ------------------------------------------------------------------
+    #                                                     ~18 min
+    # 20 leaves the verification window inside the job timeout with room to
+    # spare. If this is ever lowered below ~16, the ::error:: on verification
+    # timeout stops being reachable and the job dies silently-cancelled instead.
+    timeout-minutes: 20
     # Prefer a fine-grained PAT: events created with GITHUB_TOKEN do NOT trigger
     # new workflow runs, so a PR opened with GITHUB_TOKEN never receives the
-    # required go/python/typescript checks and auto-merge stalls forever.
-    # PAT-created events DO trigger workflows. Fallback keeps the job visible
-    # (but non-promoting) if the secret is missing.
+    # required `required` check and auto-merge stalls forever. PAT-created
+    # events DO trigger workflows. Fallback keeps the job visible (but
+    # non-promoting) if the secret is missing.
     #
-    # SECURITY: GH_TOKEN is deliberately NOT set here. Job-level `env:` is injected
-    # into the environment of EVERY step in the job, so a `uses:` step added later
-    # would silently receive the PAT. The credential is declared on the single
-    # step that shells out to `gh`, so it exists for exactly one step. This job
-    # therefore permits NO `uses:` steps at all - if one is ever needed, the
-    # credential must be hoisted deliberately and reviewed, not inherited. The
-    # values left at job level (GH_REPO, PROMOTE_PAT_PRESENT) are not secrets.
+    # SECURITY: GH_TOKEN is deliberately NOT set here. Job-level `env:` is
+    # injected into the environment of EVERY step in the job, so a `uses:` step
+    # added later would silently receive the PAT. The credential is declared on
+    # the single step that shells out to `gh`, so it exists for exactly one
+    # step. This job therefore permits NO `uses:` steps at all - if one is ever
+    # needed, the credential must be hoisted deliberately and reviewed, not
+    # inherited. The values left at job level (GH_REPO, EVENT_NAME,
+    # PROMOTE_PAT_PRESENT) are not secrets.
     env:
       GH_REPO: ${{ github.repository }}
+      EVENT_NAME: ${{ github.event_name }}
       PROMOTE_PAT_PRESENT: ${{ secrets.PROMOTE_PAT != '' }}
     steps:
       - name: Guard - PROMOTE_PAT presence
         run: |
           if [ "$PROMOTE_PAT_PRESENT" != "true" ]; then
             echo "::warning::PROMOTE_PAT is not set. Falling back to GITHUB_TOKEN, which CANNOT promote."
-            echo "::warning::Events created by GITHUB_TOKEN do not trigger workflow runs, so the develop->main PR will never get the required go/python/typescript checks and auto-merge will stall indefinitely."
+            echo "::warning::Events created by GITHUB_TOKEN do not trigger workflow runs, so the develop->main PR will never get the required \`required\` check and auto-merge will stall indefinitely."
             echo "::warning::Create a fine-grained PAT (contents:write + pull-requests:write, scoped to this repository only) and store it as the repo secret PROMOTE_PAT."
           else
             echo "PROMOTE_PAT present - promotion events will trigger CI checks."
           fi
-      - name: Auto-open and auto-merge develop -> main
-        # GH_TOKEN is scoped to THIS step alone (see the job comment: no `uses:`
-        # steps are permitted here, or the PAT would become job-scoped again).
+      - name: Promote and/or sync
+        # GH_TOKEN is scoped to THIS step alone (see the job comment: no
+        # `uses:` steps are permitted here, or the PAT would become job-scoped
+        # again).
         #
-        # The workflow_run values are passed as environment variables, never
+        # The event values are passed as environment variables, never
         # interpolated into the script text. `${{ }}` is substituted textually
-        # BEFORE the shell parses the script, so an expression inside `run:` is a
-        # command-injection pattern. Referencing "$HEAD_BRANCH" cannot inject.
+        # BEFORE the shell parses the script, so an expression inside `run:` is
+        # a command-injection pattern. Referencing "$HEAD_BRANCH" cannot
+        # inject.
         env:
           GH_TOKEN: ${{ secrets.PROMOTE_PAT || secrets.GITHUB_TOKEN }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
         run: |
           set -euo pipefail
-          echo "Promote triggered by CI conclusion: $CONCLUSION on $HEAD_BRANCH @ $HEAD_SHA"
-          if [ "$HEAD_BRANCH" != "develop" ]; then
-            echo "Skipping: head_branch is not develop"
-            exit 0
+          echo "Event: $EVENT_NAME  conclusion: ${CONCLUSION:-<none>}  head: ${HEAD_REPO:-<none>}/${HEAD_BRANCH:-<none>} @ ${HEAD_SHA:-<none>}"
+
+          # -------------------------------------------------------------------
+          # Defense in depth. The job-level `if:` is the first gate; this is the
+          # second and it reads the same values, so a later edit to one of them
+          # does not silently open the other. A `workflow_run` event that is not
+          # a green CI run on this repository's own develop branch must never
+          # promote, and must never be reported as a pass.
+          # -------------------------------------------------------------------
+          if [ "$EVENT_NAME" != "schedule" ]; then
+            if [ "${CONCLUSION:-}" != "success" ]; then
+              echo "::warning::CI conclusion is '${CONCLUSION:-<none>}', not 'success'. Not promoting."
+              exit 0
+            fi
+            if [ "${HEAD_BRANCH:-}" != "develop" ]; then
+              echo "::warning::head_branch is '${HEAD_BRANCH:-<none>}', not 'develop'. Not promoting."
+              exit 0
+            fi
+            if [ "${HEAD_REPO:-}" != "$GH_REPO" ]; then
+              echo "::warning::head repository '${HEAD_REPO:-<none>}' is not '$GH_REPO'. Not promoting."
+              exit 0
+            fi
           fi
-          # Compare root TREE SHAs, not commit counts. A squash merge of develop
-          # into main gives the two branches identical file trees but completely
-          # different commit history, so `compare/main...develop` reports
-          # status=diverged with a non-zero ahead_by even though there is nothing
-          # to promote, and GitHub rejects the resulting PR with "No commits
-          # between main and develop". Root tree SHAs match exactly when the
-          # branches have the same content, regardless of history.
+
+          # Compare root TREE SHAs, not commit counts, to decide whether there
+          # is anything to promote.
+          #
+          # THE REAL INVARIANT, and why tree equality is not the same thing:
+          # the develop auto-sync below can only move develop onto main if
+          # `main` is a DESCENDANT of `develop`. That is a statement about the
+          # commit graph, and it is asserted below from `compare`'s status
+          # rather than inferred from the trees matching.
+          #
+          # This promotion uses `--merge`, not `--squash`. A merge commit M has
+          # develop's tip as one of its two parents, so M - and therefore main -
+          # IS a descendant of develop, and develop can be fast-forwarded onto
+          # it. That is what makes the sync possible, and it is why the merge
+          # method here is load-bearing rather than cosmetic.
+          #
+          # A squash merge would produce a brand-new single-parent commit on
+          # main that no branch points at, so main would stop being a descendant
+          # of develop, `compare` would report `diverged`, and develop could
+          # never be fast-forwarded onto main again. The old comment here
+          # claimed a squash merge happened and that identical trees therefore
+          # guaranteed a fast-forward; both halves of that were wrong, and the
+          # second one is exactly the assumption that turns a permanent,
+          # unrecoverable-automation state into a green checkmark.
+          #
+          # Tree SHAs still answer the first question cleanly: two root trees
+          # match exactly when the two branches hold the same content,
+          # regardless of history, which is the only thing "is there anything to
+          # promote" needs.
+          #
           # NOTE: use /commits/{ref} (not /git/commits/{ref}) - the git data
           # endpoint does not resolve branch names and returns 404, which would
           # abort the job under `set -e`.
@@ -94,11 +183,11 @@ jobs:
           # -------------------------------------------------------------------
           # develop auto-sync (identical trees only, and BEFORE the PR stage)
           #
-          # WHY this exists: a promotion squash-merges develop into main, so
-          # main ends up holding a commit develop does not contain. The file
-          # trees are then byte-identical while the commit graphs are not, and
-          # GitHub renders develop as "N commits behind main" - which reads like
-          # unreviewed work is queued on develop when in fact every develop
+          # WHY this exists: a promotion MERGE-commits develop into main, so
+          # main ends up holding a merge commit develop does not point at. The
+          # file trees are then byte-identical while the commit graphs are not,
+          # and GitHub renders develop as "N commits behind main" - which reads
+          # like unreviewed work is queued on develop when in fact every develop
           # commit is already live on main. Fast-forwarding develop's ref onto
           # main's SHA clears that misleading banner. This is its only purpose.
           #
@@ -114,11 +203,10 @@ jobs:
           # the promotion PR to reach MERGED before syncing. That raced the
           # asynchronous auto-merge - `gh pr merge --auto` only arms the merge,
           # which fires later when the required checks go green and can easily
-          # exceed any sane wait. On timeout the sync silently never happened
-          # and there was no later retry, so the banner stayed uncleared
-          # indefinitely. This run starts right after the previous promotion
-          # merged, which is exactly when the trees are identical and develop
-          # needs catching up, so there is nothing to wait for.
+          # exceed any sane wait. On timeout the sync silently never happened.
+          # The verification wait added at the end of this step solves that
+          # race properly, and the `schedule:` trigger means the sync no longer
+          # depends on this workflow running at the right moment anyway.
           #
           # No actions/checkout and no local git: the ref moves in a single
           # PATCH to the git refs API, which needs only contents:write.
@@ -129,10 +217,9 @@ jobs:
             read -r STATUS AHEAD BEHIND <<< "$BEFORE"
             echo "compare main...develop (before sync): ${BEFORE}"
 
-            # Only a strict "behind" with 0 ahead offers a fast-forward to
-            # attempt. "identical" means there is nothing to move; anything else
-            # (ahead / diverged) means main is not a descendant of develop, so
-            # force=false would refuse anyway - do not spend a request on it.
+            # `identical`: there is nothing to move. The scheduled path lands
+            # here on most hours, so this must be a clean, side-effect-free
+            # exit 0 - it is the job being idempotent, not a near miss.
             if [ "$STATUS" = "identical" ]; then
               echo "develop is already at main - no sync needed."
               {
@@ -145,12 +232,65 @@ jobs:
               } >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-            if [ "$STATUS" != "behind" ] || [ "$AHEAD" != "0" ]; then
-              echo "::warning::compare main...develop is '${STATUS}' (ahead_by=${AHEAD}) - no clean fast-forward to main exists. Leaving develop untouched."
+
+            # `diverged` with byte-identical trees is not a transient state, it
+            # is an unsatisfiable one, and treating it as a warning is how it
+            # hides.
+            #
+            # `diverged` means each branch has commits the other does not, so
+            # main is NOT a descendant of develop. develop therefore cannot be
+            # fast-forwarded onto main, and no amount of waiting or retrying
+            # changes that - it is a property of the commit graph. Only a merge
+            # commit (or a rebase) on develop can restore the descendant
+            # relationship. Reporting a pass here is actively harmful: it says
+            # the sync is healthy while guaranteeing every future sync will
+            # also do nothing, and the "N behind main" banner stays forever
+            # with nothing pointing at the cause.
+            if [ "$STATUS" = "diverged" ]; then
+              echo "::error::compare main...develop is 'diverged' with byte-identical trees. main is not a descendant of develop, so develop can never be fast-forwarded onto main and this state will not resolve on its own."
+              echo "::error::Resolve it with a merge commit on develop (merge main into develop, or merge develop into main and then fast-forward), after which the sync will work again."
               {
                 echo "### develop auto-sync"
                 echo ""
-                echo "- Outcome: **skipped - no fast-forward available**"
+                echo "- Outcome: **FAILED - develop cannot fast-forward to main**"
+                echo "- compare main...develop: \`${BEFORE}\` (ahead_by=${AHEAD}, behind_by=${BEHIND})"
+                echo "- trees are identical (\`${MAIN_TREE}\`), so this is not a content conflict."
+                echo "- \`diverged\` means \`main\` is **not a descendant of \`develop\`**, so develop cannot be fast-forwarded onto main. The state is permanent."
+                echo "- **Required action:** merge \`main\` into \`develop\` to restore the descendant relationship. Until then every sync is a no-op."
+                echo "- develop was **not** modified."
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+
+            # `ahead`: develop has commits main lacks, yet the trees match. That
+            # means the extra commits changed no files (an empty or merge-only
+            # commit), so there is genuinely nothing to promote and develop does
+            # not need catching up - it is already ahead. Reachable only
+            # transiently, so a warning and a clean exit is the right answer
+            # here; a later run on main will fast-forward develop forward.
+            if [ "$STATUS" = "ahead" ]; then
+              echo "::warning::compare main...develop is 'ahead' (ahead_by=${AHEAD}) with identical trees - develop has commits that changed no files, so there is nothing to promote and develop does not need catching up. Leaving develop untouched."
+              {
+                echo "### develop auto-sync"
+                echo ""
+                echo "- Outcome: **no-op - develop is ahead of main**"
+                echo "- compare main...develop: \`${BEFORE}\` (ahead_by=${AHEAD}, behind_by=${BEHIND})"
+                echo "- trees are identical, so the extra commits change no files and there is nothing to promote."
+                echo "- develop was **not** modified."
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+
+            # The only remaining way to sync is a strict "behind" with 0 ahead,
+            # which is exactly the main-is-a-descendant-of-develop condition.
+            if [ "$STATUS" != "behind" ] || [ "$AHEAD" != "0" ]; then
+              echo "::warning::compare main...develop is '${STATUS}' (ahead_by=${AHEAD}) - unrecognised shape, leaving develop untouched."
+              {
+                echo "### develop auto-sync"
+                echo ""
+                echo "- Outcome: **skipped - unrecognised compare status**"
                 echo "- compare main...develop: \`${BEFORE}\` (ahead_by=${AHEAD}, behind_by=${BEHIND})"
                 echo "- develop was **not** modified."
                 echo ""
@@ -158,7 +298,7 @@ jobs:
               exit 0
             fi
 
-            echo "Trees identical and develop is ${BEHIND} commit(s) behind main with 0 ahead. Fast-forwarding."
+            echo "Trees identical and develop is ${BEHIND} commit(s) behind main with 0 ahead - main is a descendant of develop. Fast-forwarding."
             echo "develop ${DEVELOP_SHA} -> ${MAIN_SHA}"
 
             # Fail loud on purpose: under `set -euo pipefail` a rejected sync
@@ -190,7 +330,29 @@ jobs:
           # Trees DIFFER: develop holds genuine unreviewed work that was never
           # promoted. Do NOT sync - moving develop onto main there could discard
           # that work. This is the normal promotion path.
-          echo "Trees differ: develop holds work that was never promoted. Opening the promotion PR (no sync)."
+          echo "Trees differ: develop holds work that was never promoted."
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            # The scheduled run exists to converge the SYNC, not to promote.
+            # Promotion already has a guaranteed trigger: every green CI run on
+            # develop fires this workflow. Opening a promotion PR from a timer
+            # would add a second, unmonitored path to arm auto-merge on a merge
+            # into main, and would re-arm (and re-verify) on every hour for as
+            # long as any promotion PR stayed open. So the scheduled path stops
+            # here, loudly, and does nothing.
+            echo "::notice::Scheduled run: develop holds work that is not yet on main, so there is nothing to sync. Promotion is driven by the workflow_run trigger, which fires on every green CI run on develop. No pull request opened, no merge armed."
+            {
+              echo "### develop auto-sync"
+              echo ""
+              echo "- Outcome: **no-op - develop has work main does not**"
+              echo "- main    tree \`${MAIN_TREE}\`"
+              echo "- develop tree \`${DEVELOP_TREE}\`"
+              echo "- Nothing was synced and no promotion pull request was opened. Promotion runs from the \`workflow_run\` trigger on a green CI run on \`develop\`, so this is already covered."
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "Opening the promotion PR (no sync)."
+
           # SECURITY: never look this PR up by branch name alone. `gh pr list
           # --head develop` matches on NAME only and does not restrict to this
           # repository, so on a public repo it happily returns an attacker's fork
@@ -255,7 +417,7 @@ jobs:
           else
             # WHY THIS RETRIES: `gh pr create` returns as soon as the PR exists,
             # but GitHub then needs a moment to register the required status
-            # checks (go / python / typescript) on the new head commit. A
+            # checks (the `required` aggregate) on the new head commit. A
             # freshly created PR has NOT yet had its required checks registered,
             # so a `gh pr merge --auto` issued inside that window is rejected as
             # a ruleset violation ("GraphQL: Repository rule violations found").
@@ -301,6 +463,92 @@ jobs:
             done
           fi
           {
-            echo "- Auto-merge enable attempts on PR #$EXISTING: **${AUTO_MERGE_ATTEMPTS}** (limit ${MERGE_MAX_ATTEMPTS}, ${MERGE_RETRY_SECONDS}s apart)"
+            echo "### develop -> main promotion"
+            echo ""
+            echo "- PR: #$EXISTING"
+            echo "- Auto-merge enable attempts: **${AUTO_MERGE_ATTEMPTS}** (limit ${MERGE_MAX_ATTEMPTS}, ${MERGE_RETRY_SECONDS}s apart)"
+            echo "- Auto-merge was **armed**. Arming is not merging - the merge outcome is verified below."
+            echo ""
           } >> "$GITHUB_STEP_SUMMARY"
           gh pr view "$EXISTING" --json number,autoMergeRequest,state,mergeable
+
+          # -------------------------------------------------------------------
+          # Verify the merge ACTUALLY HAPPENED.
+          #
+          # `gh pr merge --auto` only arms auto-merge. Everything above proves
+          # the request to arm it was accepted, which is not the same claim as
+          # "develop reached main". If the required checks never all go green -
+          # CI fails to start, a check context is filtered out by path, the
+          # queue is cancelled, a `required` job is skipped rather than failed -
+          # auto-merge simply sits armed forever. Before this wait existed the
+          # job reported success in exactly that case, so a permanently stalled
+          # promotion looked identical to a successful one. The failure mode
+          # was invisible precisely when it mattered most.
+          #
+          # This is a separate, subsequent concern from the arming retry above
+          # and deliberately so: the retry above is about the arm request
+          # being refused, this is about the armed merge never firing.
+          # -------------------------------------------------------------------
+          VERIFY_WAIT_SECONDS=720
+          VERIFY_POLL_SECONDS=30
+          VERIFY_DEADLINE=$(( $(date +%s) + VERIFY_WAIT_SECONDS ))
+          LAST_STATE=""
+          while :; do
+            PR_STATE_JSON=$(gh pr view "$EXISTING" --json state,mergedAt --jq '"\(.state)|\(.mergedAt // "")"')
+            IFS='|' read -r PR_STATE MERGED_AT <<< "$PR_STATE_JSON"
+            if [ "$PR_STATE" != "$LAST_STATE" ]; then
+              if [ -n "$MERGED_AT" ]; then
+                echo "    promotion state -> $PR_STATE (mergedAt $MERGED_AT)"
+              else
+                echo "    promotion state -> $PR_STATE"
+              fi
+              LAST_STATE="$PR_STATE"
+            fi
+
+            if [ "$PR_STATE" = "MERGED" ]; then
+              echo "PR #$EXISTING is MERGED (mergedAt ${MERGED_AT:-unknown}). Promotion confirmed."
+              {
+                echo "- Verification: **merged** at \`${MERGED_AT:-unknown}\`"
+                echo "- develop reached main; the next green CI run on develop (or the next scheduled run) clears any remaining behind-banner."
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
+              break
+            fi
+
+            # Closed without merging is not a slow merge, it is a dead one.
+            if [ "$PR_STATE" = "CLOSED" ]; then
+              echo "::error::PR #$EXISTING was CLOSED without merging, ${SECONDS}s after auto-merge was armed. Auto-merge will never fire on a closed PR, so this promotion did not happen."
+              {
+                echo "- Verification: **FAILED - PR closed without merging**"
+                echo "- Auto-merge was armed but the PR is CLOSED, so it can never merge. Re-run the promotion or merge manually."
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+
+            NOW=$(date +%s)
+            REMAINING=$(( VERIFY_DEADLINE - NOW ))
+            if [ "$REMAINING" -le 0 ]; then
+              echo "::error::Auto-merge was armed on PR #$EXISTING and the PR is still ${PR_STATE} after ${VERIFY_WAIT_SECONDS}s (0s remaining). The required checks never all went green, so the merge will not happen on its own and this promotion is stalled, not succeeded."
+              echo "LAST observed PR state: $PR_STATE${MERGED_AT:+ (mergedAt $MERGED_AT)}"
+              log_check_registration
+              {
+                echo "- Verification: **FAILED - timed out after ${VERIFY_WAIT_SECONDS}s with 0s remaining**"
+                echo "- PR #$EXISTING is still \`${PR_STATE}\`. Auto-merge is armed but the required checks are not all green, so the merge will not fire."
+                echo "- This is a stalled promotion, not a successful one. Investigate the required checks on the PR head before re-running."
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+
+            echo "    still ${PR_STATE} - ${REMAINING}s of the ${VERIFY_WAIT_SECONDS}s budget remaining, sleeping ${VERIFY_POLL_SECONDS}s"
+            # Never sleep past the deadline, so the timeout branch above is the
+            # thing that fires and not an overshoot. `if` rather than `&&`
+            # because a false `&&` chain is a failing statement under `set -e`.
+            SLEEP_FOR=$VERIFY_POLL_SECONDS
+            if [ "$SLEEP_FOR" -gt "$REMAINING" ]; then
+              SLEEP_FOR=$REMAINING
+            fi
+            sleep "$SLEEP_FOR"
+          done
+          echo "Promotion complete."

@@ -3,10 +3,57 @@ name: Dependabot Auto-Merge
 # Auto-merges ONLY patch bumps of development dependencies into `develop`.
 # Everything else -- production dependency patches, all minors, all majors --
 # is left untouched for manual owner review.
+#
+# ===========================================================================
+# WHY THIS IS TRIGGERED BY `workflow_run` AND NOT BY `pull_request`
+# ===========================================================================
+#
+# The bug this file used to have: a Dependabot-triggered workflow runs with a
+# read-only `GITHUB_TOKEN` and NO access to repository secrets. So
+# `secrets.PROMOTE_PAT` was always the empty string here, the comment on the
+# merge step described a fallback chain that could never execute, and
+# `gh pr merge --auto` could not arm auto-merge at all - a read-only token
+# cannot act. The job failed on every Dependabot PR, permanently.
+#
+# `pull_request_target` is NOT the fix, and the reason matters. It would make
+# the secret reachable, and it would also make this the canonical "pwn
+# request" shape: a workflow that holds a write credential and is scoped to a
+# pull request. Any `uses:` step added to this job later - a cache action, a
+# linter, anything - would silently inherit the PAT and execute
+# attacker-controlled code from the PR with it. That trades a correctness bug
+# for a critical secret exposure.
+#
+# The fix used here is to re-trigger from CI instead. A `workflow_run` workflow
+# runs from the base repository's default-branch ref: it gets full secret
+# access, and - the part that makes it safe - it is NOT scoped to the pull
+# request. This job never checks out and never executes anything from the PR;
+# it only reads metadata about the PR through the API and arms auto-merge. The
+# untrusted PR head is never code that this workflow runs.
+#
+# Two more consequences worth stating:
+#
+#   * `branches:` is deliberately ABSENT from the `workflow_run` filter. A
+#     branch filter would be matched against the CI run's head branch, which
+#     for a Dependabot PR is `dependabot/<ecosystem>/<dir>/<name>-<version>`.
+#     Filtering on `develop` would mean the trigger never fires at all.
+#   * The `conclusion == 'success'` guard below is what makes this a CI-gated
+#     auto-merge rather than an auto-merge that races CI. Because `ci.yml`'s
+#     `required` job aggregates go/python/typescript/security and fails the
+#     workflow if any of them did not succeed, a `success` conclusion on the
+#     triggering run is proof that all four passed on this exact head SHA.
+#     `conclusion` is one of success / failure / cancelled / skipped /
+#     timed_out / action_required / neutral / stale, and this guard is a strict
+#     equality against `success` - so none of the other values can let a merge
+#     through, and none of them can silently skip the job either.
 on:
-  pull_request:
-    branches: [develop]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
+# `pull-requests: write` is what enabling auto-merge requires. `contents: write`
+# is kept because the merge is performed asynchronously by GitHub's auto-merge
+# service once the required checks go green, and GitHub's own documented
+# auto-merge configuration grants both.
 permissions:
   contents: write
   pull-requests: write
@@ -14,52 +61,490 @@ permissions:
 jobs:
   dependabot:
     runs-on: ubuntu-latest
-    # Dependabot-authored only, and never into `main` -- updates must land on
-    # develop first and be promoted by promote.yml after CI passes.
-    if: github.actor == 'dependabot[bot]' && github.base_ref == 'develop'
+
+    # Every clause is required; keep them together.
+    #
+    #   conclusion == success .... the PR's CI must be green (see header)
+    #   event == pull_request ... a push run has no pull request at all, so
+    #                             this also rejects pushes to main/develop
+    #   actor == dependabot[bot]  only Dependabot's own pushes qualify. A
+    #                             human re-running CI on a dependabot/* branch
+    #                             is deliberately not accepted: only Dependabot
+    #                             updating its own PR should arm its auto-merge.
+    #                             This is also why a human-authored PR can never
+    #                             match - its CI runs carry the human as actor.
+    #   head_repository .......... SECURITY, and the reason this file is not
+    #                             `pull_request_target`. `workflow_run` does
+    #                             not filter on base-repo-ness, so a fork PR
+    #                             named anything at all can fire this workflow.
+    #                             A fork head must never reach a merge call
+    #                             made with a credential that can write.
+    #
+    # The base-branch condition is NOT here, and that is deliberate rather than
+    # an omission: a `workflow_run` payload has no base-branch field. The
+    # closest candidate, `workflow_run.pull_requests[0].base.ref`, is populated
+    # as an EMPTY ARRAY - verified against every one of the last 100 workflow
+    # runs in this repository, including every `pull_request`-triggered one, via
+    # `GET /repos/{owner}/{repo}/actions/runs/{id}`. A clause reading it would
+    # compare `null` to 'develop', be permanently false, and turn this workflow
+    # into a job that never runs - the same silent-green failure this rewrite
+    # exists to remove.
+    #
+    # So the base branch is asserted where it can actually be read: step 1
+    # re-derives the pull request and checks `.base.ref` on the PR object
+    # itself, which is authoritative and cannot be stale. Dependabot PRs
+    # targeting `main` are a real historical occurrence in this repository
+    # (PRs #1-#13), so that check skips with a visible notice rather than
+    # failing the job.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+
+    # SECURITY: the PAT appears on exactly ONE step - the one that calls
+    # `gh pr merge` - and this job holds NO `uses:` steps at all, so a future
+    # third-party action cannot inherit it. The two read-only steps below use
+    # the automatic `${{ github.token }}` instead: they only read pull request
+    # and file metadata, and giving them a write credential would be a strictly
+    # larger blast radius for no benefit. The job-level values here are not
+    # secrets.
+    env:
+      GH_REPO: ${{ github.repository }}
+      # `${{ }}` is substituted textually BEFORE the shell parses the script,
+      # so an expression inside `run:` is a command-injection pattern. Every
+      # event value is passed as an environment variable and read as
+      # "$HEAD_SHA"; a SHA cannot inject, a `${{ }}` in the script body can.
+      RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+      RUN_EVENT: ${{ github.event.workflow_run.event }}
+      RUN_ACTOR: ${{ github.event.workflow_run.actor.login }}
+      HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+
     steps:
-      - name: Fetch Dependabot metadata
-        id: metadata
-        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+      # ---------------------------------------------------------------------
+      # Step 1 - re-derive the pull request, and re-assert every guard.
+      #
+      # The job-level `if:` is an optimisation and a first line of defence, not
+      # the security boundary. The query below is the boundary, and it mirrors
+      # what promote.yml does: select on the pinned triple of head repository,
+      # head ref and head SHA. Selecting on branch name alone would be wrong
+      # twice over - an attacker can name a fork branch identically, and a
+      # name-only match does not pin WHICH commit was reviewed.
+      # ---------------------------------------------------------------------
+      - name: Resolve the Dependabot pull request
+        id: resolve
+        env:
+          # `gh` needs a token, but this step only READS. The automatic
+          # installation token is sufficient, and keeping the PAT off this step
+          # keeps exactly one step in the job holding a write credential.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "CI run: conclusion=$RUN_CONCLUSION event=$RUN_EVENT actor=$RUN_ACTOR"
+          echo "CI head: $HEAD_REPO $HEAD_BRANCH @ $HEAD_SHA"
 
-      # Both conditions are required, combined in a single step-level `if:`:
-      #   semver-patch -> excludes minor 1.x.0 and major x.0.0 bumps
-      #   development  -> excludes production runtime deps (python
-      #                  requests/cryptography). TypeScript is devDependencies
-      #                  only and Go is stdlib only, so those are safe to
-      #                  auto-merge; production runtime deps are not.
+          # Reports the skip in the job summary and then exits 0. It also sets
+          # an output so the Summary step below knows the reason has already
+          # been reported and does not print a second, vaguer version of it.
+          skip() {
+            echo "::notice::Skipped: $1"
+            printf '### Dependabot auto-merge: SKIPPED\n\nPR #%s: %s\n\nNothing was merged.\n' "${PR_NUMBER:-unknown}" "$1" >> "$GITHUB_STEP_SUMMARY"
+            echo "out_of_scope=$1" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          # Re-asserted here as well as in `if:`. A `workflow_run` job that
+          # reaches this script with a non-success conclusion, a non-Dependabot
+          # actor, or a foreign head repository exits without touching a PR.
+          if [ "$RUN_CONCLUSION" != "success" ]; then
+            echo "::error::Triggering CI run concluded '$RUN_CONCLUSION', not 'success'. Refusing to act."
+            exit 1
+          fi
+          if [ "$RUN_EVENT" != "pull_request" ]; then
+            echo "::error::Triggering CI run was a '$RUN_EVENT' event, not 'pull_request'. Refusing to act."
+            exit 1
+          fi
+          if [ "$RUN_ACTOR" != "dependabot[bot]" ]; then
+            echo "::error::Triggering CI run was authored by '$RUN_ACTOR', not dependabot[bot]. Refusing to act."
+            exit 1
+          fi
+          if [ "$HEAD_REPO" != "$GH_REPO" ]; then
+            echo "::error::SECURITY: head repository '$HEAD_REPO' is not '$GH_REPO'. A fork must never reach a merge call."
+            exit 1
+          fi
+
+          # Retried because the CI run can complete a moment before the PR is
+          # queryable at that exact head SHA (index propagation lag). Same
+          # bounded pattern as the gh-pr-create retry in promote.yml, and it
+          # re-runs the SAME pinned query - a relaxed lookup on retry would
+          # reopen the hole the pinning closes.
+          PR_NUMBER=""
+          for attempt in 1 2 3 4 5; do
+            PR_NUMBER=$(gh api -X GET "repos/$GH_REPO/pulls" -f state=open -f base=develop \
+              -f head="$HEAD_BRANCH" -f per_page=100 \
+              --jq "map(select(.head.repo.full_name == \"$GH_REPO\" and .head.ref == \"$HEAD_BRANCH\" and .head.sha == \"$HEAD_SHA\")) | .[0].number // empty")
+            if [ -n "$PR_NUMBER" ]; then
+              break
+            fi
+            echo "No open PR matches repo+ref+sha yet (attempt $attempt/5), retrying in 5s..."
+            sleep 5
+          done
+          if [ -z "$PR_NUMBER" ]; then
+            echo "::error::CI concluded green on $HEAD_SHA but no open PR in $GH_REPO has that head repository, head ref and head SHA with base 'develop'. Refusing to guess which PR was meant."
+            exit 1
+          fi
+
+          # Re-read the PR from the API and assert the invariants against the
+          # PR object itself, not just against the event payload. The payload
+          # and the PR can disagree, and only the PR is what will be merged.
+          PR_INFO=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" \
+            --jq '"\(.user.login)|\(.base.ref)|\(.head.ref)|\(.head.sha)|\(.head.repo.full_name)|\(.html_url)"')
+          IFS='|' read -r PR_AUTHOR PR_BASE_REF PR_HEAD_REF PR_HEAD_SHA PR_HEAD_REPO PR_URL <<< "$PR_INFO"
+          PR_BASE_SHA=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.base.sha')
+          echo "PR #$PR_NUMBER by $PR_AUTHOR: $PR_HEAD_REF -> $PR_BASE_REF @ ${PR_HEAD_SHA:0:7}"
+          echo "PR base SHA: $PR_BASE_SHA"
+          echo "PR URL: $PR_URL"
+
+          # Scope checks, not security checks: a PR that simply is not one this
+          # workflow handles is skipped loudly and the job stays green, so a
+          # routine out-of-scope Dependabot PR does not page anyone.
+          if [ "$PR_AUTHOR" != "dependabot[bot]" ]; then
+            skip "the pull request is authored by '$PR_AUTHOR', not dependabot[bot]"
+          fi
+          if [ "$PR_BASE_REF" != "develop" ]; then
+            skip "the pull request targets '$PR_BASE_REF', not 'develop'. Dependency updates belong on develop and are promoted onward to main by promote.yml; a PR aimed straight at main is out of scope here."
+          fi
+          # Security: a fork must never reach a merge call made with a
+          # credential that can write.
+          if [ "$PR_HEAD_REPO" != "$GH_REPO" ]; then
+            echo "::error::SECURITY: PR #$PR_NUMBER head repository '$PR_HEAD_REPO' is not '$GH_REPO'. A fork must never reach a merge call."
+            exit 1
+          fi
+          # Unreachable given the pinned query above, which selects on this
+          # same SHA. Kept as an explicit invariant: if it ever fires, the
+          # query and the review are looking at different commits.
+          if [ "$PR_HEAD_SHA" != "$HEAD_SHA" ]; then
+            echo "::error::PR #$PR_NUMBER head moved to ${PR_HEAD_SHA:0:7} after the CI run on ${HEAD_SHA:0:7} was triggered. That commit has not been reviewed; refusing to act."
+            exit 1
+          fi
+
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "pr_base_sha=$PR_BASE_SHA" >> "$GITHUB_OUTPUT"
+
+      # ---------------------------------------------------------------------
+      # Step 2 - classify the update.
+      #
+      # DEVIATION FROM THE ORIGINAL DESIGN, AND WHY IT IS UNAVOIDABLE.
+      #
+      # This step used to be `uses: dependabot/fetch-metadata@25dd0e3 (v3.1.0)`.
+      # That action cannot run here. Its first real statement is
+      # `const { pull_request: pr } = context.payload`, and when that is
+      # missing it warns, returns false, and the action turns that into
+      # `core.setFailed('PR is not from Dependabot, nothing to do.')`. A
+      # `workflow_run` payload has no `pull_request` key, so the action fails
+      # on every run in this file. It has no `pull-request-number` input in any
+      # released version (checked v3.1.0 and main) and no way to be pointed at
+      # a PR from outside a pull-request context, so there is no configuration
+      # of it that works under this trigger. The only trigger that would make
+      # it work is `pull_request_target`, which is refused above for good
+      # reason.
+      #
+      # So the two values it used to produce are derived here instead, from the
+      # Dependabot PR itself, and every path that cannot decide fails closed:
+      # an unparseable or unrecognised shape skips the merge and says so. The
+      # merge gate in step 3 is unchanged, and it is applied to these values
+      # exactly as it was applied to the action's outputs.
+      #
+      # One thing deliberately NOT done here: parsing anything below the
+      # description. Dependabot embeds upstream release notes in the body, and
+      # those routinely contain sentences of the form "from 1.2.3 to 1.3.0"
+      # belonging to some other project's changelog. Reading the whole body
+      # would mix those in - verified: the real body of PR #18 yields four
+      # "from X to Y" pairs in total, only one of which is Dependabot's own.
+      # Only the preamble Dependabot itself writes, before the first <details>
+      # block, is parsed.
+      #
+      # Two behaviours worth knowing about, both failing closed:
+      #   * A prerelease transition (1.2.3-rc.1 -> 1.2.3-rc.2) reduces to
+      #     "no change" and is therefore not classified as a patch. Dependabot
+      #     is not configured with allow-prereleases in .github/dependabot.yml,
+      #     so it does not raise those; if it ever does, they are skipped
+      #     rather than merged.
+      #   * A pull request that changes only files this step cannot classify is
+      #     skipped. That includes `github-actions` bumps, which land in
+      #     .github/workflows/: an unattended patch bump of an action in the CI
+      #     pipeline is a supply-chain change, and the old behaviour depended on
+      #     however dependabot/fetch-metadata happened to label that ecosystem.
+      #     Skipping them is deliberate.
+      #
+      # `jq` is used below and is preinstalled on GitHub's ubuntu-latest
+      # runner image; ci.yml's `required` job already relies on the same fact.
+      # ---------------------------------------------------------------------
+      - name: Classify the Dependabot update
+        id: classify
+        env:
+          # Read-only step, read-only token. See the note on the resolve step.
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          PR_BASE_SHA: ${{ steps.resolve.outputs.pr_base_sha }}
+        run: |
+          set -euo pipefail
+
+          # The gate inputs, plus a human-readable reason. Everything that
+          # cannot be decided is a SKIP, never a merge.
+          UPDATE_TYPE=""
+          DEPENDENCY_TYPE=""
+          SKIP_REASON=""
+
+          # --- update-type: the semver class of the bump --------------------
+          #
+          # `fetch-metadata` parses the same sentence out of the Dependabot
+          # commit message; here it is read from the PR description, which is
+          # generated from that same message. When several dependencies move in
+          # one PR the description lists one "from X to Y" per dependency, and
+          # Dependabot's own `update-type` is the HIGHEST of them - so the
+          # worst case across all pairs is taken here, not the first.
+          PR_BODY=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.body // ""')
+          PREAMBLE="${PR_BODY%%<details*}"
+          echo "Dependabot description preamble:"
+          printf '%s\n' "$PREAMBLE" | sed 's/^/    /'
+
+          VERSION_PAIRS=$(printf '%s' "$PREAMBLE" \
+            | grep -oE 'from [0-9]+\.[0-9]+\.[0-9]+[^ ]* to [0-9]+\.[0-9]+\.[0-9]+[^ ]*' || true)
+          UPDATE_TYPE=$(printf '%s\n' "$VERSION_PAIRS" \
+            | sed -E 's/^from //; s/ to / /; s/[.,;]+$//' \
+            | awk '
+                function major(v,   a) { split(v, a, /\./); return a[1] + 0 }
+                function minor(v,   a) { split(v, a, /\./); return a[2] + 0 }
+                function patch(v,   a, s) { split(v, a, /\./); s = a[3]; sub(/[^0-9].*$/, "", s); return s + 0 }
+                BEGIN { worst = 0 }
+                {
+                  r = 0
+                  if (major($2) != major($1))      r = 3
+                  else if (minor($2) != minor($1)) r = 2
+                  else if (patch($2) != patch($1)) r = 1
+                  if (r > worst) worst = r
+                }
+                END {
+                  # worst == 0 means no parsable pair, or a pair that is not a
+                  # change at all. Both report no update-type, which fails the
+                  # step-3 gate.
+                  if (worst == 3)      print "version-update:semver-major"
+                  else if (worst == 2) print "version-update:semver-minor"
+                  else if (worst == 1) print "version-update:semver-patch"
+                }')
+          echo "update-type: ${UPDATE_TYPE:-<undetermined>}"
+          if [ -z "$UPDATE_TYPE" ]; then
+            DEPENDENCY_TYPE="unknown"
+            SKIP_REASON="the Dependabot description preamble contains no parsable 'from <version> to <version>' bump, so this update cannot be shown to be a semver patch"
+          fi
+
+          # --- dependency-type: did any PRODUCTION declaration change? ----
+          #
+          # The question this answers is deliberately narrower than the one
+          # `fetch-metadata` answers, because it only has to be correct in the
+          # direction that matters. To merge, this PR must be shown to touch no
+          # production dependency. That is decided by comparing the production
+          # dependency declarations in the manifest at the PR's base SHA
+          # against the same declarations at the PR's head SHA: if they are
+          # byte-identical, no production dependency was added, removed, or
+          # re-versioned, so whatever did change is a development or
+          # transitive-tooling declaration. If they differ, the PR is
+          # production and is left alone. Anything unrecognised returns
+          # UNKNOWN, and UNKNOWN is never "development".
+          prod_declarations() {
+            local path="$1" ref="$2"
+            case "$path" in
+              */package.json)
+                gh api "repos/$GH_REPO/contents/$path?ref=$ref" --jq '.content' \
+                  | tr -d '\n' | base64 -d \
+                  | jq -S -c '{
+                      dependencies:         (.dependencies         // {}),
+                      optionalDependencies: (.optionalDependencies // {}),
+                      peerDependencies:     (.peerDependencies     // {})
+                    }'
+                ;;
+              python/setup.py)
+                # install_requires is the production list in this repository;
+                # everything this file declares lives either there or under
+                # extras_require, so an unchanged install_requires means the
+                # change was confined to the extras.
+                #
+                # Three details are load-bearing, and getting any of them wrong
+                # turns this into a FAIL-OPEN check rather than a fail-closed
+                # one:
+                #   1. `#` comments are stripped first. They sit inside the
+                #      list literal in this very file, and a comment edit would
+                #      otherwise read as a production change.
+                #   2. ALL whitespace is collapsed, newlines included. The real
+                #      python/setup.py writes install_requires across nine
+                #      lines, and grep is line-oriented, so without this the
+                #      match silently fails.
+                #   3. A failed match returns UNKNOWN, not an empty list. An
+                #      earlier version returned the constant `install_requires=[]`
+                #      here, which compared equal for base and head on every
+                #      single run - so a PR that changed a PRODUCTION
+                #      dependency was reported as development-only and
+                #      auto-merged. UNKNOWN fails the job closed instead.
+                if EXTRACTED=$(
+                  gh api "repos/$GH_REPO/contents/$path?ref=$ref" --jq '.content' \
+                    | tr -d '\n' | base64 -d \
+                    | sed 's/#.*//' \
+                    | tr -d '[:space:]' \
+                    | grep -oE 'install_requires=\[[^]]*\]'
+                ) && [ -n "$EXTRACTED" ]; then
+                  printf '%s' "$EXTRACTED"
+                else
+                  echo "UNKNOWN"
+                fi
+                ;;
+              *)
+                echo "UNKNOWN"
+                ;;
+            esac
+          }
+
+          # Lockfiles and generated metadata carry no declarations of their
+          # own; they change as a consequence of a manifest change. They are
+          # tolerated in the changed-file set but never classified on.
+          is_derived_artifact() {
+            case "$1" in
+              */package-lock.json|*/npm-shrinkwrap.json|*/yarn.lock|*/pnpm-lock.yaml) return 0 ;;
+              go/go.sum) return 0 ;;
+              python/*.egg-info/*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          is_declaration_file() {
+            case "$1" in
+              */package.json|python/setup.py) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          CHANGED=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100" --jq '.[].filename')
+          echo "Changed files:"
+          printf '%s\n' "$CHANGED" | sed 's/^/    /'
+
+          if [ -z "$CHANGED" ]; then
+            DEPENDENCY_TYPE="unknown"
+            SKIP_REASON="the pull request reports no changed files, so no dependency classification is possible"
+          else
+            SEEN_DECLARATION=0
+            PROD_TOUCHED=0
+            UNSEEN=""
+            # Process substitution, not a pipe: `while ... | ...` would run the
+            # body in a subshell and discard the counters set inside it.
+            while IFS= read -r file; do
+              [ -n "$file" ] || continue
+              if is_derived_artifact "$file"; then
+                echo "    (ignoring derived artifact: $file)"
+                continue
+              fi
+              if is_declaration_file "$file"; then
+                SEEN_DECLARATION=1
+                BEFORE=$(prod_declarations "$file" "$PR_BASE_SHA")
+                AFTER=$(prod_declarations "$file" "$HEAD_SHA")
+                if [ "$BEFORE" = "UNKNOWN" ] || [ "$AFTER" = "UNKNOWN" ]; then
+                  UNSEEN="${UNSEEN}${file} (unreadable) "
+                elif [ "$BEFORE" != "$AFTER" ]; then
+                  echo "    PRODUCTION declaration changed in $file"
+                  echo "      base: $BEFORE"
+                  echo "      head: $AFTER"
+                  PROD_TOUCHED=1
+                else
+                  echo "    production declarations unchanged in $file - change is confined to development dependencies"
+                fi
+                continue
+              fi
+              UNSEEN="${UNSEEN}${file} "
+            done < <(printf '%s\n' "$CHANGED")
+
+            if [ -n "$UNSEEN" ]; then
+              DEPENDENCY_TYPE="unknown"
+              SKIP_REASON="these changed files are not dependency declarations this workflow can classify, so the change cannot be shown to be development-only: ${UNSEEN}"
+            elif [ "$PROD_TOUCHED" = "1" ]; then
+              DEPENDENCY_TYPE="direct:production"
+            elif [ "$SEEN_DECLARATION" = "0" ]; then
+              DEPENDENCY_TYPE="unknown"
+              SKIP_REASON="no dependency declaration file was changed, so there is nothing to classify as a development dependency"
+            else
+              DEPENDENCY_TYPE="direct:development"
+            fi
+          fi
+          echo "dependency-type: $DEPENDENCY_TYPE"
+
+          echo "update_type=$UPDATE_TYPE" >> "$GITHUB_OUTPUT"
+          echo "dependency_type=$DEPENDENCY_TYPE" >> "$GITHUB_OUTPUT"
+          echo "skip_reason=$SKIP_REASON" >> "$GITHUB_OUTPUT"
+
+      # ---------------------------------------------------------------------
+      # Step 3 - arm auto-merge, under the unchanged gate.
+      #
+      # Both conditions are required, and are the gate that applied to the
+      # `fetch-metadata` outputs, unchanged:
+      #   semver-patch  -> excludes minor 1.x.0 and major x.0.0 bumps
+      #   development   -> excludes production runtime deps (python
+      #                     requests/cryptography). TypeScript is
+      #                     devDependencies only and Go is stdlib only, so
+      #                     those are safe to auto-merge; production runtime
+      #                     deps are not.
+      #
+      # GH_TOKEN is scoped to THIS step alone, and this job has no `uses:`
+      # steps at all, so the credential exists for exactly one step.
+      # ---------------------------------------------------------------------
       - name: Enable auto-merge
-        if: steps.metadata.outputs.update-type == 'version-update:semver-patch' && contains(steps.metadata.outputs.dependency-type, 'development')
-        run: gh pr merge --auto --squash "$PR_URL"
+        if: steps.classify.outputs.update_type == 'version-update:semver-patch' && contains(steps.classify.outputs.dependency_type, 'development')
         env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          # Prefer a fine-grained PAT: a merge performed with the default
-          # GITHUB_TOKEN does not trigger new workflow runs, so the push to
-          # develop would never fire CI, and promote.yml (which listens for
-          # `workflow_run` of CI on develop) would never promote the dependency
-          # update onward to main. With the PAT the push -> CI -> promote chain
-          # continues. Falls back to GITHUB_TOKEN so the merge still lands (but
-          # stalls the chain) if the secret is missing.
+          # The PAT IS reachable now, and that is the point of the
+          # `workflow_run` trigger: this workflow is not Dependabot-triggered,
+          # so it is not subject to the read-only-token / no-secrets
+          # restriction, and the base repository's secrets are available.
+          #
+          # The PAT is still preferred over the fallback, and for a different
+          # reason than "the fallback cannot merge": a merge performed with the
+          # default GITHUB_TOKEN does not trigger new workflow runs, so the
+          # push to develop would never fire CI, and promote.yml (which
+          # listens for `workflow_run` of CI on develop) would never promote
+          # the dependency update onward to main. A PAT-created event does
+          # continue the push -> CI -> promote chain. GITHUB_TOKEN remains as a
+          # fallback so the merge still lands - stalling the chain - if the
+          # secret is ever removed.
           GH_TOKEN: ${{ secrets.PROMOTE_PAT || secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ steps.resolve.outputs.pr_url }}
+        run: |
+          set -euo pipefail
+          echo "Arming squash auto-merge on $PR_URL"
+          gh pr merge --auto --squash "$PR_URL"
 
-      # Mirrors the condition above so skipped PRs are visible rather than
-      # silent. `always()` because when the merge step is skipped this is the
-      # only thing that runs.
+      # ---------------------------------------------------------------------
+      # Step 4 - report. Mirrors the gate above so every skip is visible
+      # instead of silent, and runs on every path including a failed one.
+      # ---------------------------------------------------------------------
       - name: Summary
-        if: always()
+        if: always() && steps.resolve.outputs.out_of_scope == ''
         env:
-          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
-          DEPENDENCY_TYPE: ${{ steps.metadata.outputs.dependency-type }}
-          ENABLED: ${{ steps.metadata.outputs.update-type == 'version-update:semver-patch' && contains(steps.metadata.outputs.dependency-type, 'development') }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          UPDATE_TYPE: ${{ steps.classify.outputs.update_type }}
+          DEPENDENCY_TYPE: ${{ steps.classify.outputs.dependency_type }}
+          SKIP_REASON: ${{ steps.classify.outputs.skip_reason }}
+          ENABLED: ${{ steps.classify.outputs.update_type == 'version-update:semver-patch' && contains(steps.classify.outputs.dependency_type, 'development') }}
         run: |
           set -euo pipefail
           if [ "$ENABLED" = "true" ]; then
-            echo "::notice::Auto-merge enabled: $UPDATE_TYPE / $DEPENDENCY_TYPE"
-            printf '### Dependabot auto-merge: ENABLED\n\nSquash-merging patch bump of a development dependency (`%s` / `%s`) into `develop`.\n' "$UPDATE_TYPE" "$DEPENDENCY_TYPE" >> "$GITHUB_STEP_SUMMARY"
-          elif [ "$UPDATE_TYPE" != "version-update:semver-patch" ]; then
-            echo "::notice::Skipped auto-merge: update-type '$UPDATE_TYPE' is not version-update:semver-patch (minor/major bumps need manual review)."
-            printf '### Dependabot auto-merge: SKIPPED\n\nupdate-type is `%s`, not `version-update:semver-patch`. Minor and major bumps are left for manual owner review.\n' "$UPDATE_TYPE" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Auto-merge enabled on PR #$PR_NUMBER: $UPDATE_TYPE / $DEPENDENCY_TYPE"
+            printf '### Dependabot auto-merge: ENABLED\n\nPR #%s: squash-merging a patch bump of a development dependency (`%s` / `%s`) into `develop`.\n' "$PR_NUMBER" "$UPDATE_TYPE" "$DEPENDENCY_TYPE" >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$SKIP_REASON" ]; then
+            echo "::notice::Skipped auto-merge on PR #$PR_NUMBER: $SKIP_REASON"
+            printf '### Dependabot auto-merge: SKIPPED\n\nPR #%s: %s\n\nClassified as `update-type=%s` / `dependency-type=%s`. Nothing was merged.\n' "$PR_NUMBER" "$SKIP_REASON" "${UPDATE_TYPE:-undetermined}" "${DEPENDENCY_TYPE:-undetermined}" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${UPDATE_TYPE:-}" != "version-update:semver-patch" ]; then
+            echo "::notice::Skipped auto-merge on PR #$PR_NUMBER: update-type '$UPDATE_TYPE' is not version-update:semver-patch (minor/major bumps need manual review)."
+            printf '### Dependabot auto-merge: SKIPPED\n\nPR #%s: update-type is `%s`, not `version-update:semver-patch`. Minor and major bumps are left for manual owner review.\n' "$PR_NUMBER" "$UPDATE_TYPE" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::notice::Skipped auto-merge: dependency-type '$DEPENDENCY_TYPE' is a production dependency (manual review required)."
-            printf '### Dependabot auto-merge: SKIPPED\n\ndependency-type is `%s`, which is not a development dependency. Production runtime dependencies are left for manual owner review.\n' "$DEPENDENCY_TYPE" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Skipped auto-merge on PR #$PR_NUMBER: dependency-type '$DEPENDENCY_TYPE' is a production dependency (manual review required)."
+            printf '### Dependabot auto-merge: SKIPPED\n\nPR #%s: dependency-type is `%s`, which is not a development dependency. Production runtime dependencies are left for manual owner review.\n' "$PR_NUMBER" "$DEPENDENCY_TYPE" >> "$GITHUB_STEP_SUMMARY"
           fi
