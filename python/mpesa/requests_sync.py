@@ -45,7 +45,7 @@ _BLOCKED_NETWORKS: tuple[tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, st
 )
 # "Unspecified" is an exact address, not a range, in Go and TypeScript too.
 _BLOCKED_EXACT: dict[ipaddress.IPv4Address | ipaddress.IPv6Address, str] = {
-    ipaddress.ip_address("0.0.0.0"): "unspecified",
+    ipaddress.ip_address("0.0.0.0"): "unspecified",  # nosec B104  # blocklist: denied, not bound
     ipaddress.ip_address("::"): "unspecified",
     ipaddress.ip_address("::1"): "loopback",
 }
