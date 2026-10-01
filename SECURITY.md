@@ -26,6 +26,16 @@ Please use GitHub's private vulnerability reporting — the **"Report a vulnerab
 
 **Out of scope:** behavior of Safaricom's Daraja service (availability, API-side handling of transactions, M-Pesa platform incidents). Issues with the Daraja service itself should be raised with Safaricom through their developer support channels.
 
+## Release automation
+
+Promotion is fully automated and runs on every green `develop` build.
+
+- **`develop` is the integration branch.** All changes land there; it is the only branch with automated promotion.
+- **Owner approves into `develop`.** Nothing merges to `develop` without an owner review.
+- **Green CI auto-promotes `develop` to `main`.** When the go / python / typescript jobs pass on `develop`, `.github/workflows/promote.yml` opens (or reuses) a `develop` → `main` pull request and enables auto-merge, which merges once the required checks are green.
+- **`PROMOTE_PAT` is a required repo secret.** It must be a **fine-grained personal access token** with **`contents:write`** and **`pull-requests:write`**, scoped to **this repository only**. The owner creates it under **Settings → Secrets and variables → Actions → New repository secret**.
+- **Without `PROMOTE_PAT`, promotion stalls.** The workflow falls back to the built-in `GITHUB_TOKEN`, but GitHub does not run workflows for events created by `GITHUB_TOKEN`. The promotion pull request therefore never receives its required checks, and auto-merge waits forever. A loud warning is emitted on each run so the stall is visible rather than silent.
+
 ## User-Facing Hardening Notes
 
 Brief guidance when integrating this SDK:

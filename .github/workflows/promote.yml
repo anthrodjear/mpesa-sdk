@@ -18,11 +18,26 @@ jobs:
   promote:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    # Prefer a fine-grained PAT: events created with GITHUB_TOKEN do NOT trigger
+    # new workflow runs, so a PR opened with GITHUB_TOKEN never receives the
+    # required go/python/typescript checks and auto-merge stalls forever.
+    # PAT-created events DO trigger workflows. Fallback keeps the job visible
+    # (but non-promoting) if the secret is missing.
+    env:
+      GH_TOKEN: ${{ secrets.PROMOTE_PAT || secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      PROMOTE_PAT_PRESENT: ${{ secrets.PROMOTE_PAT != '' }}
     steps:
+      - name: Guard - PROMOTE_PAT presence
+        run: |
+          if [ "$PROMOTE_PAT_PRESENT" != "true" ]; then
+            echo "::warning::PROMOTE_PAT is not set. Falling back to GITHUB_TOKEN, which CANNOT promote."
+            echo "::warning::Events created by GITHUB_TOKEN do not trigger workflow runs, so the develop->main PR will never get the required go/python/typescript checks and auto-merge will stall indefinitely."
+            echo "::warning::Create a fine-grained PAT (contents:write + pull-requests:write, scoped to this repository only) and store it as the repo secret PROMOTE_PAT."
+          else
+            echo "PROMOTE_PAT present - promotion events will trigger CI checks."
+          fi
       - name: Auto-open and auto-merge develop -> main
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           echo "Promote triggered by CI conclusion: ${{ github.event.workflow_run.conclusion }} on ${{ github.event.workflow_run.head_branch }} @ ${{ github.event.workflow_run.head_sha }}"
@@ -40,9 +55,17 @@ jobs:
           if [ -z "$EXISTING" ]; then
             echo "No open develop->main PR, creating..."
             gh pr create --base main --head develop --title "chore: promote develop to main" --body "Auto-promotion: develop CI green (${{ github.event.workflow_run.head_sha }}). Merging develop into main via auto-merge."
-            EXISTING=$(gh pr list --head develop --base main --state open --json number --jq '.[0].number // empty')
+            # gh pr create can return before the new PR is queryable (index propagation lag).
+            for attempt in 1 2 3 4 5; do
+              EXISTING=$(gh pr list --head develop --base main --state open --json number --jq '.[0].number // empty')
+              if [ -n "$EXISTING" ]; then
+                break
+              fi
+              echo "PR not yet queryable (attempt $attempt/5), retrying in 3s..."
+              sleep 3
+            done
             if [ -z "$EXISTING" ]; then
-              echo "ERROR: gh pr create reported success but no open develop->main PR was found." >&2
+              echo "ERROR: gh pr create reported success but no open develop->main PR was found after 5 attempts." >&2
               echo "       Refusing to continue with an empty PR number." >&2
               exit 1
             fi
@@ -50,6 +73,14 @@ jobs:
           else
             echo "Found existing open PR #$EXISTING"
           fi
-          echo "Enabling auto-merge (merge) on PR #$EXISTING"
-          gh pr merge "$EXISTING" --auto --merge || echo "auto-merge already enabled or failed, continuing"
+          if [ "$PROMOTE_PAT_PRESENT" != "true" ]; then
+            echo "::warning::PROMOTE_PAT missing - running auto-merge with GITHUB_TOKEN. This is expected to FAIL; the failure below is intentional and loud."
+          fi
+          AUTO_MERGE_ALREADY=$(gh pr view "$EXISTING" --json autoMergeRequest --jq '.autoMergeRequest != null')
+          if [ "$AUTO_MERGE_ALREADY" = "true" ]; then
+            echo "Auto-merge already enabled on PR #$EXISTING - skipping enable call."
+          else
+            echo "Enabling auto-merge (merge) on PR #$EXISTING"
+            gh pr merge "$EXISTING" --auto --merge
+          fi
           gh pr view "$EXISTING" --json number,autoMergeRequest,state,mergeable
