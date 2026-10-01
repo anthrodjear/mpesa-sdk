@@ -1100,7 +1100,7 @@ func TestRefreshAfterInvalidTokenRejectsStalePeerToken(t *testing.T) {
 	//    the clock past expiry to make it stale by wall-clock.
 	c.mu.Lock()
 	c.gen++
-	c.token = "tok-v2"
+	c.tokenBytes = []byte("tok-v2")
 	// Keep tokenExpiry from the original tok-v1 fetch — the clock advance
 	// will make tokenFresh() return false.
 	c.mu.Unlock()

@@ -123,7 +123,7 @@ type Client struct {
 	http    *http.Client
 
 	mu          sync.RWMutex
-	token       string
+	tokenBytes  []byte    // cached OAuth bearer token; zeroed on refresh/Close
 	tokenExpiry time.Time // now + clamp(ExpiresIn-60s); zero until first fetch
 	gen         uint64    // bumped on every successful refresh
 }
@@ -230,11 +230,35 @@ func (c *Client) Token(ctx context.Context) (string, error) {
 	return tok, err
 }
 
+// setToken securely replaces the cached token, zeroing the old value first
+// to minimise the window where the credential resides in memory.
+func (c *Client) setToken(newToken string) {
+	c.zeroToken()
+	c.tokenBytes = []byte(newToken)
+}
+
+// zeroToken overwrites the cached token bytes with zeros.
+func (c *Client) zeroToken() {
+	for i := range c.tokenBytes {
+		c.tokenBytes[i] = 0
+	}
+	c.tokenBytes = nil
+}
+
+// Close zeros the cached token and marks the client as closed. After Close
+// the client must not be reused.
+func (c *Client) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.zeroToken()
+	c.tokenExpiry = time.Time{}
+}
+
 // tokenWithGen pairs the cached bearer with its generation so callers can
 // detect a concurrent refresh later.
 func (c *Client) tokenWithGen(ctx context.Context) (string, uint64, error) {
 	c.mu.RLock()
-	tok, gen, fresh := c.token, c.gen, c.tokenFresh()
+	tok, gen, fresh := string(c.tokenBytes), c.gen, c.tokenFresh()
 	c.mu.RUnlock()
 	if fresh {
 		return tok, gen, nil
@@ -243,16 +267,16 @@ func (c *Client) tokenWithGen(ctx context.Context) (string, uint64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.tokenFresh() {
-		return c.token, c.gen, nil
+		return string(c.tokenBytes), c.gen, nil
 	}
 	if _, err := c.refreshLocked(ctx); err != nil {
 		return "", 0, err
 	}
-	return c.token, c.gen, nil
+	return string(c.tokenBytes), c.gen, nil
 }
 
 func (c *Client) tokenFresh() bool {
-	return c.token != "" && c.cfg.Now().Before(c.tokenExpiry)
+	return len(c.tokenBytes) > 0 && c.cfg.Now().Before(c.tokenExpiry)
 }
 
 // refreshCadence converts the OAuth TTL into an eager refresh window:
@@ -311,10 +335,10 @@ func (c *Client) refreshLocked(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("mpesa: oauth response missing access_token")
 	}
 	now := c.cfg.Now()
-	c.token = tok.AccessToken
+	c.setToken(tok.AccessToken)
 	c.tokenExpiry = now.Add(refreshCadence(tok.ExpiresIn))
 	c.gen++
-	return c.token, nil
+	return string(c.tokenBytes), nil
 }
 
 // forceRefreshLocked discards the cached token unconditionally before
@@ -323,7 +347,7 @@ func (c *Client) refreshLocked(ctx context.Context) (string, error) {
 // moment ANY holder requests a new one (docs/apis/oauth.md) — including
 // sibling replicas sharing the credential.
 func (c *Client) forceRefreshLocked(ctx context.Context) (string, error) {
-	c.token = ""
+	c.zeroToken()
 	return c.refreshLocked(ctx)
 }
 
@@ -338,7 +362,7 @@ func (c *Client) refreshAfterInvalidToken(ctx context.Context, myGen uint64) (st
 		return c.forceRefreshLocked(ctx)
 	}
 	if c.tokenFresh() {
-		return c.token, nil
+		return string(c.tokenBytes), nil
 	}
 	return c.forceRefreshLocked(ctx)
 }

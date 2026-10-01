@@ -99,7 +99,15 @@ func SecurityCredential(certPEMorDER []byte, initiatorPassword string) (string, 
 	if !ok {
 		return "", fmt.Errorf("mpesa: M-Pesa certificate carries non-RSA public key %T", cert.PublicKey)
 	}
-	ct, err := rsa.EncryptPKCS1v15(rand.Reader, pub, []byte(initiatorPassword))
+	pwBytes := []byte(initiatorPassword)
+	// Zero the password bytes after use to minimise the window where the
+	// plaintext credential resides in memory.
+	defer func() {
+		for i := range pwBytes {
+			pwBytes[i] = 0
+		}
+	}()
+	ct, err := rsa.EncryptPKCS1v15(rand.Reader, pub, pwBytes)
 	if err != nil {
 		return "", fmt.Errorf("mpesa: encrypt security credential: %w", err)
 	}
