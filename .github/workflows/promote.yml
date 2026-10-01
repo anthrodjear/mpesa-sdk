@@ -16,15 +16,32 @@ permissions:
 
 jobs:
   promote:
-    if: github.event.workflow_run.conclusion == 'success'
+    # SECURITY: `head_repository.full_name == github.repository` is what makes this
+    # job safe on a public repo. `on.workflow_run.branches` filters on branch NAME
+    # only, and an attacker can name a branch in their own fork `develop` and
+    # open `attacker/mpesa-sdk:develop` -> `main`. Their PR runs their own tests
+    # (which they also control), goes green, fires this workflow, and without the
+    # repository check below the job would merge it with the maintainer's own
+    # PROMOTE_PAT. All three clauses are required; keep them together.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'develop' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     # Prefer a fine-grained PAT: events created with GITHUB_TOKEN do NOT trigger
     # new workflow runs, so a PR opened with GITHUB_TOKEN never receives the
     # required go/python/typescript checks and auto-merge stalls forever.
     # PAT-created events DO trigger workflows. Fallback keeps the job visible
     # (but non-promoting) if the secret is missing.
+    #
+    # SECURITY: GH_TOKEN is deliberately NOT set here. Job-level `env:` is injected
+    # into the environment of EVERY step in the job, so a `uses:` step added later
+    # would silently receive the PAT. The credential is declared on the single
+    # step that shells out to `gh`, so it exists for exactly one step. This job
+    # therefore permits NO `uses:` steps at all - if one is ever needed, the
+    # credential must be hoisted deliberately and reviewed, not inherited. The
+    # values left at job level (GH_REPO, PROMOTE_PAT_PRESENT) are not secrets.
     env:
-      GH_TOKEN: ${{ secrets.PROMOTE_PAT || secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
       PROMOTE_PAT_PRESENT: ${{ secrets.PROMOTE_PAT != '' }}
     steps:
@@ -38,10 +55,22 @@ jobs:
             echo "PROMOTE_PAT present - promotion events will trigger CI checks."
           fi
       - name: Auto-open and auto-merge develop -> main
+        # GH_TOKEN is scoped to THIS step alone (see the job comment: no `uses:`
+        # steps are permitted here, or the PAT would become job-scoped again).
+        #
+        # The workflow_run values are passed as environment variables, never
+        # interpolated into the script text. `${{ }}` is substituted textually
+        # BEFORE the shell parses the script, so an expression inside `run:` is a
+        # command-injection pattern. Referencing "$HEAD_BRANCH" cannot inject.
+        env:
+          GH_TOKEN: ${{ secrets.PROMOTE_PAT || secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
         run: |
           set -euo pipefail
-          echo "Promote triggered by CI conclusion: ${{ github.event.workflow_run.conclusion }} on ${{ github.event.workflow_run.head_branch }} @ ${{ github.event.workflow_run.head_sha }}"
-          if [ "${{ github.event.workflow_run.head_branch }}" != "develop" ]; then
+          echo "Promote triggered by CI conclusion: $CONCLUSION on $HEAD_BRANCH @ $HEAD_SHA"
+          if [ "$HEAD_BRANCH" != "develop" ]; then
             echo "Skipping: head_branch is not develop"
             exit 0
           fi
@@ -55,9 +84,9 @@ jobs:
           # NOTE: use /commits/{ref} (not /git/commits/{ref}) - the git data
           # endpoint does not resolve branch names and returns 404, which would
           # abort the job under `set -e`.
-          MAIN_INFO=$(gh api "repos/${{ github.repository }}/commits/main" --jq '"\(.sha) \(.commit.tree.sha)"')
+          MAIN_INFO=$(gh api "repos/$GH_REPO/commits/main" --jq '"\(.sha) \(.commit.tree.sha)"')
           read -r MAIN_SHA MAIN_TREE <<< "$MAIN_INFO"
-          DEVELOP_INFO=$(gh api "repos/${{ github.repository }}/commits/develop" --jq '"\(.sha) \(.commit.tree.sha)"')
+          DEVELOP_INFO=$(gh api "repos/$GH_REPO/commits/develop" --jq '"\(.sha) \(.commit.tree.sha)"')
           read -r DEVELOP_SHA DEVELOP_TREE <<< "$DEVELOP_INFO"
           echo "main    ${MAIN_SHA} (tree ${MAIN_TREE})"
           echo "develop ${DEVELOP_SHA} (tree ${DEVELOP_TREE})"
@@ -162,13 +191,26 @@ jobs:
           # promoted. Do NOT sync - moving develop onto main there could discard
           # that work. This is the normal promotion path.
           echo "Trees differ: develop holds work that was never promoted. Opening the promotion PR (no sync)."
-          EXISTING=$(gh pr list --head develop --base main --state open --json number --jq '.[0].number // empty')
+          # SECURITY: never look this PR up by branch name alone. `gh pr list
+          # --head develop` matches on NAME only and does not restrict to this
+          # repository, so on a public repo it happily returns an attacker's fork
+          # PR whose head branch is also called `develop` - and the merge below
+          # would run with the maintainer's own PAT. This query pins all three of
+          # owner, ref and the exact head SHA we just read and compared trees
+          # against. The SHA match also closes the TOCTOU window: if the PR's head
+          # moved after the tree comparison, the number is no longer selected and
+          # nothing is merged.
+          EXISTING=$(gh api -X GET "repos/$GH_REPO/pulls" -f state=open -f base=main \
+            --jq "map(select(.head.repo.full_name == \"$GH_REPO\" and .head.ref == \"develop\" and .head.sha == \"$DEVELOP_SHA\")) | .[0].number // empty")
           if [ -z "$EXISTING" ]; then
             echo "No open develop->main PR, creating..."
-            gh pr create --base main --head develop --title "chore: promote develop to main" --body "Auto-promotion: develop CI green (${{ github.event.workflow_run.head_sha }}). Merging develop into main via auto-merge."
+            gh pr create --base main --head develop --title "chore: promote develop to main" --body "Auto-promotion: develop CI green ($HEAD_SHA). Merging develop into main via auto-merge."
             # gh pr create can return before the new PR is queryable (index propagation lag).
+            # Re-run the SAME pinned query - a name-only lookup here would reopen
+            # the fork-PR hole for a PR that does not exist yet.
             for attempt in 1 2 3 4 5; do
-              EXISTING=$(gh pr list --head develop --base main --state open --json number --jq '.[0].number // empty')
+              EXISTING=$(gh api -X GET "repos/$GH_REPO/pulls" -f state=open -f base=main \
+                --jq "map(select(.head.repo.full_name == \"$GH_REPO\" and .head.ref == \"develop\" and .head.sha == \"$DEVELOP_SHA\")) | .[0].number // empty")
               if [ -n "$EXISTING" ]; then
                 break
               fi
