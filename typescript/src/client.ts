@@ -134,6 +134,7 @@ function isBlockedIPv4(host: string): boolean {
   const octets = m.slice(1).map(Number);
   if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
   const [a, b, c, d] = octets;
+  if (a === undefined || b === undefined || c === undefined || d === undefined) return false;
   if (a === 127) return true; // 127.0.0.0/8 loopback
   if (a === 10) return true; // 10.0.0.0/8 private
   if (a === 192 && b === 168) return true; // 192.168.0.0/16 private

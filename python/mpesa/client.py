@@ -77,7 +77,7 @@ REVERSAL_PATH = "/mpesa/reversal/v1/request"
 ACCOUNT_BALANCE_PATH = "/mpesa/accountbalance/v1/query"
 QR_CODE_PATH = "/mpesa/qrcode/v1/generate"
 
-_ERR_INVALID_TOKEN = "401.003.01"
+_ERR_INVALID_TOKEN = "401.003.01"  # nosec B105  # M-Pesa error code, not a token
 # NOTE: _MAX_RESPONSE_BYTES is re-exported from mpesa._limits (the single
 # source of truth); kept importable here for back-compat.
 

@@ -146,8 +146,8 @@ type _MpesaClientOptions       = MpesaClientOptions;
 type _TokenManagerOptions      = TokenManagerOptions;
 
 describe("barrel exports — VERSION", () => {
-  it('VERSION equals "0.2.0"', () => {
-    expect(VERSION).toBe("0.2.0");
+  it('VERSION equals "0.3.0"', () => {
+    expect(VERSION).toBe("0.3.0");
   });
 });
 
