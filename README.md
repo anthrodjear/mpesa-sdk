@@ -480,8 +480,10 @@ that only ever receives promoted, CI-green commits.
 
 ### The four CI jobs
 
-CI (GitHub Actions) runs **four jobs** in parallel on every push and pull request to **`main` and
-`develop`** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+CI (GitHub Actions) runs **four jobs** in parallel on every push to **`develop`** and every pull
+request targeting **`main` or `develop`** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+A push to `main` deliberately does **not** re-run CI: by the time a commit lands there it has
+already been tested on the develop push and on the promotion pull request.
 
 | Job | What it runs |
 |---|---|
