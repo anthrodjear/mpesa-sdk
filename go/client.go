@@ -165,6 +165,44 @@ func transportDisablesVerification(rt http.RoundTripper) bool {
 	return false
 }
 
+// effectiveTransport walks the RoundTripper chain (same Unwrap convention as
+// transportDisablesVerification) and returns the first concrete
+// *http.Transport, or nil when none is reachable (nil Transport, opaque
+// wrapper, or fully custom RoundTripper).
+func effectiveTransport(rt http.RoundTripper) *http.Transport {
+	for rt != nil {
+		if tr, ok := rt.(*http.Transport); ok {
+			return tr
+		}
+		unwrapper, ok := rt.(interface{ Unwrap() http.RoundTripper })
+		if !ok {
+			return nil
+		}
+		rt = unwrapper.Unwrap()
+	}
+	return nil
+}
+
+// pinningWrapper preserves a custom RoundTripper that has no reachable
+// concrete *http.Transport (test doubles, mocks, opaque wrappers). Replacing
+// it with a fresh *http.Transport would discard custom behavior; wrapping
+// keeps RoundTrip delegation intact while exposing Unwrap so verification
+// walks can still see through. TLS pinning itself can only be enforced on
+// *http.Transport stacks (via VerifyPeerCertificate) — for fully custom
+// transports there is no TLS handshake to hook, so preservation is the
+// reliability fix. The verify callback is retained to document that pinning
+// was requested for this client.
+type pinningWrapper struct {
+	inner  http.RoundTripper
+	verify func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
+}
+
+func (w *pinningWrapper) RoundTrip(r *http.Request) (*http.Response, error) {
+	return w.inner.RoundTrip(r)
+}
+
+func (w *pinningWrapper) Unwrap() http.RoundTripper { return w.inner }
+
 // NewClient returns a Client for cfg. Timeout defaults to 30s and Now to
 // time.Now when unset. An injected Config.HTTPClient is cloned (never
 // mutated) and always gets the never-follow-redirects policy: Daraja never
@@ -203,18 +241,42 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 	if cfg.TLSPinningEnabled {
 		hostname := hostnameFromURL(cfg.Environment.BaseURL())
-		tlsConfig := &tls.Config{
-			VerifyPeerCertificate: verifySPKIPinning(hostname),
-		}
-		// Preserve RootCAs from injected client's transport (e.g. test CAs).
-		if cfg.HTTPClient != nil {
-			if tr, ok := cfg.HTTPClient.Transport.(*http.Transport); ok {
-				if tr.TLSClientConfig != nil {
-					tlsConfig.RootCAs = tr.TLSClientConfig.RootCAs
-				}
+		verify := verifySPKIPinning(hostname)
+		// applyPinning clones tr (preserving Proxy, DialContext,
+		// MaxIdleConns, RootCAs, etc.) and only installs the pinning
+		// callback, chaining any pre-existing VerifyPeerCertificate.
+		applyPinning := func(tr *http.Transport) *http.Transport {
+			cloned := tr.Clone()
+			if cloned.TLSClientConfig == nil {
+				cloned.TLSClientConfig = &tls.Config{}
 			}
+			if prev := cloned.TLSClientConfig.VerifyPeerCertificate; prev != nil {
+				cloned.TLSClientConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+					if err := prev(rawCerts, verifiedChains); err != nil {
+						return err
+					}
+					return verify(rawCerts, verifiedChains)
+				}
+			} else {
+				cloned.TLSClientConfig.VerifyPeerCertificate = verify
+			}
+			return cloned
 		}
-		hc.Transport = &http.Transport{TLSClientConfig: tlsConfig}
+		if concrete := effectiveTransport(hc.Transport); concrete != nil {
+			// Clone the effective transport found via the Unwrap walk, so
+			// RootCAs (e.g. test CAs) and tuning survive even when wrapped.
+			hc.Transport = applyPinning(concrete)
+		} else if hc.Transport == nil {
+			if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+				hc.Transport = applyPinning(dt)
+			} else {
+				hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{VerifyPeerCertificate: verify}}
+			}
+		} else {
+			// No concrete *http.Transport reachable: wrap instead of
+			// replacing to preserve the custom RoundTripper.
+			hc.Transport = &pinningWrapper{inner: hc.Transport, verify: verify}
+		}
 	}
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
