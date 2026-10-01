@@ -237,13 +237,28 @@ jobs:
           # reason about and prone to reporting the pipeline's status instead of
           # the worst individual job's.
           #
-          # This step fails if ANY needed job did not conclude `success` -
-          # including `failure`, `skipped`, `cancelled`, or a missing
-          # `conclusion` key. Malformed input fails closed via `set -e`.
+          # Gate on `.result` ALONE. It is the authoritative field in the `needs`
+          # context and is one of: success | failure | cancelled | skipped.
+          # Requiring `.conclusion` as well would fail every run: `conclusion` is
+          # not populated here, so the extra clause is always false. `result`
+          # already covers every state we care about - a skipped or cancelled
+          # dependency is not `success` and is therefore rejected.
+          #
+          # The count guard is NOT redundant. `all()` over an EMPTY array is
+          # true in jq, so a malformed or empty `RESULTS` would otherwise pass
+          # this gate and hand `main` a green `required` check that verified
+          # nothing. Requiring at least one job is what makes this fail closed.
           echo "Upstream job results:"
-          jq -r 'to_entries[] | "  \(.key): result=\(.value.result) conclusion=\(.value.conclusion // "n/a")"' <<<"$RESULTS"
+          jq -r 'to_entries[] | "  \(.key): \(.value.result)"' <<<"$RESULTS"
 
-          if ! jq -e 'all(.[]; .result == "success" and .conclusion == "success")' <<<"$RESULTS" >/dev/null; then
+          JOB_COUNT=$(jq 'length' <<<"$RESULTS")
+          echo "Jobs in needs: $JOB_COUNT"
+          if [ "$JOB_COUNT" -lt 1 ]; then
+            echo "::error::No job results were reported - refusing to pass an unverified gate."
+            exit 1
+          fi
+
+          if ! jq -e 'all(.[]; .value == "success")' <<<"$RESULTS" >/dev/null; then
             echo "::error::At least one required job did not succeed - see the list above."
             exit 1
           fi
