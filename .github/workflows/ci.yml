@@ -258,7 +258,7 @@ jobs:
             exit 1
           fi
 
-          if ! jq -e 'all(.[]; .value == "success")' <<<"$RESULTS" >/dev/null; then
+          if ! jq -e 'all(.[]; .result == "success")' <<<"$RESULTS" >/dev/null; then
             echo "::error::At least one required job did not succeed - see the list above."
             exit 1
           fi
