@@ -1,4 +1,4 @@
-# Changes — 0.3.0
+# Changes — 0.3.0 (2026-10-01)
 
 All three engines ship `0.3.0` together. This is a **minor** bump on purpose: under
 SemVer 0.x, breaking changes increment the minor version. Publishing the breaking
