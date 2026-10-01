@@ -6,6 +6,8 @@ package mpesa
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -263,8 +265,35 @@ func requireURL(field, v string) error {
 	if err := requireNonEmpty(field, v); err != nil {
 		return err
 	}
-	if !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") {
-		return fmt.Errorf("mpesa: %s must be an absolute http(s) URL", field)
+	u, err := url.Parse(v)
+	if err != nil {
+		return fmt.Errorf("mpesa: %s is not a valid URL: %w", field, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("mpesa: %s must use http or https scheme, got %q", field, u.Scheme)
+	}
+	if u.User != nil {
+		return fmt.Errorf("mpesa: %s must not contain embedded credentials", field)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("mpesa: %s must have a non-empty host", field)
+	}
+	// Strip port for IP validation
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("mpesa: %s must have a valid host", field)
+	}
+	// Reject localhost by name (SSRF protection)
+	if strings.EqualFold(host, "localhost") {
+		return fmt.Errorf("mpesa: %s must not point to localhost", field)
+	}
+	// Reject internal/private IP addresses (SSRF protection)
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+			ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+			ip.IsInterfaceLocalMulticast() || ip.IsMulticast() {
+			return fmt.Errorf("mpesa: %s must not point to an internal or private IP address", field)
+		}
 	}
 	return nil
 }
