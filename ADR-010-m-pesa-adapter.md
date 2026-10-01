@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed** — 2026-08-23
+**Accepted** — 2026-10-01 (Proposed — 2026-08-23)
 
 ## Context
 
