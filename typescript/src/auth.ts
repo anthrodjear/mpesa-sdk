@@ -51,6 +51,12 @@ const MAX_BODY_BYTES = 1 << 20;
 /** Default OAuth request timeout (30s). */
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+/** Consecutive-failure threshold before throttling (Go `refreshFailures >= 3` parity). */
+const REFRESH_FAILURE_THRESHOLD = 3;
+
+/** Minimum time between OAuth refresh attempts after failures (Go `refreshRateLimit = 5s` parity). */
+const REFRESH_RATE_LIMIT_MS = 5_000;
+
 /**
  * Bounded response-body reader lives in `./_bounded-read.js` (shared with
  * client.ts — single implementation, tree-shake friendly).
@@ -130,6 +136,10 @@ export class TokenManager {
   private _generation: number = 0;
   /** In-flight refresh promise for single-flight dedup. */
   private _refreshPromise: Promise<string> | null = null;
+  /** Consecutive refresh failures; reset on success (Go `refreshFailures` parity). */
+  private _failures: number = 0;
+  /** Wall-clock ms of last non-forced refresh attempt (Go `lastRefreshAttempt` parity; 0 = never). */
+  private _lastAttemptMs: number = 0;
 
   /**
    * Build a TokenManager.
@@ -235,16 +245,16 @@ export class TokenManager {
    */
   async refreshAfterInvalidToken(myGen: number): Promise<string> {
     if (this._generation === myGen) {
-      // Our token was current — force refresh
+      // Our token was current — force refresh (bypasses rate limit, Go force=true parity)
       this._token = null;
-      return this._doRefresh();
+      return this._doRefresh(true);
     }
     // Peer already refreshed — adopt if still fresh
     if (this._token !== null && this._now() < this._expiresAt) {
       return this._token;
     }
-    // Peer token expired too — refresh
-    return this._doRefresh();
+    // Peer token expired too — force refresh (bypasses rate limit)
+    return this._doRefresh(true);
   }
 
   /**
@@ -290,12 +300,15 @@ export class TokenManager {
   /**
    * Single-flight refresh. Concurrent stale callers share the same
    * Promise — a natural JS dedup without explicit locks.
+   *
+   * @param force - When true, bypasses the refresh rate limit (401-triggered
+   *   refreshes, Go `force=true` parity).
    */
-  private _doRefresh(): Promise<string> {
+  private _doRefresh(force = false): Promise<string> {
     if (this._refreshPromise !== null) {
       return this._refreshPromise;
     }
-    this._refreshPromise = this._refresh()
+    this._refreshPromise = this._refresh(force)
       .finally(() => {
         this._refreshPromise = null;
       });
@@ -308,8 +321,45 @@ export class TokenManager {
    * (docs/apis/oauth.md). Holds the "lock" across the network call —
    * callers stall ~once per refresh window; that is the deliberate
    * single-flight tradeoff (see go/client.go).
+   *
+   * Rate-limit parity with `go/client.go refreshLocked`: non-forced
+   * refreshes are throttled after 3 consecutive failures inside 5s;
+   * 401-triggered refreshes (`force=true`) bypass the guard entirely.
    */
-  private async _refresh(): Promise<string> {
+  private async _refresh(force = false): Promise<string> {
+    // Rate limit: only apply to non-forced refreshes after consecutive failures.
+    if (!force) {
+      const nowGate = this._now();
+      if (
+        this._failures >= REFRESH_FAILURE_THRESHOLD &&
+        this._lastAttemptMs !== 0 &&
+        nowGate - this._lastAttemptMs < REFRESH_RATE_LIMIT_MS
+      ) {
+        const agoMs = nowGate - this._lastAttemptMs;
+        throw new Error(
+          `mpesa: refresh rate limited after ${this._failures} consecutive failures ` +
+          `(last attempt ${agoMs}ms ago, need ${REFRESH_RATE_LIMIT_MS}ms)`,
+        );
+      }
+      this._lastAttemptMs = nowGate;
+    }
+
+    try {
+      const token = await this._fetchToken();
+      this._failures = 0;
+      return token;
+    } catch (err) {
+      this._failures++;
+      throw err;
+    }
+  }
+
+  /**
+   * Raw OAuth fetch + parse. Split from {@link TokenManager._refresh} so the
+   * rate-limit guard stays verbatim-portable from Go while the network logic
+   * is untouched.
+   */
+  private async _fetchToken(): Promise<string> {
     const url = `${this._baseUrl}${OAUTH_PATH}`;
     const auth = Buffer.from(
       `${this._consumerKey}:${this._consumerSecret}`,
