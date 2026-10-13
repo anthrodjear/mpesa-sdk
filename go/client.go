@@ -14,6 +14,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -34,13 +35,20 @@ const (
 
 	errCodeInvalidToken = "401.003.01"
 
-	defaultTimeout    = 30 * time.Second
-	maxResponseLen    = 1 << 20
-	refreshRateLimit  = 5 * time.Second // minimum time between OAuth refresh attempts
+	defaultTimeout   = 30 * time.Second
+	maxResponseLen   = 1 << 20
+	refreshRateLimit = 5 * time.Second // minimum time between OAuth refresh attempts
 )
 
 // pinnedSPKIHashes maps hostnames to their expected SPKI SHA-256 hashes.
 // A hostname may have multiple pins (e.g. current + backup key).
+//
+// The map is a process-global registry read ONCE per NewClient (see
+// pinnedPinsSnapshot). Handshake callbacks never read it: a pin registered
+// after a client was built must not silently change the trust decision of a
+// client that is already serving traffic, and reading shared state from the
+// TLS handshake goroutine would make that decision depend on call ordering
+// rather than on configuration.
 var (
 	pinnedSPKIHashes = make(map[string][][]byte)
 	pinnedSPKIMutex  sync.RWMutex
@@ -54,17 +62,75 @@ var (
 // The hash is the SHA-256 of the DER-encoded SubjectPublicKeyInfo (SPKI)
 // of the server's RSA public key. Users should fetch the actual hash from
 // the live endpoint before pinning.
-func PinSPKI(hostname string, spkiHash []byte) {
+//
+// The hash must be exactly sha256.Size (32) bytes: a shorter or longer value
+// can never match a SHA-256 digest, so accepting it would turn pinning into
+// a permanent connection failure (or, worse, into a silently accepted
+// misconfiguration if a future comparison ever used prefix matching).
+// Identical hashes are de-duplicated — registering the same pin twice must
+// not grow the pin set, so operators can call PinSPKI defensively from
+// multiple initialization paths.
+func PinSPKI(hostname string, spkiHash []byte) error {
+	if len(spkiHash) != sha256.Size {
+		return fmt.Errorf("mpesa: PinSPKI hash must be %d bytes (SHA-256), got %d", sha256.Size, len(spkiHash))
+	}
 	pinnedSPKIMutex.Lock()
 	defer pinnedSPKIMutex.Unlock()
-	pinnedSPKIHashes[hostname] = append(pinnedSPKIHashes[hostname], spkiHash)
+	for _, existing := range pinnedSPKIHashes[hostname] {
+		if bytes.Equal(existing, spkiHash) {
+			return nil // already registered
+		}
+	}
+	// Clone the caller's slice: storing it as-is would let a later caller
+	// mutation move the live pin set (and every snapshot taken from it).
+	pinnedSPKIHashes[hostname] = append(pinnedSPKIHashes[hostname], bytes.Clone(spkiHash))
+	return nil
 }
 
-// verifySPKIPinning returns a tls.Config.VerifyPeerCertificate callback that
-// checks the server's SPKI hash against the pinned hashes for the given
-// hostname. If no pin exists for the hostname, the connection is allowed
-// (pinning is opt-in per-hostname).
-func verifySPKIPinning(hostname string) func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+// pinnedPinsSnapshot copies the pin set registered for hostname so the
+// caller owns an immutable view. The copy is taken under the registry mutex
+// and never aliases the live map, which keeps every later read lock-free and
+// immune to concurrent PinSPKI calls. Each entry is deep-cloned: a shallow
+// outer copy would still share the inner 32-byte arrays with the registry,
+// so mutating a snapshot entry (or the caller's original slice) would move
+// the live pins.
+func pinnedPinsSnapshot(hostname string) [][]byte {
+	pinnedSPKIMutex.RLock()
+	defer pinnedSPKIMutex.RUnlock()
+	live := pinnedSPKIHashes[hostname]
+	if len(live) == 0 {
+		return nil
+	}
+	out := make([][]byte, len(live))
+	for i, pin := range live {
+		out[i] = bytes.Clone(pin)
+	}
+	return out
+}
+
+// SPKIVerifier returns a tls.Config.VerifyPeerCertificate callback that
+// checks the server's SPKI hash against a caller-supplied pin set.
+//
+// Export it so users can pin transports this SDK does not own — a
+// tracing/retry/logging wrapper chain, an http2.Transport, or a transport
+// shared with other components:
+//
+//	tr := &http.Transport{TLSClientConfig: &tls.Config{
+//		VerifyPeerCertificate: mpesa.SPKIVerifier(host, pins),
+//	}}
+//
+// The returned closure fails closed. An empty pin set is an error rather than
+// an allow, because "pinning requested but nothing to compare against" is a
+// configuration mistake that must not degrade into unauthenticated TLS.
+//
+// The pin set is deep-cloned at construction: the closure must enforce the
+// pins as registered, not whatever the caller's slice (or its inner arrays)
+// happens to hold when a handshake runs.
+func SPKIVerifier(hostname string, pins [][]byte) func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	cloned := make([][]byte, len(pins))
+	for i, pin := range pins {
+		cloned[i] = bytes.Clone(pin)
+	}
 	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {
 			return fmt.Errorf("mpesa: no certificates presented by server")
@@ -82,15 +148,15 @@ func verifySPKIPinning(hostname string) func(rawCerts [][]byte, verifiedChains [
 
 		hash := sha256.Sum256(spkiDER)
 
-		pinnedSPKIMutex.RLock()
-		defer pinnedSPKIMutex.RUnlock()
-
-		pins, ok := pinnedSPKIHashes[hostname]
-		if !ok {
-			return nil // No pin for this hostname, allow
+		// Defense in depth: NewClient already refuses to build a pinned
+		// client from an empty pin set, so reaching this point means the
+		// closure was reached through a hand-built transport. Never allow
+		// on an empty set.
+		if len(cloned) == 0 {
+			return fmt.Errorf("mpesa: TLS pinning enabled for %s with no SPKI pins registered; refusing connection", hostname)
 		}
 
-		for _, pin := range pins {
+		for _, pin := range cloned {
 			if bytes.Equal(hash[:], pin) {
 				return nil // Pin matches
 			}
@@ -112,13 +178,17 @@ func hostnameFromURL(rawURL string) string {
 // Client is a concurrency-safe Daraja API engine. Create one per environment
 // and share it; the OAuth token cache is guarded internally.
 //
-// Token refresh holds the WRITE lock across the OAuth round-trip — a
-// deliberate ~once-per-refresh-window stall traded for strict single-flight,
-// because requesting a token invalidates every previously issued one. Across
-// replicas there is effectively ONE logical token owner per credential per
-// deployment: sibling refreshes invalidate each other's cached tokens by
-// design (docs/apis/oauth.md); the 401.003.01 generation guard below handles
-// that cross-owner case without a refresh stampede.
+// Token refresh is single-flight and runs OUTSIDE the client mutex: exactly
+// one goroutine performs the OAuth round-trip while every other caller waits
+// on a completion channel and then re-checks freshness under double-checked
+// locking. A slow or hung OAuth endpoint therefore stalls only the token
+// path — it never pins c.mu for the whole round-trip, so readers of a cached
+// token keep being served.
+//
+// Cross-replica note: requesting a token invalidates every previously issued
+// one (docs/apis/oauth.md), so sibling replicas refreshing the same credential
+// invalidate each other's cached tokens by design; the 401.003.01 generation
+// guard below absorbs that cross-owner case without a refresh stampede.
 type Client struct {
 	cfg     Config
 	baseURL string
@@ -131,6 +201,23 @@ type Client struct {
 
 	lastRefreshAttempt time.Time // wall-clock of last refresh attempt (for rate limiting)
 	refreshFailures    int       // consecutive refresh failures; reset on success
+
+	// refreshing is true while a refresh leader is performing its OAuth
+	// round-trip WITHOUT holding mu; refreshDone is closed when that leader
+	// finishes (success or failure) so waiters can re-check freshness.
+	// Together they implement single-flight without holding the lock across
+	// network I/O.
+	refreshing  bool
+	refreshDone chan struct{}
+
+	// limits is the resolved per-service ceiling set (Config.Limits or the
+	// Safaricom baseline), frozen at construction so a request can never be
+	// validated against a different policy than the one the Client reports.
+	limits TransactionLimits
+	// daily accumulates per-service totals for the current Africa/Nairobi
+	// day. It is only consulted when cfg.TrackDaily is set: an unused
+	// accumulator is a silent under-count (see Config.TrackDaily).
+	daily dailyLedger
 }
 
 // transportDisablesVerification walks the RoundTripper chain looking for any
@@ -165,44 +252,6 @@ func transportDisablesVerification(rt http.RoundTripper) bool {
 	return false
 }
 
-// effectiveTransport walks the RoundTripper chain (same Unwrap convention as
-// transportDisablesVerification) and returns the first concrete
-// *http.Transport, or nil when none is reachable (nil Transport, opaque
-// wrapper, or fully custom RoundTripper).
-func effectiveTransport(rt http.RoundTripper) *http.Transport {
-	for rt != nil {
-		if tr, ok := rt.(*http.Transport); ok {
-			return tr
-		}
-		unwrapper, ok := rt.(interface{ Unwrap() http.RoundTripper })
-		if !ok {
-			return nil
-		}
-		rt = unwrapper.Unwrap()
-	}
-	return nil
-}
-
-// pinningWrapper preserves a custom RoundTripper that has no reachable
-// concrete *http.Transport (test doubles, mocks, opaque wrappers). Replacing
-// it with a fresh *http.Transport would discard custom behavior; wrapping
-// keeps RoundTrip delegation intact while exposing Unwrap so verification
-// walks can still see through. TLS pinning itself can only be enforced on
-// *http.Transport stacks (via VerifyPeerCertificate) — for fully custom
-// transports there is no TLS handshake to hook, so preservation is the
-// reliability fix. The verify callback is retained to document that pinning
-// was requested for this client.
-type pinningWrapper struct {
-	inner  http.RoundTripper
-	verify func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
-}
-
-func (w *pinningWrapper) RoundTrip(r *http.Request) (*http.Response, error) {
-	return w.inner.RoundTrip(r)
-}
-
-func (w *pinningWrapper) Unwrap() http.RoundTripper { return w.inner }
-
 // NewClient returns a Client for cfg. Timeout defaults to 30s and Now to
 // time.Now when unset. An injected Config.HTTPClient is cloned (never
 // mutated) and always gets the never-follow-redirects policy: Daraja never
@@ -218,6 +267,17 @@ func (w *pinningWrapper) Unwrap() http.RoundTripper { return w.inner }
 // preserve TLS verification — never set InsecureSkipVerify, even on an
 // inner *http.Transport, and wrappers must expose Unwrap() so the check
 // can see through them.
+//
+// TLS pinning (cfg.TLSPinningEnabled) is enforced, never simulated: the pin
+// set for the configured host is snapshotted once here, and NewClient fails
+// closed when no pin is registered. Pinning is installed by cloning the
+// concrete *http.Transport (nil Transport ⇒ a pinned clone of
+// http.DefaultTransport), which preserves Proxy/DialContext/RootCAs and any
+// pre-existing VerifyPeerCertificate. A wrapper chain or an opaque custom
+// RoundTripper CANNOT be pinned — replacing it would silently discard the
+// caller's tracing/retry/logging behaviour, and leaving it in place would
+// silently disable pinning — so NewClient returns an actionable error and
+// tells the caller to install the verifier themselves (see SPKIVerifier).
 func NewClient(cfg Config) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -241,7 +301,15 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 	if cfg.TLSPinningEnabled {
 		hostname := hostnameFromURL(cfg.Environment.BaseURL())
-		verify := verifySPKIPinning(hostname)
+		// Snapshot ONCE at construction. The verify closure reads only this
+		// copy: pins registered after NewClient must not retroactively change
+		// a live client, and an empty set is a fail-closed configuration
+		// error rather than "allow everything".
+		pins := pinnedPinsSnapshot(hostname)
+		if len(pins) == 0 {
+			return nil, fmt.Errorf("mpesa: TLSPinningEnabled for %s but PinSPKI registered no pin; refusing to build an unpinned client (fail closed): register the SPKI SHA-256 before NewClient", hostname)
+		}
+		verify := SPKIVerifier(hostname, pins)
 		// applyPinning clones tr (preserving Proxy, DialContext,
 		// MaxIdleConns, RootCAs, etc.) and only installs the pinning
 		// callback, chaining any pre-existing VerifyPeerCertificate.
@@ -262,20 +330,26 @@ func NewClient(cfg Config) (*Client, error) {
 			}
 			return cloned
 		}
-		if concrete := effectiveTransport(hc.Transport); concrete != nil {
-			// Clone the effective transport found via the Unwrap walk, so
-			// RootCAs (e.g. test CAs) and tuning survive even when wrapped.
-			hc.Transport = applyPinning(concrete)
-		} else if hc.Transport == nil {
+		switch concrete, _ := hc.Transport.(*http.Transport); {
+		case hc.Transport == nil:
+			// No transport injected: pin a clone of the process default so
+			// system Proxy/DialContext/RootCAs tuning survives.
 			if dt, ok := http.DefaultTransport.(*http.Transport); ok {
 				hc.Transport = applyPinning(dt)
 			} else {
 				hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{VerifyPeerCertificate: verify}}
 			}
-		} else {
-			// No concrete *http.Transport reachable: wrap instead of
-			// replacing to preserve the custom RoundTripper.
-			hc.Transport = &pinningWrapper{inner: hc.Transport, verify: verify}
+		case concrete != nil:
+			// Exactly an *http.Transport: pin its clone, keeping every tuned
+			// field (Proxy, DialContext, MaxIdleConns, RootCAs...).
+			hc.Transport = applyPinning(concrete)
+		default:
+			// Wrapper chain (tracing/retry) or a fully custom RoundTripper.
+			// There is no way to enforce pinning here without either
+			// discarding the caller's middleware or silently skipping the
+			// check — both are security failures, so refuse and point at
+			// SPKIVerifier, which lets callers pin their own transport.
+			return nil, fmt.Errorf("mpesa: TLSPinningEnabled cannot be enforced on a custom/wrapped RoundTripper (%T): set VerifyPeerCertificate via mpesa.SPKIVerifier(hostname, pins) on your own *http.Transport instead of letting the SDK silently skip pinning", hc.Transport)
 		}
 	}
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error {
@@ -285,7 +359,19 @@ func NewClient(cfg Config) (*Client, error) {
 		cfg:     cfg,
 		baseURL: cfg.Environment.BaseURL(),
 		http:    hc,
+		limits:  cfg.resolvedLimits(),
 	}, nil
+}
+
+// checkDaily records amount against service's daily ceiling and reports
+// whether it fits. It is a no-op unless Config.TrackDaily is set, so the
+// opt-in semantics of the accumulator are enforced at the single point every
+// dispatched amount flows through.
+func (c *Client) checkDaily(service Service, amount int64) error {
+	if !c.cfg.TrackDaily {
+		return nil
+	}
+	return c.daily.consume(service, amount, c.limits, nairobiDay(c.cfg.Now()))
 }
 
 // Token returns the cached Bearer token, refreshing it single-flight before
@@ -297,15 +383,17 @@ func (c *Client) Token(ctx context.Context) (string, error) {
 	return tok, err
 }
 
-// setToken securely replaces the cached token, zeroing the old value first
-// to minimise the window where the credential resides in memory.
-func (c *Client) setToken(newToken string) {
-	c.zeroToken()
+// setTokenLocked securely replaces the cached token, zeroing the old value
+// first to minimise the window where the credential resides in memory.
+// Callers must hold c.mu.
+func (c *Client) setTokenLocked(newToken string) {
+	c.zeroTokenLocked()
 	c.tokenBytes = []byte(newToken)
 }
 
-// zeroToken overwrites the cached token bytes with zeros.
-func (c *Client) zeroToken() {
+// zeroTokenLocked overwrites the cached token bytes with zeros. Callers must
+// hold c.mu.
+func (c *Client) zeroTokenLocked() {
 	for i := range c.tokenBytes {
 		c.tokenBytes[i] = 0
 	}
@@ -317,7 +405,7 @@ func (c *Client) zeroToken() {
 func (c *Client) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.zeroToken()
+	c.zeroTokenLocked()
 	c.tokenExpiry = time.Time{}
 }
 
@@ -330,16 +418,101 @@ func (c *Client) tokenWithGen(ctx context.Context) (string, uint64, error) {
 	if fresh {
 		return tok, gen, nil
 	}
+	return c.leadRefresh(ctx)
+}
 
+// leadRefresh refreshes the token single-flight without holding c.mu across
+// network I/O.
+//
+// The fast path is a double-checked read under the write lock: a concurrent
+// leader may have committed a fresh token between the optimistic read in
+// tokenWithGen and acquiring the lock, and spinning up another OAuth
+// round-trip would then be pure waste (plus a token that invalidates the one
+// we just adopted).
+//
+// When a refresh is already in flight the caller waits on the leader's
+// completion channel instead of blocking the whole client on c.mu, then loops
+// back into the double check. Only the leader touches the network; everyone
+// else either adopts its result or becomes the next leader after a failure.
+func (c *Client) leadRefresh(ctx context.Context) (string, uint64, error) {
+	for {
+		c.mu.Lock()
+		if c.tokenFresh() {
+			tok, gen := string(c.tokenBytes), c.gen
+			c.mu.Unlock()
+			return tok, gen, nil
+		}
+		if c.refreshing {
+			done := c.refreshDone
+			c.mu.Unlock()
+			// Wait for the leader WITHOUT holding mu (or blocking traffic),
+			// but stay cancellable: a hung OAuth endpoint must not pin a
+			// waiter past its own context deadline.
+			select {
+			case <-done: // leader finished; loop back into the double check
+			case <-ctx.Done():
+				return "", 0, ctx.Err()
+			}
+			continue
+		}
+		c.refreshing = true
+		c.refreshDone = make(chan struct{})
+		done := c.refreshDone
+		c.mu.Unlock()
+
+		return c.runRefresh(ctx, done, false)
+	}
+}
+
+// leadForcedRefresh discards the cached token and runs exactly one OAuth
+// round-trip for all concurrent callers. Used after a 401.003.01, where the
+// cached value cannot be trusted even if fresh by wall clock.
+func (c *Client) leadForcedRefresh(ctx context.Context) (string, error) {
+	for {
+		c.mu.Lock()
+		if c.refreshing {
+			done := c.refreshDone
+			c.mu.Unlock()
+			// Cancellable like leadRefresh: a stalled leader must not pin
+			// a waiter past its own context deadline.
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+			// A peer completed a forced refresh: adopt its token rather
+			// than issuing a second one (generation guard).
+			c.mu.RLock()
+			tok, fresh := string(c.tokenBytes), c.tokenFresh()
+			c.mu.RUnlock()
+			if fresh {
+				return tok, nil
+			}
+			continue
+		}
+		c.refreshing = true
+		c.refreshDone = make(chan struct{})
+		done := c.refreshDone
+		c.mu.Unlock()
+
+		tok, _, err := c.runRefresh(ctx, done, true)
+		return tok, err
+	}
+}
+
+// runRefresh performs the OAuth round-trip for the elected leader and then
+// clears the single-flight bookkeeping, publishing the result to waiters.
+// The bookkeeping is cleared BEFORE the channel is closed so every waiter
+// observes a consistent (refreshing=false) state after waking.
+func (c *Client) runRefresh(ctx context.Context, done chan struct{}, force bool) (string, uint64, error) {
+	tok, err := c.refresh(ctx, force)
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.tokenFresh() {
-		return string(c.tokenBytes), c.gen, nil
-	}
-	if _, err := c.refreshLocked(ctx, false); err != nil {
-		return "", 0, err
-	}
-	return string(c.tokenBytes), c.gen, nil
+	c.refreshing = false
+	c.refreshDone = nil
+	gen := c.gen
+	c.mu.Unlock()
+	close(done)
+	return tok, gen, err
 }
 
 func (c *Client) tokenFresh() bool {
@@ -377,33 +550,68 @@ func refreshCadence(expiresIn FlexInt64) time.Duration {
 	return d
 }
 
-func (c *Client) refreshLocked(ctx context.Context, force bool) (string, error) {
+// refresh performs one OAuth round-trip in three phases so the network leg
+// runs without c.mu held:
+//
+//  1. pre-flight under the write lock (credential + rate-limit gate)
+//  2. the OAuth HTTP round-trip, lock-free
+//  3. commit under the write lock (zero the old token, set the new one,
+//     bump the generation LAST so a reader never sees a bumped generation
+//     with unset fields)
+//
+// Splitting the phases is what keeps a hung OAuth endpoint from stalling
+// every caller: previously the whole round-trip ran under the client write
+// lock, so a 30s timeout froze 100% of traffic. The lock is re-acquired only
+// for the cheap, CPU-bound work.
+func (c *Client) refresh(ctx context.Context, force bool) (string, error) {
 	if c.cfg.ConsumerKey == "" || c.cfg.ConsumerSecret == "" {
 		return "", fmt.Errorf("mpesa: Config.ConsumerKey and Config.ConsumerSecret are required before calling any endpoint")
 	}
 
 	// Rate limit: only apply to non-forced refreshes after consecutive failures.
 	// 401-triggered refreshes (force=true) bypass the rate limit entirely —
-	// they are expected behavior when tokens are invalidated.
+	// they are expected behavior when tokens are invalidated. Forced attempts
+	// still advance lastRefreshAttempt, so a burst of consecutive forced
+	// failures counts toward the gate instead of leaving the clock stale for
+	// the next non-forced refresh to slip through.
+	now := c.cfg.Now()
 	if !force {
-		now := c.cfg.Now()
-		if c.refreshFailures >= 3 && !c.lastRefreshAttempt.IsZero() && now.Sub(c.lastRefreshAttempt) < refreshRateLimit {
+		c.mu.Lock()
+		limited := c.refreshFailures >= 3 && !c.lastRefreshAttempt.IsZero() && now.Sub(c.lastRefreshAttempt) < refreshRateLimit
+		if !limited {
+			c.lastRefreshAttempt = now
+		}
+		c.mu.Unlock()
+		if limited {
 			return "", fmt.Errorf("mpesa: refresh rate limited after %d consecutive failures (last attempt %v ago, need %v)",
 				c.refreshFailures, now.Sub(c.lastRefreshAttempt).Round(time.Millisecond), refreshRateLimit)
 		}
+	} else {
+		c.mu.Lock()
 		c.lastRefreshAttempt = now
+		c.mu.Unlock()
+	}
+
+	// A failed refresh must never leave a token the gateway has already
+	// invalidated in the cache: zero it before returning so the next caller
+	// refetches instead of replaying a dead credential.
+	fail := func(err error) (string, error) {
+		c.mu.Lock()
+		c.zeroTokenLocked()
+		c.mu.Unlock()
+		return "", err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+oauthPath, nil)
 	if err != nil {
-		c.refreshFailures++
-		return "", err
+		c.recordRefreshFailure()
+		return fail(err)
 	}
 	req.SetBasicAuth(c.cfg.ConsumerKey, c.cfg.ConsumerSecret)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		c.refreshFailures++
-		return "", fmt.Errorf("mpesa: oauth request: %w", err)
+		c.recordRefreshFailure()
+		return fail(fmt.Errorf("mpesa: oauth request: %w", err))
 	}
 	// The body is always closed on return; a Close error here cannot change the
 	// outcome of a request whose response we have already read in full, so it is
@@ -412,42 +620,71 @@ func (c *Client) refreshLocked(ctx context.Context, force bool) (string, error) 
 	contentType := resp.Header.Get("Content-Type")
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseLen+1))
 	if err != nil {
-		c.refreshFailures++
-		return "", fmt.Errorf("mpesa: read oauth response: %w", err)
+		c.recordRefreshFailure()
+		return fail(fmt.Errorf("mpesa: read oauth response: %w", err))
 	}
 	if len(body) > maxResponseLen {
-		c.refreshFailures++
-		return "", fmt.Errorf("mpesa: %s response exceeds %d bytes", oauthPath, maxResponseLen)
+		err := fmt.Errorf("mpesa: %s response exceeds %d bytes", oauthPath, maxResponseLen)
+		c.recordRefreshFailure()
+		return fail(err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		c.refreshFailures++
-		return "", parseError(resp.StatusCode, contentType, body, c.cfg.ErrorLogger)
+		c.recordRefreshFailure()
+		return fail(parseError(resp.StatusCode, contentType, body, c.cfg.ErrorLogger))
 	}
 	var tok oauthTokenResponse
 	if err := json.Unmarshal(body, &tok); err != nil {
-		c.refreshFailures++
-		return "", fmt.Errorf("mpesa: decode oauth response: %w", err)
+		c.recordRefreshFailure()
+		return fail(fmt.Errorf("mpesa: decode oauth response: %w", err))
 	}
 	if tok.AccessToken == "" {
-		c.refreshFailures++
-		return "", fmt.Errorf("mpesa: oauth response missing access_token")
+		c.recordRefreshFailure()
+		return fail(fmt.Errorf("mpesa: oauth response missing access_token"))
 	}
-	now := c.cfg.Now()
-	c.setToken(tok.AccessToken)
+
+	// Commit: zero the previous value first to minimise the window where the
+	// credential sits in memory, then set the new token and expiry, and bump
+	// the generation LAST — a reader that observes the new generation must
+	// also observe the token and expiry written before it.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now = c.cfg.Now()
+	c.setTokenLocked(tok.AccessToken)
 	c.tokenExpiry = now.Add(refreshCadence(tok.ExpiresIn))
 	c.gen++
 	c.refreshFailures = 0
 	return string(c.tokenBytes), nil
 }
 
-// forceRefreshLocked discards the cached token unconditionally before
-// refetching. After a 401.003.01 the cached value cannot be trusted even if
-// fresh by wall-clock: Daraja invalidates ALL previously issued tokens the
-// moment ANY holder requests a new one (docs/apis/oauth.md) — including
-// sibling replicas sharing the credential.
-func (c *Client) forceRefreshLocked(ctx context.Context) (string, error) {
-	c.zeroToken()
-	return c.refreshLocked(ctx, true)
+// recordRefreshFailure counts a failed refresh attempt (drives the rate
+// limiter) under the lock. It also advances lastRefreshAttempt to the failure
+// instant, so consecutive forced (401-triggered) failures — which bypass the
+// gate check but still fail — keep the clock fresh; otherwise a following
+// non-forced refresh would escape the "3 failures within 5s" gate on a stale
+// timestamp. Denied (rate-limited) attempts return before any failure is
+// recorded, so they never extend the window.
+func (c *Client) recordRefreshFailure() {
+	c.mu.Lock()
+	c.refreshFailures++
+	c.lastRefreshAttempt = c.cfg.Now()
+	c.mu.Unlock()
+}
+
+// forceRefresh discards the cached token unconditionally before refetching.
+// After a 401.003.01 the cached value cannot be trusted even if fresh by
+// wall-clock: Daraja invalidates ALL previously issued tokens the moment ANY
+// holder requests a new one (docs/apis/oauth.md) — including sibling replicas
+// sharing the credential.
+//
+// The discard happens on the failure/progress paths rather than eagerly
+// before the round-trip: waiting for the leader to finish is what lets
+// concurrent business calls keep being served from an already-cached token
+// while a forced refresh is in flight (setTokenLocked still zeroes the
+// replaced value, and every failure path zeroes the cache), and a reader that
+// does replay the old token simply gets another 401 and adopts the new one
+// through the generation guard.
+func (c *Client) forceRefresh(ctx context.Context) (string, error) {
+	return c.leadForcedRefresh(ctx)
 }
 
 // refreshAfterInvalidToken resolves a 401.003.01 under the generation guard.
@@ -455,15 +692,14 @@ func (c *Client) forceRefreshLocked(ctx context.Context) (string, error) {
 // lead the hard refresh; otherwise a concurrent caller already refreshed and
 // we adopt its token without another OAuth round-trip.
 func (c *Client) refreshAfterInvalidToken(ctx context.Context, myGen uint64) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.gen == myGen {
-		return c.forceRefreshLocked(ctx)
+	c.mu.RLock()
+	peerRefreshed, fresh := c.gen != myGen, c.tokenFresh()
+	tok := string(c.tokenBytes)
+	c.mu.RUnlock()
+	if peerRefreshed && fresh {
+		return tok, nil
 	}
-	if c.tokenFresh() {
-		return string(c.tokenBytes), nil
-	}
-	return c.forceRefreshLocked(ctx)
+	return c.forceRefresh(ctx)
 }
 
 func (c *Client) attempt(ctx context.Context, token, path string, payload any) (status int, contentType string, body []byte, err error) {
@@ -542,13 +778,28 @@ func (c *Client) post(ctx context.Context, path string, payload any, out any) er
 // empty; TransactionType has NO default and must be set explicitly.
 // See docs/apis/stk-push.md for field constraints and the ResultCode catalog.
 func (c *Client) STKPush(ctx context.Context, r STKPushRequest) (*STKPushResponse, error) {
+	// The STK password is base64(shortcode + passkey + timestamp). An empty
+	// Passkey still produces a perfectly well-formed base64 blob, so the only
+	// place the mistake is detectable is before the round-trip: validate here
+	// (not in Config.Validate) so non-STK users without a passkey are
+	// unaffected, and the caller gets a client-side error instead of a
+	// 500.001.1001 gateway rejection.
+	if strings.TrimSpace(c.cfg.Passkey) == "" {
+		return nil, fmt.Errorf("mpesa: Config.Passkey is required for STK Push (it is bound into the request Password)")
+	}
 	if r.BusinessShortCode == "" {
 		r.BusinessShortCode = c.cfg.Shortcode
 	}
 	if r.PartyB == "" {
 		r.PartyB = r.BusinessShortCode
 	}
-	if err := r.Validate(); err != nil {
+	if err := r.ValidateWithLimits(c.limits); err != nil {
+		return nil, err
+	}
+	// Daily ceiling is checked LAST, immediately before dispatch: it must run
+	// after every other validation (and after the defaults injection above)
+	// so a rejected request never consumes accumulator budget.
+	if err := c.checkDaily(ServiceSTK, r.Amount); err != nil {
 		return nil, err
 	}
 	// Password binds to the shortcode actually sent — divergent values cause
@@ -574,6 +825,12 @@ func (c *Client) STKPush(ctx context.Context, r STKPushRequest) (*STKPushRespons
 // BusinessShortCode ← cfg.Shortcode when empty; the injected Password binds
 // to the EFFECTIVE shortcode either way. See docs/apis/stk-query.md.
 func (c *Client) STKQuery(ctx context.Context, r STKQueryRequest) (*STKQueryResponse, error) {
+	// Same contract as STKPush: the password is derived from the passkey, so
+	// an empty one can only fail server-side. Validate at the request level
+	// (not in Config.Validate) to keep non-STK users unaffected.
+	if strings.TrimSpace(c.cfg.Passkey) == "" {
+		return nil, fmt.Errorf("mpesa: Config.Passkey is required for STK Query (it is bound into the request Password)")
+	}
 	if err := r.Validate(); err != nil {
 		return nil, err
 	}
@@ -625,7 +882,10 @@ func (c *Client) B2CPayout(ctx context.Context, r B2CPayoutRequest) (*B2CRespons
 	if r.PartyA == "" {
 		r.PartyA = c.cfg.Shortcode
 	}
-	if err := r.Validate(); err != nil {
+	if err := r.ValidateWithLimits(c.limits); err != nil {
+		return nil, err
+	}
+	if err := c.checkDaily(ServiceB2C, r.Amount); err != nil {
 		return nil, err
 	}
 	var out B2CResponse
@@ -645,7 +905,7 @@ func (c *Client) TransactionStatus(ctx context.Context, r TransactionStatusReque
 	if r.IdentifierType == "" {
 		r.IdentifierType = IdentifierOrgShortcode
 	}
-	if err := r.Validate(); err != nil {
+	if err := r.ValidateWithLimits(c.limits); err != nil {
 		return nil, err
 	}
 	var out ConversationResponse
@@ -667,7 +927,10 @@ func (c *Client) Reversal(ctx context.Context, r ReversalRequest) (*Conversation
 	if r.ReceiverIdentifierType == "" {
 		r.ReceiverIdentifierType = ReceiverIdentifierOrg
 	}
-	if err := r.Validate(); err != nil {
+	if err := r.ValidateWithLimits(c.limits); err != nil {
+		return nil, err
+	}
+	if err := c.checkDaily(ServiceDefault, r.Amount); err != nil {
 		return nil, err
 	}
 	var out ConversationResponse
@@ -720,7 +983,10 @@ func (c *Client) C2BSimulate(ctx context.Context, r C2BSimulateRequest) (*C2BAck
 	if r.ShortCode == "" {
 		r.ShortCode = c.cfg.Shortcode
 	}
-	if err := r.Validate(); err != nil {
+	if err := r.ValidateWithLimits(c.limits); err != nil {
+		return nil, err
+	}
+	if err := c.checkDaily(ServiceC2B, r.Amount); err != nil {
 		return nil, err
 	}
 	var out C2BAckResponse
@@ -733,7 +999,10 @@ func (c *Client) C2BSimulate(ctx context.Context, r C2BSimulateRequest) (*C2BAck
 // GenerateQRCode creates a dynamic M-PESA QR image payload (fully
 // synchronous). See docs/apis/dynamic-qr.md.
 func (c *Client) GenerateQRCode(ctx context.Context, r QRCodeRequest) (*QRCodeResponse, error) {
-	if err := r.Validate(); err != nil {
+	if err := r.ValidateWithLimits(c.limits); err != nil {
+		return nil, err
+	}
+	if err := c.checkDaily(ServiceDefault, r.Amount); err != nil {
 		return nil, err
 	}
 	var out QRCodeResponse

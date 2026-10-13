@@ -5,7 +5,6 @@ package mpesa
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"strings"
 )
 
@@ -138,8 +137,13 @@ func (m MetadataItem) decodedValue() any {
 	}
 	var f float64
 	if err := json.Unmarshal(m.Value, &f); err == nil {
-		if !strings.ContainsAny(raw, ".eE") && f >= math.MinInt64 && f <= math.MaxInt64 {
-			return int64(f)
+		if !strings.ContainsAny(raw, ".eE") {
+			// Range gate BEFORE int64(f): the previous `f <= math.MaxInt64`
+			// admitted exactly 2^63, which converts to a negative int64 on
+			// amd64 (silent sign flip). See floatToInt64.
+			if v, cerr := floatToInt64(f); cerr == nil {
+				return v
+			}
 		}
 		return f
 	}

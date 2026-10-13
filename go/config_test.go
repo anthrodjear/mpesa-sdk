@@ -20,7 +20,13 @@ func TestSecretRedaction(t *testing.T) {
 	if strings.Contains(shown, "cs-TOPSECRET") || strings.Contains(shown, "pass-TOPSECRET") {
 		t.Fatalf("Config %%+v leaked secrets: %s", shown)
 	}
-	for _, want := range []string{"secrets:redacted", "ck-visible", "174379"} {
+	// The consumer key is a SECRET, not an identifier (SECURITY.md): no
+	// rendering may carry it in cleartext. Only the first/last 4 runes of the
+	// masked form may appear.
+	if strings.Contains(shown, "ck-visible") {
+		t.Fatalf("Config %%+v leaked ConsumerKey in cleartext: %s", shown)
+	}
+	for _, want := range []string{"secrets:redacted", "ck-v…ible", "174379"} {
 		if !strings.Contains(shown, want) {
 			t.Fatalf("Config GoString missing %q: %s", want, shown)
 		}

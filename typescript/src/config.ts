@@ -2,10 +2,12 @@
  * Configuration and credential management for the Daraja API — mirrors
  * go/config.go and python/mpesa/config.py. {@link Config} carries live
  * credentials so its text form can never leak them: {@link Config.toString}
- * shows `consumerKey` in CLEARTEXT (Go GoString parity) while
- * `consumerSecret`/`passkey` are omitted ENTIRELY; {@link Config.toJSON} /
+ * shows `consumerKey` MASKED (first-4/last-4) while `consumerSecret` and
+ * `passkey` are omitted ENTIRELY; {@link Config.toJSON} /
  * {@link Config.logSafe} return the same secret-free dict for structured
- * logging (Python `log_safe` parity).
+ * logging (Python `log_safe` parity). SECURITY.md forbids cleartext
+ * credentials in logs, so no rendering — human-readable or structured —
+ * ever exposes the key.
  *
  * `JSON.stringify(config)` invokes `toJSON()` and returns the redacted
  * form, so it is safe for structured logging. Environment-variable wiring
@@ -81,6 +83,13 @@ function validateField(value: unknown, name: string, check: (v: string) => boole
   if (typeof value !== "string" || !check(value)) throw new ConfigError(`mpesa: ${name}: ${reason}`);
 }
 
+import {
+  DEFAULT_TRANSACTION_LIMITS,
+  LIMIT_SERVICE_KEYS,
+  resolveTransactionLimits,
+  type TransactionLimits,
+} from "./limits.js";
+
 /**
  * Daraja platform base URLs this SDK is willing to mint tokens against.
  * The base URL MUST arrive from trusted config (Environment.SANDBOX or
@@ -111,19 +120,44 @@ function isAscii(s: string): boolean {
 }
 
 /**
+ * Mask a credential for human-readable logs: first 4 + last 4 characters
+ * with an ASCII ellipsis between (`abcd…wxyz` → stored as `abcd...wxyz`).
+ * Values of 8 characters or fewer collapse to `"****"` — with that little
+ * material, any reveal is a full reveal.
+ *
+ * Parity target with the Go/Python redaction fixes (same first-4/last-4
+ * shape); masks the `consumerKey` everywhere it is rendered for logging.
+ * SECURITY.md forbids cleartext credentials in logs, so the historical
+ * "key in cleartext (Go GoString parity)" behavior is retired here.
+ *
+ * @param value - Raw credential string.
+ * @returns The masked, log-safe form.
+ */
+function maskCredential(value: string): string {
+  if (value.length <= 8) return "****";
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
+/**
  * Immutable, credential-safe configuration. Validates on construction and
  * never exposes `consumerSecret` or `passkey` in any text form.
- * `environment` defaults to {@link Environment.SANDBOX}.
+ * `consumerKey` is rendered MASKED (first-4/last-4) in every log
+ * rendering — see {@link maskCredential}. `environment` defaults to
+ * {@link Environment.SANDBOX}; `limits` defaults to
+ * {@link DEFAULT_TRANSACTION_LIMITS} (see {@link resolveTransactionLimits}
+ * for why ceilings come from config, not constants).
  *
  * @example
  * ```ts
  * const cfg = new Config({
  *   consumerKey: "abcdefxy", consumerSecret: "mnopqrst",
  *   shortcode: "174379", passkey: "xyz789",
+ *   // Upgraded B2C tier — raise the ceiling, no SDK upgrade needed:
+ *   limits: { b2c: { maxPerTransaction: 700_000 } },
+ *   trackDaily: false,
  * });
  * console.log(cfg.toString());
- * // Config(sandbox, shortcode=174379, key=abcdefxy)
- * // consumerKey is cleartext (Go GoString parity); secrets are omitted.
+ * // Config(sandbox, shortcode=174379, key=abcd...efxy)
  * ```
  */
 export class Config {
@@ -141,6 +175,21 @@ export class Config {
   readonly passkey: string;
   /** Target environment (defaults to SANDBOX). */
   readonly environment: Environment;
+  /**
+   * Effective per-service transaction limits (never null). Always the
+   * full merge of the caller's partial over
+   * {@link DEFAULT_TRANSACTION_LIMITS} — omitted/partial input is safe
+   * because the merge fills every service and field.
+   */
+  readonly limits: TransactionLimits;
+  /**
+   * Daily accumulation opt-in. OFF by default: one process cannot see
+   * other replicas sharing the shortcode, so a local accumulator
+   * under-counts and would falsely reject in-ceiling traffic.
+   */
+  readonly trackDaily: boolean;
+  /** Raw (pre-merge) limits argument, kept only for shape validation. */
+  private readonly _rawLimits: TransactionLimits | undefined;
 
   /**
    * Build a validated Config.
@@ -152,6 +201,12 @@ export class Config {
    * non-empty ASCII with no `":"` (Basic-auth `key:secret` separator —
    * a colon would split credentials ambiguously at the gateway or a
    * forward proxy); `consumerSecret` must be non-empty ASCII.
+   *
+   * @param opts.limits - Optional partial per-service limits, merged over
+   *   {@link DEFAULT_TRANSACTION_LIMITS} (any subset is safe; omitted or
+   *   non-positive fields fall back to the defaults / UNLIMITED).
+   * @param opts.trackDaily - Opt into local per-day (Africa/Nairobi)
+   *   accumulation. OFF by default — see {@link Config.trackDaily}.
    *
    * @throws {ConfigError} When any field is missing or invalid.
    *
@@ -168,14 +223,56 @@ export class Config {
     shortcode?: string;
     passkey: string;
     environment?: Environment;
+    limits?: TransactionLimits;
+    trackDaily?: boolean;
   }) {
     this.consumerKey = opts.consumerKey;
     this.consumerSecret = opts.consumerSecret;
     this.shortcode = opts.shortcode ?? "";
     this.passkey = opts.passkey;
     this.environment = opts.environment ?? Environment.SANDBOX;
+    this.limits = resolveTransactionLimits(opts.limits);
+    // Deep-freeze the resolved limits (and each nested service bucket):
+    // Object.freeze(this) below alone leaves cfg.limits.stk untouched, so
+    // cfg.limits.stk.maxPerTransaction = 1 would silently succeed and break
+    // the immutable/resolve-once contract. Freezing in place preserves the
+    // resolution identity (already-resolved objects keep their marker).
+    for (const key of LIMIT_SERVICE_KEYS) {
+      Object.freeze(this.limits[key]);
+    }
+    Object.freeze(this.limits);
+    this._rawLimits = opts.limits;
+    this.trackDaily = opts.trackDaily ?? false;
     this.validate();
     Object.freeze(this);
+  }
+
+  /**
+   * Validate the OPTIONAL raw limits shape (pre-merge): every present
+   * ceiling must be a NUMBER. Type errors are loud here — a typo'd string
+   * is a {@link ConfigError} instead of a silent fallback — while VALUE
+   * normalization (`0`/negative/non-finite → UNLIMITED) belongs to
+   * `resolveTransactionLimits`, which is the single resolution point.
+   *
+   * @throws {ConfigError} When a supplied ceiling is not a number.
+   */
+  private validateLimits(): void {
+    // The raw (pre-merge) argument is re-derived here rather than stored:
+    // Config keeps the normalized merge, and this guard only rejects
+    // malformed TYPES before normalization would quietly repair them.
+    for (const key of LIMIT_SERVICE_KEYS) {
+      const svc = this._rawLimits?.[key];
+      if (svc === undefined) continue;
+      for (const field of ["maxPerTransaction", "maxPerDay"] as const) {
+        const value = svc[field];
+        if (value === undefined) continue;
+        if (typeof value !== "number") {
+          throw new ConfigError(
+            `mpesa: limits.${key}.${field} must be a number (0 = unlimited), got ${JSON.stringify(value)}`,
+          );
+        }
+      }
+    }
   }
 
   /**
@@ -188,8 +285,12 @@ export class Config {
    * - `consumerSecret`: non-empty string, ASCII-only.
    * - `shortcode`: `""` (per-request mode) or 5–10 ASCII digits.
    * - `passkey`: non-empty string.
+   * - `limits` (when supplied): every present ceiling must be a NUMBER —
+   *   non-numeric shapes are rejected loudly; `0`/negative/non-finite
+   *   values normalize to UNLIMITED in `resolveTransactionLimits`.
    */
   validate(): void {
+    this.validateLimits();
     validateField(this.consumerKey, "consumerKey", (v) => v.length > 0, "must be a non-empty string");
     validateField(
       this.consumerKey,
@@ -231,33 +332,33 @@ export class Config {
   }
 
   /**
-   * Credential-safe string: `Config(env, shortcode=XXXXXX, key=<cleartext>)`.
-   * `consumerSecret` and `passkey` are omitted entirely (Go GoString +
-   * Python `_redacted` convention: key shown, secrets redacted away).
+   * Credential-safe string: `Config(env, shortcode=XXXXXX, key=abcd...wxyz)`.
+   * `consumerKey` is MASKED to first-4/last-4 (SECURITY.md: never log
+   * credentials); `consumerSecret` and `passkey` are omitted entirely.
    * @example
    * ```ts
    * log.info(cfg.toString()); // safe for human-readable logs
    * ```
    */
   toString(): string {
-    return `Config(${this.environment.name}, shortcode=${this.shortcode}, key=${this.consumerKey})`;
+    return `Config(${this.environment.name}, shortcode=${this.shortcode}, key=${maskCredential(this.consumerKey)})`;
   }
 
   /**
-   * Secret-free object for structured logging: shortcode/environment/key.
+   * Secret-free object for structured logging: shortcode/environment/masked key.
    * `consumerSecret` and `passkey` are omitted entirely (Python
-   * `log_safe()` parity).
+   * `log_safe()` parity); the key is first-4/last-4 masked.
    * @example
    * ```ts
    * logger.info(cfg.toJSON());
-   * // { shortcode: "174379", environment: "sandbox", key: "abcdefxy" }
+   * // { shortcode: "174379", environment: "sandbox", key: "abcd...efxy" }
    * ```
    */
   toJSON(): { shortcode: string; environment: string; key: string } {
     return {
       shortcode: this.shortcode,
       environment: this.environment.name,
-      key: this.consumerKey,
+      key: maskCredential(this.consumerKey),
     };
   }
 

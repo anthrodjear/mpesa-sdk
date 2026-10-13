@@ -42,6 +42,43 @@ func TestFlexStringBranches(t *testing.T) {
 	}
 }
 
+// Arrays and objects are NOT strings: they must be hard errors rather than
+// raw JSON text, per the documented contract (strings/numbers/booleans/null
+// only). Quoted strings that merely CONTAIN brackets must still coerce.
+func TestFlexStringRejectsArraysAndObjects(t *testing.T) {
+	for _, payload := range []string{
+		`[1,2]`, `[]`, `[ ]`, `[{"a":1}]`,
+		`{"a":1}`, `{}`, `{ }`,
+	} {
+		var fs FlexString
+		if err := json.Unmarshal([]byte(payload), &fs); err == nil {
+			t.Errorf("FlexString(%s) = %q, want a hard error", payload, fs.String())
+		}
+	}
+	// Scalars covered by the contract keep coercing, including quoted
+	// strings that contain brackets and bare booleans/numbers.
+	kept := []struct {
+		json string
+		want string
+	}{
+		{`"[]"`, "[]"},
+		{`" [1,2] "`, " [1,2] "},
+		{`true`, "true"},
+		{`false`, "false"},
+		{`1.5`, "1.5"},
+	}
+	for _, tc := range kept {
+		var fs FlexString
+		if err := json.Unmarshal([]byte(tc.json), &fs); err != nil {
+			t.Errorf("FlexString(%s) error: %v", tc.json, err)
+			continue
+		}
+		if fs.String() != tc.want {
+			t.Errorf("FlexString(%s) = %q, want %q", tc.json, fs.String(), tc.want)
+		}
+	}
+}
+
 func TestFlexInt64Edges(t *testing.T) {
 	cases := []struct {
 		name    string

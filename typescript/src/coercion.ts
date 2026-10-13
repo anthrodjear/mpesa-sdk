@@ -115,3 +115,106 @@ export function coerceInt(
 export function parseIntSafe(value: unknown): number | null {
   return safeJsonInt(value);
 }
+
+/** Shared amount shape (Python `_AMOUNT_RE` parity): optional sign, 1–12
+ *  integer digits, optional fraction of 1–6 digits. ASCII-only. */
+const AMOUNT_RE = /^[+-]?[0-9]{1,12}(\.[0-9]{1,6})?$/;
+
+/** Hard cap on coerced wire strings (Python `_MAX_STR_LEN` parity). */
+const MAX_WIRE_STR_LEN = 4096;
+
+/**
+ * Canonical Daraja amount as a number, or null when hostile/unknown
+ * (Python `coerce_amount` parity).
+ *
+ * Guards, in order: booleans → null (bool is not an amount); non-finite
+ * numbers (JSON `1e999` → Infinity) → null; |number| > 2^53 → null
+ * (precision loss); strings must fully match the ASCII decimal shape
+ * (rejects `"1_000"`, `"0x10"`, Unicode digits); every other type → null.
+ *
+ * @example
+ * ```ts
+ * coerceAmount("10.50");  // 10.5
+ * coerceAmount(true);     // null
+ * coerceAmount(9e999);    // null (non-finite)
+ * ```
+ */
+export function coerceAmount(value: unknown): number | null {
+  if (typeof value === "boolean") return null;
+  if (typeof value === "number") {
+    return Number.isFinite(value) && Math.abs(value) <= 2 ** 53 ? value : null;
+  }
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!AMOUNT_RE.test(text)) return null;
+    const parsed = Number.parseFloat(text);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+/**
+ * Canonical string form of any decoded JSON wire value, or null
+ * (Python `coerce_str` parity, trimmed, capped at 4096 chars).
+ *
+ * `null`/`undefined` → null; booleans → `"true"`/`"false"`; strings trim;
+ * integral floats de-junk (`3599.0` → `"3599"`); non-finite floats
+ * (`Infinity` from `1e999`) → null because `String()` would render
+ * `"Infinity"`, a lie about the wire value; objects/arrays → compact JSON.
+ *
+ * @example
+ * ```ts
+ * coerceWireString(0);       // "0"
+ * coerceWireString(" x ");   // "x"
+ * coerceWireString(null);    // null
+ * ```
+ */
+export function coerceWireString(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  let out: string;
+  if (typeof value === "string") {
+    out = value.trim();
+  } else if (typeof value === "boolean") {
+    out = value ? "true" : "false";
+  } else if (typeof value === "number") {
+    if (!Number.isFinite(value)) return null;
+    out = Number.isInteger(value) ? String(value) : String(value);
+  } else {
+    try {
+      out = JSON.stringify(value) ?? "";
+    } catch {
+      return null;
+    }
+  }
+  return out.length > MAX_WIRE_STR_LEN ? out.slice(0, MAX_WIRE_STR_LEN) : out;
+}
+
+/**
+ * Strict integer from lenient wire shapes, else null (Python `coerce_int`
+ * parity): booleans → null; finite safe integers pass; string forms trim,
+ * strip ONE surrounding quote pair, and must match the ASCII digit gate
+ * (±19 digits) before parsing. Values beyond ±2^53 return null — a
+ * documented JS divergence: `JSON.parse` has already rounded such
+ * literals, so returning them would hand callers precision-corrupted
+ * magnitudes.
+ *
+ * @example
+ * ```ts
+ * coerceWireInt("20191219102115");  // 20191219102115
+ * coerceWireInt(true);              // null
+ * ```
+ */
+export function coerceWireInt(value: unknown): number | null {
+  if (typeof value === "boolean") return null;
+  if (typeof value === "number") {
+    return Number.isFinite(value) && Number.isSafeInteger(value) ? value : null;
+  }
+  if (typeof value === "string") {
+    let text = value.trim();
+    if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) {
+      text = text.slice(1, -1).trim();
+    }
+    return /^[+-]?[0-9]{1,19}$/.test(text) ? safeJsonInt(text) : null;
+  }
+  return null;
+}

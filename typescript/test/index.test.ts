@@ -10,6 +10,11 @@ import {
   Environment,
   ConfigError,
   Config,
+  // Limits
+  DEFAULT_TRANSACTION_LIMITS,
+  LIMIT_SERVICE_KEYS,
+  effectiveCeiling,
+  resolveTransactionLimits,
   // Auth
   TokenManager,
   getAccessToken,
@@ -19,6 +24,10 @@ import {
   createClientFromEnv,
   // Errors
   MpesaError,
+  MpesaDecodeError,
+  // Callbacks
+  StkCallback,
+  parseSTKCallback,
   // Enums
   MpesaEnum,
   TransactionType,
@@ -42,6 +51,8 @@ import {
   MetadataMap,
   parseBalanceSegments,
   parseAsyncResultJson,
+  ParsedAsyncResult,
+  parseAsyncResultBody,
   MAX_ASYNC_RESULT_BYTES,
   // Version
   VERSION,
@@ -69,7 +80,13 @@ import type {
   StkCallbackResult,
   MetadataItem,
   AsyncResult,
+  AsyncResultParameter,
+  ReferenceItem,
   BalanceSegment,
+  // Limits
+  LimitService,
+  ServiceLimits,
+  TransactionLimits,
   MpesaClientOptions,
   TokenManagerOptions,
 } from "../src/index.js";
@@ -81,12 +98,19 @@ describe("barrel exports — non-null", () => {
     Environment,
     ConfigError,
     Config,
+    DEFAULT_TRANSACTION_LIMITS,
+    LIMIT_SERVICE_KEYS,
+    effectiveCeiling,
+    resolveTransactionLimits,
     TokenManager,
     getAccessToken,
     MpesaClient,
     createClient,
     createClientFromEnv,
     MpesaError,
+    MpesaDecodeError,
+    StkCallback,
+    parseSTKCallback,
     MpesaEnum,
     TransactionType,
     CommandID,
@@ -104,6 +128,8 @@ describe("barrel exports — non-null", () => {
     parseIntSafe,
     parseBalanceSegments,
     parseAsyncResultJson,
+    ParsedAsyncResult,
+    parseAsyncResultBody,
     MAX_ASYNC_RESULT_BYTES,
     MetadataMap,
     VERSION,
@@ -142,12 +168,17 @@ type _StkCallbackResult        = StkCallbackResult;
 type _MetadataItem             = MetadataItem;
 type _AsyncResult              = AsyncResult;
 type _BalanceSegment           = BalanceSegment;
+type _AsyncResultParameter     = AsyncResultParameter;
+type _ReferenceItem            = ReferenceItem;
+type _LimitService             = LimitService;
+type _ServiceLimits            = ServiceLimits;
+type _TransactionLimits        = TransactionLimits;
 type _MpesaClientOptions       = MpesaClientOptions;
 type _TokenManagerOptions      = TokenManagerOptions;
 
 describe("barrel exports — VERSION", () => {
-  it('VERSION equals "0.3.0"', () => {
-    expect(VERSION).toBe("0.3.0");
+  it('VERSION equals "0.4.0"', () => {
+    expect(VERSION).toBe("0.4.0");
   });
 });
 
@@ -183,15 +214,18 @@ describe("barrel exports — count", () => {
     const allExports = [
       // Runtime (26)
       "Environment", "ConfigError", "Config",
+      "DEFAULT_TRANSACTION_LIMITS", "LIMIT_SERVICE_KEYS",
+      "effectiveCeiling", "resolveTransactionLimits",
       "TokenManager", "getAccessToken",
       "MpesaClient", "createClient", "createClientFromEnv",
-      "MpesaError",
+      "MpesaError", "MpesaDecodeError", "StkCallback", "parseSTKCallback",
       "MpesaEnum", "TransactionType", "CommandID", "ResponseType", "QRTrxCode",
       "generatePassword", "normalizePhone", "securityCredential", "newOriginatorID",
       "ResultClass", "classifyResultCode",
       "safeJsonInt", "isNumericString", "coerceInt", "parseIntSafe",
       "MetadataMap", "parseBalanceSegments",
-      "parseAsyncResultJson", "MAX_ASYNC_RESULT_BYTES",
+      "parseAsyncResultJson", "ParsedAsyncResult", "parseAsyncResultBody",
+      "MAX_ASYNC_RESULT_BYTES",
       "VERSION",
       // Type-only (23)
       "STKPushRequest", "STKQueryRequest", "B2CRequest", "B2CPayoutRequest",
@@ -199,7 +233,9 @@ describe("barrel exports — count", () => {
       "C2BRegisterRequest", "C2BSimulateRequest", "DynamicQRRequest", "QRCodeRequest",
       "STKPushResponse", "STKQueryResponse", "ConversationResponse",
       "C2BAckResponse", "QRCodeResponse", "OAuthToken",
-      "StkCallbackResult", "MetadataItem", "AsyncResult", "BalanceSegment",
+      "StkCallbackResult", "MetadataItem", "AsyncResult", "AsyncResultParameter",
+      "ReferenceItem", "BalanceSegment",
+      "LimitService", "ServiceLimits", "TransactionLimits",
       "MpesaClientOptions", "TokenManagerOptions",
     ];
 
@@ -208,14 +244,17 @@ describe("barrel exports — count", () => {
     // Verify each runtime export is actually defined in the module namespace
     const runtimeMod: Record<string, unknown> = {
       Environment, ConfigError, Config,
+      DEFAULT_TRANSACTION_LIMITS, LIMIT_SERVICE_KEYS,
+      effectiveCeiling, resolveTransactionLimits,
       TokenManager, getAccessToken,
       MpesaClient, createClient, createClientFromEnv,
-      MpesaError,
+      MpesaError, MpesaDecodeError, StkCallback, parseSTKCallback,
       MpesaEnum, TransactionType, CommandID, ResponseType, QRTrxCode,
       generatePassword, normalizePhone, securityCredential, newOriginatorID,
       ResultClass, classifyResultCode,
       safeJsonInt, isNumericString, coerceInt, parseIntSafe,
-      parseBalanceSegments, parseAsyncResultJson, MAX_ASYNC_RESULT_BYTES,
+      parseBalanceSegments, parseAsyncResultJson, ParsedAsyncResult,
+      parseAsyncResultBody, MAX_ASYNC_RESULT_BYTES,
       MetadataMap, VERSION,
     };
 

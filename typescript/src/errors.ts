@@ -74,6 +74,71 @@ function renderMessage(
 }
 
 /**
+ * Decode a JSON body into a plain object, or `null` when it is not one —
+ * NEVER throws. Used on the 401.003.01 retry probe where a malformed body
+ * simply means "no Daraja error envelope, do not retry".
+ *
+ * @param body - Raw response body text.
+ * @returns The decoded object, or null for invalid JSON / non-object JSON
+ *   (`null`, arrays, scalars).
+ */
+export function tryDecodeJsonObject(body: string): Record<string, unknown> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return null;
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/**
+ * Single guarded JSON-object decoder for every SDK response/callback parse
+ * path. Replaces the `JSON.parse(body) as T` pattern that let
+ * `TypeError`/`SyntaxError` escape the typed {@link MpesaError} contract.
+ *
+ * Guards (in order):
+ * 1. `JSON.parse` failure → {@link MpesaDecodeError} (a captive-portal HTML
+ *    page or an empty body lands here, not in a raw SyntaxError).
+ * 2. Non-object JSON (`"null"`, `"42"`, `"[]"`) → {@link MpesaDecodeError}
+ *    (previously `JSON.parse("null")` succeeded and the subsequent property
+ *    read threw `TypeError: Cannot read properties of null`).
+ *
+ * @typeParam T - Expected response shape; the guard proves "plain object",
+ *   individual field shapes remain the caller's responsibility (same trust
+ *   level as the previous hand-written cast, minus the crash class).
+ * @param body - Raw response body text.
+ * @param label - Optional context (endpoint path / corpus name) for the message.
+ * @returns The decoded object cast to `T`.
+ * @throws {MpesaDecodeError} When the body is not a JSON object.
+ *
+ * @example
+ * ```ts
+ * const resp = decodeJsonObject<STKPushResponse>(body, STK_PUSH_PATH);
+ * ```
+ */
+export function decodeJsonObject<T>(body: string, label?: string): T {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch (err) {
+    const reason = err instanceof Error ? err.name : "SyntaxError";
+    throw new MpesaDecodeError(
+      `mpesa: decode ${label ? `${label} ` : ""}body: invalid JSON (${reason})`,
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new MpesaDecodeError(
+      `mpesa: decode ${label ? `${label} ` : ""}body: expected a JSON object, got ${Array.isArray(parsed) ? "array" : parsed === null ? "null" : typeof parsed}`,
+    );
+  }
+  return parsed as T;
+}
+
+/**
  * The typed surface for non-2xx Daraja responses (go `Error`, py `MpesaError`):
  * `statusCode` is always set; `requestId`, `errorCode`, `errorMessage` are null
  * when absent or hostile. `message` renders Go-style via {@link renderMessage}.
@@ -112,8 +177,9 @@ export class MpesaError extends Error {
     Object.setPrototypeOf(this, MpesaError.prototype);
   }
 
-  /**
-   * Build an {@link MpesaError} from a raw non-2xx body. Never throws: malformed
+
+/**
+ * Build an {@link MpesaError} from a raw non-2xx body. Never throws: malformed
    * JSON, wrong shapes and binary garbage fall through to an instance whose
    * `errorMessage` carries a diagnostic with byte length, content type (when
    * known) and a printable-ASCII snippet. Envelope fields accept strings and
@@ -142,5 +208,45 @@ export class MpesaError extends Error {
       : `unparseable error body (${bytes} bytes${contentType ? `, ${contentType}` : ""}): ${asciiSnippet(text)}`;
     return new MpesaError(statusCode, sanitizeWireString(ridRaw) || null,
       sanitizeWireString(codeRaw) || null, errorMessage);
+  }
+}
+
+/**
+ * Raised when a 2xx (or otherwise parseable) response/callback body cannot
+ * be decoded into the expected JSON object shape. Subclasses
+ * {@link MpesaError} so existing `catch (e) { if (e instanceof MpesaError) }`
+ * handlers keep working — the failure mode this replaces was a raw
+ * `TypeError`/`SyntaxError` escaping that contract (e.g. `JSON.parse("null")`
+ * succeeds and then `probe["errorCode"]` throws, or a 2xx HTML error page
+ * from a captive portal throws `SyntaxError`).
+ *
+ * `statusCode` carries the HTTP status when the body came from a response
+ * (0 for locally-decoded bodies such as callback POSTs).
+ *
+ * Declared AFTER {@link MpesaError}: a subclassing `extends` clause evaluates
+ * its parent at class-definition time, so the parent must already be
+ * initialized (class-declaration TDZ otherwise throws at module load).
+ *
+ * @example
+ * ```ts
+ * try { await client.stkPush(req); }
+ * catch (e) {
+ *   if (e instanceof MpesaDecodeError) log.warn("bad gateway body", e.statusCode);
+ * }
+ * ```
+ */
+export class MpesaDecodeError extends MpesaError {
+  /**
+   * @param message - Full diagnostic; the `mpesa: ` prefix is enforced here so
+   *   every SDK error message keeps one canonical prefix.
+   * @param statusCode - HTTP status of the offending response (0 when unknown).
+   */
+  constructor(message: string, statusCode = 0) {
+    super(statusCode);
+    // Override the HTTP-style rendering: decode failures are local parse
+    // problems, not gateway envelopes.
+    this.message = message.startsWith("mpesa: ") ? message : `mpesa: ${message}`;
+    this.name = "MpesaDecodeError";
+    Object.setPrototypeOf(this, MpesaDecodeError.prototype);
   }
 }

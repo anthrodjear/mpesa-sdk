@@ -5,6 +5,27 @@ unvalidated models. Wire-key traps: B2C uses ``InitiatorName`` + double-s
 Reversal keeps misspelled ``RecieverIdentifierType`` (default "11").
 repr/str NEVER render initiator or SecurityCredential values (GoString
 parity); pickle/asdict still carry them -- redact at the log boundary.
+
+PARITY CONTRACT with :mod:`mpesa.requests_sync`: the two files share ONE
+set of validators (``_url``, ``_phone``, ``_shortcode``, ``_amount_int``,
+``_check_transaction_limit``, ``_free_text``, ``_printable``, ``_require``)
+and every rule is applied identically to the same kind of wire field, so
+neither file can be hardened alone. Concretely: every identifier gets the
+same length/printable cap (TxStatus identifiers match
+``ReversalRequest``'s ``_printable(..., 64)``), every free-text field is
+trimmed and bounded the same way, every MSISDN field goes through
+``_phone`` and every shortcode field through ``_shortcode`` (B2C ``PartyA``
+is a shortcode, not an MSISDN -- which is why it is validated as one
+rather than normalized as a phone), and every amount-bearing endpoint
+resolves its ceiling through the same ``limits`` argument, so the sync
+(STK/C2B/QR) and async (B2C/TxStatus/Reversal) paths can never disagree
+about a merchant's tier.
+
+TRANSPORT NOTE: this module contains MODELS ONLY. There is no async HTTP
+transport: :class:`mpesa.client.MpesaClient` blocks the event loop on the
+OAuth lock by design (single-flight refresh, held across the network leg),
+so an async transport is out of scope -- and no model here may be used as
+an excuse to build one.
 """
 from __future__ import annotations
 
@@ -12,15 +33,19 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .enums import RECEIVER_IDENTIFIER_ORG, CommandID
+from .limits import TransactionLimits
 from .requests_sync import (
     _amount_int,
+    _check_transaction_limit,
     _clean,
     _ensure_validated,
     _enum_value,
+    _free_text,
     _phone,
     _printable,
     _require,
     _sentinel,
+    _shortcode,
     _url,
 )
 
@@ -69,7 +94,7 @@ class B2CPayoutRequest:
     def __repr__(self) -> str:
         return _safe(self, "party_a", "amount")
 
-    def validate(self) -> None:
+    def validate(self, limits: "TransactionLimits | None" = None) -> None:
         """Constraint parity with Go Validate(); normalizes PartyB.
 
         Daraja contract on OriginatorConversationID: REQUIRED at validate
@@ -78,6 +103,9 @@ class B2CPayoutRequest:
         empty value via :func:`~mpesa.helpers.new_originator_id` BEFORE
         calling this, so direct ``validate()`` on a model with an empty
         id fails while the client path always sends a fresh 16-char key.
+
+        ``limits`` supplies the B2C tier ceiling (see :mod:`mpesa.limits`);
+        the minimum stays the documented 10 KES and only the maximum moves.
         """
         if not (self.originator_conversation_id or "").strip():
             raise ValueError("mpesa: OriginatorConversationID is required")
@@ -90,14 +118,13 @@ class B2CPayoutRequest:
             raise ValueError(f"mpesa: B2C CommandID {cmd!r} not in "
                              "{SalaryPayment, BusinessPayment, PromotionPayment}")
         amount = _amount_int("B2C Amount", self.amount)
-        if not 10 <= amount <= 250_000:
-            raise ValueError(f"mpesa: B2C Amount {amount} outside [10,250000] KES")
-        _require("PartyA", self.party_a)
+        if amount < 10:
+            raise ValueError(f"mpesa: B2C Amount {amount} below the 10 KES "
+                             f"minimum for a B2C payout")
+        _check_transaction_limit("B2C Amount", "b2c", amount, limits)
+        self.party_a = _shortcode("PartyA", self.party_a)
         self.party_b = _phone("PartyB", self.party_b)
-        n = len(self.remarks.strip())
-        if not 2 <= n <= 100:
-            raise ValueError(f"mpesa: B2C Remarks must be 2-100 characters, got {n}")
-        self.remarks = self.remarks.strip()
+        self.remarks = _free_text("B2C Remarks", self.remarks, 100, minimum=2)
         _url("QueueTimeOutURL", self.queue_time_out_url)
         _url("ResultURL", self.result_url)
         self._validated = True
@@ -147,7 +174,7 @@ class TransactionStatusRequest:
     def __repr__(self) -> str:
         return _safe(self, "transaction_id", "original_conversation_id")
 
-    def validate(self) -> None:
+    def validate(self, limits: "TransactionLimits | None" = None) -> None:
         self.transaction_id = self.transaction_id.strip()
         self.original_conversation_id = self.original_conversation_id.strip()
         if not self.transaction_id and not self.original_conversation_id:
@@ -156,19 +183,25 @@ class TransactionStatusRequest:
         if self.transaction_id and self.original_conversation_id:
             raise ValueError("mpesa: exactly one of TransactionID or "
                              "OriginalConversationID must be set, got both")
+        # Identifier parity with ReversalRequest (and STKQueryRequest's
+        # CheckoutRequestID): both identifiers get the SAME length +
+        # printable-ASCII cap, so an overlong receipt cannot be smuggled
+        # through the one model that was missing the check.
+        if self.transaction_id:
+            _printable("TransactionID", self.transaction_id, 64)
+        if self.original_conversation_id:
+            _printable("OriginalConversationID",
+                       self.original_conversation_id, 64)
         cmd = _enum_value(self.command_id)
         if cmd and cmd != CommandID.TX_STATUS_QUERY.value:
             raise ValueError(
                 "mpesa: TransactionStatus CommandID must be TransactionStatusQuery")
         _require("Initiator", self.initiator)
         _require("SecurityCredential", self.security_credential)
-        _require("PartyA", self.party_a)
+        _shortcode("PartyA", self.party_a)
         if self.identifier_type:
             _printable("IdentifierType", self.identifier_type, 12)
-        n = len(self.remarks.strip())
-        if not 1 <= n <= 100:
-            raise ValueError(f"mpesa: Remarks must be 1-100 characters, got {n}")
-        self.remarks = self.remarks.strip()
+        self.remarks = _free_text("Remarks", self.remarks, 100)
         _url("ResultURL", self.result_url)
         _url("QueueTimeOutURL", self.queue_time_out_url)
         self._validated = True
@@ -217,7 +250,7 @@ class ReversalRequest:
     def __repr__(self) -> str:
         return _safe(self, "transaction_id", "amount")
 
-    def validate(self) -> None:
+    def validate(self, limits: "TransactionLimits | None" = None) -> None:
         cmd = _enum_value(self.command_id)
         if cmd and cmd != CommandID.REVERSAL.value:
             raise ValueError("mpesa: Reversal CommandID must be TransactionReversal")
@@ -225,17 +258,14 @@ class ReversalRequest:
         _require("SecurityCredential", self.security_credential)
         _printable("TransactionID", self.transaction_id, 64)
         _require("TransactionID", self.transaction_id)
-        amount = _amount_int("Reversal Amount", self.amount)
-        if amount <= 0:
-            raise ValueError(f"mpesa: Reversal Amount must be positive, got {amount}")
+        _amount_int("Reversal Amount", self.amount)
+        _check_transaction_limit(
+            "Reversal Amount", "default", self.amount, limits)
         _require("ReceiverParty", self.receiver_party)
         if self.receiver_identifier_type is not None:
             _printable("ReceiverIdentifierType", self.receiver_identifier_type, 12)
-        n = len(self.remarks.strip())
-        if not 2 <= n <= 100:
-            raise ValueError(
-                f"mpesa: Reversal Remarks must be 2-100 characters, got {n}")
-        self.remarks = self.remarks.strip()
+        self.remarks = _free_text(
+            "Reversal Remarks", self.remarks, 100, minimum=2)
         _url("ResultURL", self.result_url)
         _url("QueueTimeOutURL", self.queue_time_out_url)
         self._validated = True
@@ -282,20 +312,20 @@ class AccountBalanceRequest:
     def __repr__(self) -> str:
         return _safe(self, "party_a")
 
-    def validate(self) -> None:
+    def validate(self, limits: "TransactionLimits | None" = None) -> None:
+        # No amount (a balance query reports one, it never sends one):
+        # ``limits`` is accepted only so the client can call
+        # validate(limits=...) uniformly across every model.
         cmd = _enum_value(self.command_id)
         if cmd and cmd != CommandID.ACCOUNT_BALANCE.value:
             raise ValueError(
                 "mpesa: AccountBalance CommandID must be AccountBalance")
         _require("Initiator", self.initiator)
         _require("SecurityCredential", self.security_credential)
-        _require("PartyA", self.party_a)
+        _shortcode("PartyA", self.party_a)
         if self.identifier_type:
             _printable("IdentifierType", self.identifier_type, 12)
-        n = len(self.remarks.strip())
-        if not 1 <= n <= 100:
-            raise ValueError(f"mpesa: Remarks must be 1-100 characters, got {n}")
-        self.remarks = self.remarks.strip()
+        self.remarks = _free_text("Remarks", self.remarks, 100)
         _url("QueueTimeOutURL", self.queue_time_out_url)
         _url("ResultURL", self.result_url)
         self._validated = True

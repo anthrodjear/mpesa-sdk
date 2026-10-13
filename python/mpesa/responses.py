@@ -27,7 +27,7 @@ from typing import Any, ClassVar, TypeVar
 # the F401 suppression on the next line is scoped to it deliberately.
 from ._limits import MAX_BODY_BYTES as _MAX_BODY_BYTES  # noqa: F401
 from ._limits import check_body_size as _check_body_size
-from .coercion import coerce_int, coerce_str, safe_json_int
+from .coercion import coerce_int, coerce_str, coerce_token, safe_json_int
 
 __all__ = ["STKPushResponse", "STKQueryResponse", "ConversationResponse",
            "B2CResponse", "C2BAckResponse", "QRCodeResponse", "OAuthToken"]
@@ -240,16 +240,23 @@ class OAuthToken(_Response):
 
         token = OAuthToken.from_json(raw)
         cache(token.access_token, ttl=token.expires_in_seconds)
+
+    ``access_token`` is CREDENTIAL-SHAPED: JSON null decodes to ``None``
+    (explicit absence -- the caller's falsy check raises) and any
+    non-string value raises :class:`~mpesa.exceptions.InvalidTokenError`.
+    The historical coercion was ``str``, so ``{"access_token": null}``
+    yielded the truthy literal ``"None"`` and poisoned the token cache;
+    see :func:`mpesa.coercion.coerce_token`.
     """
 
-    access_token: str = ""
+    access_token: str | None = None
     expires_in_seconds: int | None = None
 
     _WIRE = {
         "access_token": "access_token",  # nosec B105  # JSON key name, not a credential
         "expires_in_seconds": "expires_in",
     }
-    _COERCE = {"access_token": str, "expires_in_seconds": coerce_int}
+    _COERCE = {"access_token": coerce_token, "expires_in_seconds": coerce_int}
 
     @classmethod
     def from_json(cls, data: "dict | bytes | str") -> "OAuthToken":
@@ -259,7 +266,9 @@ class OAuthToken(_Response):
         falling back to the 50-minute cadence; absent here maps to
         ``expires_in_seconds=None`` so :meth:`auth.TokenManager._cadence`
         already yields the same 3000s fallback. All other shape errors
-        stay loud via the base decoder.
+        stay loud via the base decoder -- including the non-string
+        ``access_token`` guard, whose message never mentions ``expires_in``
+        so it is never mistaken for this tolerance path.
         """
         try:
             return super().from_json(data)  # type: ignore[return-value]
@@ -283,6 +292,6 @@ class OAuthToken(_Response):
 
     def __repr__(self) -> str:
         """Credential-safe: token length only, never the value."""
-        token = f"<redacted {len(self.access_token)}ch>"
+        token = f"<redacted {len(self.access_token or '')}ch>"
         return (f"OAuthToken(access_token={token}, "
                 f"expires_in_seconds={self.expires_in_seconds!r})")

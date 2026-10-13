@@ -111,6 +111,15 @@ Gateway: `500.002.1001` duplicate OriginatorConversationID · `500.003.02` spike
 - Initiator password rules: valid 90 days; allowed specials only `# & % $`.
 - Role required: ORG B2C API Initiator (set via portal Set Restricted ORG API PASSWORD).
 
+## Configured ceilings (client-side)
+
+The SDKs enforce the table above client-side, defaulting B2C to 250,000 KES per
+transaction / 500,000 KES per day. Merchants with a Safaricom-approved higher
+tier raise the ceiling explicitly (`Config.Limits` in Go,
+`Config(limits=TransactionLimits(…))` in Python, `limits` in the TypeScript
+`Config`) instead of changing the default. The gateway remains the final
+authority: amounts above your tier fail there with `ResultCode 3`.
+
 ## SDK Requirements
 
 1. `SecurityCredential` builder: load .cer file (skip expiry-chain validation — official certs are

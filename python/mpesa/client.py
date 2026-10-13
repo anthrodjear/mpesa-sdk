@@ -30,11 +30,13 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import threading
 from datetime import datetime, timezone
 from types import TracebackType
 from typing import Any, TypeVar
 
 import requests
+from requests.adapters import DEFAULT_POOLSIZE, HTTPAdapter
 
 # Back-compat re-export from mpesa._limits (the single source of truth),
 # pinned by tests/test_hardening_regressions.py::
@@ -47,7 +49,13 @@ from .auth import TokenManager
 from .config import Config
 from .enums import CommandID
 from .exceptions import MpesaError
-from .helpers import generate_password, new_originator_id
+from .helpers import EAT, generate_password, new_originator_id
+from .limits import (
+    ServiceLimits,
+    TransactionLimits,
+    _resolve_transaction_limits,
+    _resolved_max,
+)
 from .requests_async import (
     AccountBalanceRequest,
     B2CPayoutRequest,
@@ -87,6 +95,57 @@ _ERR_INVALID_TOKEN = "401.003.01"  # nosec B105  # M-Pesa error code, not a toke
 _ModelT = TypeVar("_ModelT")
 
 
+def _utc_now() -> datetime:
+    """Module-level UTC clock fallback (hoisted out of the hot path)."""
+    return datetime.now(timezone.utc)
+
+
+def _clone_adapter(adapter: Any) -> Any:
+    """Pool-isolated twin of one mounted adapter (see :func:`_clone_adapters`).
+
+    Only a STANDARD ``HTTPAdapter`` is rebuilt with its own connection
+    pool. A subclass or exotic adapter is passed through BY REFERENCE: the
+    caller mounted it deliberately, and silently downgrading it to a plain
+    ``HTTPAdapter`` would drop its behaviour (telemetry, custom retry,
+    auth) -- a far worse surprise than sharing its pool, which is exactly
+    what mounting it on a session means anyway.
+    """
+    if type(adapter) is not HTTPAdapter:
+        return adapter
+    # requests keeps pool tuning in PRIVATE fields with no public getter
+    # (``_pool_connections``/``_pool_maxsize``/``_pool_block``), so read
+    # them defensively and fall back to the library defaults for any
+    # adapter that does not expose them.
+    retries = getattr(adapter, "max_retries", None)
+    if retries is not None and hasattr(retries, "copy"):
+        retries = retries.copy()  # own copy: caller edits cannot reach us
+    return HTTPAdapter(
+        pool_connections=getattr(adapter, "_pool_connections",
+                                 DEFAULT_POOLSIZE),
+        pool_maxsize=getattr(adapter, "_pool_maxsize", DEFAULT_POOLSIZE),
+        pool_block=getattr(adapter, "_pool_block", False),
+        max_retries=retries)
+
+
+def _clone_adapters(source: Any) -> "dict[str, Any]":
+    """Fresh adapter mapping with FRESH pool objects for one session.
+
+    ``copy.copy(session)`` shared the caller's ``adapters`` OrderedDict BY
+    REFERENCE, so mounting on the clone mutated the caller's session, and
+    the ``HTTPAdapter`` objects were shared too -- so ``Session.close()``
+    tore down the caller's connection pools while they were still in use.
+    Both break the isolation the docstring promises: the clone gets its own
+    mapping AND its own pool-backed adapters that copy the caller's tuning
+    (pool sizes, retries, blocking), and nothing the caller does afterwards
+    can reach our traffic (or vice versa).
+    """
+    return {
+        prefix: _clone_adapter(adapter)
+        for prefix, adapter in dict(
+            getattr(source, "adapters", {}) or {}).items()
+    }
+
+
 class _OAuthOnlySession:
     """Thin read-only view over the client session that injects
     ``allow_redirects=False`` into TokenManager's OAuth GETs."""
@@ -97,6 +156,26 @@ class _OAuthOnlySession:
     def get(self, url: str, **kwargs: Any) -> Any:
         kwargs["allow_redirects"] = False
         return self._session.get(url, **kwargs)
+
+
+def _daily_boundary(now: datetime) -> str:
+    """Africa/Nairobi day key (fixed UTC+3, no DST -> no tzdata dependency).
+
+    Kenya has no daylight saving, so the Nairobi day is a plain fixed-offset
+    conversion of the EAT instant -- exactly what ``datetime.astimezone(EAT)``
+    computes, with no ``zoneinfo`` lookup that could raise on a stripped
+    container (and no Windows-only tzdata hazard). The key is a date string,
+    so two instants in the same Nairobi day share it regardless of how many
+    times the clock jumps.
+
+    Raises:
+        ValueError: if *now* is naive (same guard style as
+            :func:`mpesa.helpers.generate_password`): an unzoned clock
+            would silently shift the Nairobi day by three hours.
+    """
+    if now.tzinfo is None:
+        raise ValueError("mpesa: timestamp must be timezone-aware")
+    return now.astimezone(EAT).date().isoformat()
 
 
 class MpesaClient:
@@ -115,6 +194,15 @@ class MpesaClient:
     either. The clone is forced ``verify=True`` per the config.py
     contract. Concurrency: TokenManager is fully synchronized; share one
     Session per requests norms.
+
+    LIMITS: ``config.limits`` (or
+    :data:`~mpesa.limits.DEFAULT_TRANSACTION_LIMITS`) bounds every amount
+    per service, enforced per-transaction by the request models. When
+    ``config.track_daily`` is on, this client also accumulates
+    ``max_per_day`` per service, reset at each Africa/Nairobi midnight --
+    under :attr:`_daily_lock` so concurrent callers cannot both pass a
+    check on the same quota. See :mod:`mpesa.limits` for why the daily
+    accumulator is opt-in (one process cannot see its peers' traffic).
     """
 
     def __init__(self, config: Config) -> None:
@@ -127,15 +215,19 @@ class MpesaClient:
                 "are required")
         self._cfg = config
         self._base_url = config.environment.base_url.rstrip("/")
+        self._clock = config.now or _utc_now   # hoisted: no lambda per call
         source = config.http_client
         self._session = (copy.copy(source) if source is not None
                          else requests.Session())
         self._session.headers = dict(source.headers) if source is not None \
             else {}
-        for prefix, adapter in dict(
-                source.adapters if source is not None else {}).items():
-            self._session.mount(prefix, adapter)
         if source is not None:
+            # ISOLATION: copy.copy(source) shared the caller's ``adapters``
+            # mapping AND its adapter objects, so mounting on the clone
+            # mutated the caller's session and close() tore down the
+            # caller's connection pools. The clone now owns a separate
+            # mapping of pool-isolated adapters (see _clone_adapters).
+            self._session.adapters = _clone_adapters(source)
             # Deep-copy the cookie jar: copy.copy above shares it, and
             # prepare_request would otherwise merge the caller's live
             # cookies into our requests (and ours back on real Sessions
@@ -161,13 +253,31 @@ class MpesaClient:
         self._session.trust_env = False
         self._session.verify = True  # forced on OUR clone only
         # Timeout clamp: non-positive values fall back to Go's 30s default.
-        self._timeout = (config.timeout_seconds
-                         if config.timeout_seconds > 0 else 30.0)
+        # Non-numeric values (e.g. "fast") raise ValueError, not the bare
+        # TypeError that `> 0` would produce on a str/None.
+        try:
+            timeout = float(config.timeout_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "mpesa: Config.timeout_seconds must be a number of seconds, "
+                f"got {config.timeout_seconds!r}") from exc
+        self._timeout = timeout if timeout > 0 else 30.0
         self._tokens = TokenManager(
             _OAuthOnlySession(self._session), base_url=self._base_url,
             consumer_key=config.consumer_key,
             consumer_secret=config.consumer_secret,
             now=config.now, timeout=self._timeout)
+        #: Per-merchant tier ceilings for the amount-bearing endpoints,
+        #: resolved ONCE here: per-service overrides merged onto the
+        #: Safaricom defaults, so an unset field can never read as
+        #: "no ceiling" and nothing re-merges per call.
+        self._limits: TransactionLimits = _resolve_transaction_limits(
+            config.limits)
+        #: Opt-in daily accumulator state (see :mod:`mpesa.limits` for why
+        #: it is off by default). Guards ``_daily_used``/``_daily_day``.
+        self._daily_lock = threading.Lock()
+        self._daily_used: dict[str, int] = {}
+        self._daily_day: str | None = None
 
     def __repr__(self) -> str:
         """Credential-safe rendering (never secrets/token)."""
@@ -190,8 +300,84 @@ class MpesaClient:
 
     # ---- transport --------------------------------------------------------
 
+    # ---- transaction limits ---------------------------------------------------
+
+    def _accrue_daily(self, service: str, amount: int) -> None:
+        """Check then consume *amount* against the service's daily ceiling.
+
+        No-op unless ``Config.track_daily`` is on. The whole
+        read-check-increment sequence runs under one lock so two threads
+        cannot both observe the pre-check total and each pass: the
+        accumulator stays exact under concurrency, and the Nairobi-day key
+        is re-evaluated inside the same lock, so a rollover observed by one
+        thread resets for everyone.
+
+        ACCOUNTING (consumed-on-attempt): the quota is consumed BEFORE
+        dispatch (every ``stk_push``/``b2c_payout``/``c2b_simulate``/
+        ``reversal``/``generate_qr_code`` accrues, then calls
+        :meth:`_post_model`). A failed send AFTER accrue does NOT roll
+        back -- gateway rejections, transport errors and 401-retry
+        failures all keep their reservation. Only a pre-dispatch
+        rejection (validation or daily-ceiling ``ValueError``) costs
+        nothing, because it never accrues.
+
+        BUCKETS: ``reversal`` and ``generate_qr_code`` share the single
+        ``"default"`` daily bucket (see :mod:`mpesa.limits`); every other
+        amount-bearing endpoint has its own bucket.
+
+        Raises:
+            ValueError: the running total for this Nairobi day would pass
+                ``max_per_day``. The caller never dispatches in that case,
+                so a rejected payment costs no OAuth token and no request.
+        """
+        if not self._cfg.track_daily:
+            return
+        ceiling = self._daily_ceiling(service)
+        if ceiling is None or amount <= 0:
+            return
+        with self._daily_lock:
+            day = _daily_boundary(self._now())
+            if day != self._daily_day:
+                # New Nairobi day: a fresh quota for every service.
+                self._daily_day, self._daily_used = day, {}
+            used = self._daily_used.get(service, 0)
+            if used + amount > ceiling:
+                raise ValueError(
+                    f"mpesa: {service} amount {amount} would take the running "
+                    f"total to {used + amount} KES, over the {ceiling} KES "
+                    f"per-day ceiling configured for this service "
+                    f"({used} KES already moved on {day} Nairobi time); "
+                    f"override it with Config(limits=TransactionLimits("
+                    f"{service}=ServiceLimits(max_per_day=<KES>))) -- leave "
+                    f"the field unset (None) to keep the Safaricom default, "
+                    f"or set it to 0 to disable the daily ceiling")
+            self._daily_used[service] = used + amount
+
+    def _daily_ceiling(self, service: str) -> int | None:
+        """Resolved ``max_per_day`` for *service* (None = unlimited).
+
+        Reads the ALREADY-MERGED limits resolved in ``__init__``, so an
+        unset ``max_per_day`` has inherited its Safaricom default here and
+        an explicit ``0`` is the only thing that means unlimited.
+        """
+        bounds = getattr(self._limits, service, None)
+        if not isinstance(bounds, ServiceLimits):
+            bounds = self._limits.default
+        return _resolved_max(bounds.max_per_day)
+
+    @property
+    def daily_spend(self) -> dict[str, int]:
+        """Amount already charged today, per service (this PROCESS only).
+
+        Deliberately NOT a platform figure: other replicas sharing this
+        shortcode also move money, which is exactly why daily tracking is
+        opt-in. Useful for tests and for logging.
+        """
+        with self._daily_lock:
+            return dict(self._daily_used)
+
     def _now(self) -> datetime:
-        return (self._cfg.now or (lambda: datetime.now(timezone.utc)))()
+        return self._clock()
 
     def _send(self, token: str, method: str, path: str,
               json_body: Any, params: Any) -> tuple[int, str, bytes]:
@@ -224,7 +410,14 @@ class MpesaClient:
         with the documented retry-once on 401.003.01. Every size cap is
         enforced inside :meth:`_send` (the tuple body can never exceed
         the accumulation bound), so the 401 probe and final parse are
-        size-capped by construction."""
+        size-capped by construction.
+
+        ACCOUNTING: callers accrue the daily quota BEFORE this dispatch
+        (see :meth:`_accrue_daily`); failures raised here -- gateway
+        non-2xx, transport errors -- do NOT roll the reservation back
+        (consumed-on-attempt). Reversal and dynamic QR share the single
+        ``"default"`` daily bucket.
+        """
         token, gen = self._tokens.get_token_with_gen()
         status_code, content_type, body = self._send(
             token, "POST", path, payload, None)
@@ -254,7 +447,8 @@ class MpesaClient:
             req.business_short_code = self._cfg.shortcode
         if not req.party_b:
             req.party_b = req.business_short_code
-        req.validate()
+        req.validate(self._limits)
+        self._accrue_daily("stk", req.amount)
         password, timestamp = generate_password(
             req.business_short_code, self._cfg.passkey, self._now())
         payload = {**req.to_payload(), "Password": password,
@@ -266,14 +460,21 @@ class MpesaClient:
         (docs/apis/stk-query.md); Password binds to the EFFECTIVE
         shortcode either way.
 
+        The config shortcode fills an empty request shortcode BEFORE
+        validation, so ``validate()`` always sees the normalized value
+        that is actually sent (garbage fails here with ``ValueError``,
+        never as a gateway 500).
+
         Example::
 
             resp = client.stk_query(STKQueryRequest(
                 checkout_request_id="ws_CO_191220191020363925"))
         """
-        effective = req.business_short_code or self._cfg.shortcode
         req = dataclasses.replace(req)
-        req.validate()
+        if not req.business_short_code:
+            req.business_short_code = self._cfg.shortcode
+        req.validate(self._limits)
+        effective = req.business_short_code
         # Hand-built flat payload mirrors go/client.go stkQueryPayload:
         # BusinessShortCode participates in password derivation.
         password, timestamp = generate_password(
@@ -296,7 +497,8 @@ class MpesaClient:
             req.originator_conversation_id = new_originator_id()
         if not req.party_a:
             req.party_a = self._cfg.shortcode
-        req.validate()
+        req.validate(self._limits)
+        self._accrue_daily("b2c", req.amount)
         return self._post_model(B2C_PATH, req.to_payload(), B2CResponse)
 
     def transaction_status(
@@ -314,13 +516,17 @@ class MpesaClient:
             req.command_id = CommandID.TX_STATUS_QUERY
         if not req.identifier_type:
             req.identifier_type = "4"
-        req.validate()
+        req.validate(self._limits)
         return self._post_model(TX_STATUS_PATH, req.to_payload(),
                                 ConversationResponse)
 
     def reversal(self, req: ReversalRequest) -> ConversationResponse:
         """Reverse a recent C2B transaction -- C2B ONLY
         (docs/apis/reversal.md); CommandID <- REVERSAL when unset.
+
+        Daily quota accrues against the shared ``"default"`` bucket (same
+        bucket as dynamic QR; see :meth:`_accrue_daily`), consumed-on-
+        attempt with no rollback on post-accrue failures.
 
         Example::
 
@@ -329,7 +535,8 @@ class MpesaClient:
         req = dataclasses.replace(req)
         if not req.command_id:
             req.command_id = CommandID.REVERSAL
-        req.validate()
+        req.validate(self._limits)
+        self._accrue_daily("default", req.amount)
         return self._post_model(REVERSAL_PATH, req.to_payload(),
                                 ConversationResponse)
 
@@ -347,7 +554,7 @@ class MpesaClient:
             req.command_id = CommandID.ACCOUNT_BALANCE
         if not req.identifier_type:
             req.identifier_type = "4"
-        req.validate()
+        req.validate(self._limits)
         return self._post_model(ACCOUNT_BALANCE_PATH, req.to_payload(),
                                 ConversationResponse)
 
@@ -362,7 +569,7 @@ class MpesaClient:
         req = dataclasses.replace(req)
         if not req.short_code:
             req.short_code = self._cfg.shortcode
-        req.validate()
+        req.validate(self._limits)
         return self._post_model(C2B_REGISTER_PATH, req.to_payload(),
                                 C2BAckResponse)
 
@@ -377,7 +584,8 @@ class MpesaClient:
         req = dataclasses.replace(req)
         if not req.short_code:
             req.short_code = self._cfg.shortcode
-        req.validate()
+        req.validate(self._limits)
+        self._accrue_daily("c2b", req.amount)
         return self._post_model(C2B_SIMULATE_PATH, req.to_payload(),
                                 C2BAckResponse)
 
@@ -390,11 +598,16 @@ class MpesaClient:
         trx_code/cpi/size in place), so the caller's object is never
         mutated -- parity with the other 8 endpoints.
 
+        Daily quota accrues against the shared ``"default"`` bucket (same
+        bucket as Reversal; see :meth:`_accrue_daily`), consumed-on-
+        attempt with no rollback on post-accrue failures.
+
         Example::
 
             qr = client.generate_qr_code(QRCodeRequest(...))
         """
         req = dataclasses.replace(req)
-        req.validate()
+        req.validate(self._limits)
+        self._accrue_daily("default", req.amount)
         return self._post_model(QR_CODE_PATH, req.to_payload(),
                                 QRCodeResponse)

@@ -31,9 +31,9 @@
  * @packageDocumentation
  */
 
-import { MpesaError } from "./errors.js";
+import { MpesaDecodeError, MpesaError, decodeJsonObject } from "./errors.js";
 import { ConfigError, TRUSTED_BASE_URLS } from "./config.js";
-import { readBodyBounded } from "./_bounded-read.js";
+import { readBodyBounded, bodyTooLargeError } from "./_bounded-read.js";
 import type { OAuthToken } from "./types.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -68,6 +68,13 @@ const REFRESH_RATE_LIMIT_MS = 5_000;
  * Eager refresh window: TTL minus 60s safety, clamped to [1s, 50min].
  * Unknown/zero TTLs fall back to the legacy 50-minute cadence.
  *
+ * NaN-safe by construction: a non-finite `expiresInSec` (garbage string,
+ * `1e999` → Infinity) MUST map to the 50-minute fallback, because
+ * `Math.max(MIN, Math.min(MAX, NaN))` is NaN and `now + NaN` is NaN —
+ * `now < NaN` is false, so the freshness fast path would NEVER cache and
+ * every call would re-mint (each mint invalidates prior tokens → 401.003.01
+ * storm).
+ *
  * Go calls this `refreshCadence`; Python inlines the same formula.
  *
  * @param expiresInSec - Raw wire value from `expires_in` (string or number).
@@ -77,9 +84,30 @@ function refreshCadence(expiresInSec: number): number {
   const MIN = 1_000;
   const MAX = 50 * 60_000;
   const SAFETY = 60_000;
-  if (expiresInSec <= 0) return MAX;
+  if (!Number.isFinite(expiresInSec) || expiresInSec <= 0) return MAX;
   const ms = expiresInSec * 1000 - SAFETY;
   return Math.max(MIN, Math.min(MAX, ms));
+}
+
+/**
+ * Normalize the wire `expires_in` to a usable seconds value.
+ *
+ * Daraja sends a string (`"3599"`), a number (`120`), or garbage. Every
+ * non-finite outcome — non-numeric strings (`parseInt` → NaN),
+ * `1e999` (JSON → Infinity), ±Infinity — becomes 0, which
+ * {@link refreshCadence} already maps to the documented 50-minute fallback.
+ * The same 0 covers a MISSING field (documented fallback, keep it).
+ *
+ * @param raw - Raw `expires_in` value from the decoded OAuth body.
+ * @returns Finite seconds, or 0 for absent/unusable values.
+ */
+function normalizeExpiresIn(raw: unknown): number {
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : 0;
+  if (typeof raw === "string") {
+    const parsed = parseInt(raw, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
 }
 
 // ─── TokenManager ─────────────────────────────────────────────────────────────
@@ -172,7 +200,7 @@ export class TokenManager {
     this._baseUrl = normalizedBaseUrl;
     this._consumerKey = key;
     this._consumerSecret = secret;
-    this._timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs! > 0
+    this._timeoutMs = Number.isFinite(opts.timeoutMs) && (opts.timeoutMs ?? 0) > 0
       ? opts.timeoutMs!
       : DEFAULT_TIMEOUT_MS;
     this._now = opts.now ?? (() => Date.now());
@@ -299,14 +327,31 @@ export class TokenManager {
 
   /**
    * Single-flight refresh. Concurrent stale callers share the same
-   * Promise — a natural JS dedup without explicit locks.
+   * Promise — a natural JS dedup without explicit locks — EXCEPT a
+   * forced (401-triggered) refresh, which must never inherit a
+   * possibly rate-limited non-forced promise.
+   *
+   * Adopt-on-success: when a forced refresh finds an in-flight refresh
+   * that SUCCEEDS, it adopts the token that refresh just minted — the
+   * mint is fresh and valid, and a second mint would invalidate the token
+   * the in-flight refresh produced (Daraja invalidates ALL outstanding
+   * tokens on every mint, so a chained re-mint hands every holder of the
+   * first token a 401.003.01 and can cascade into re-mint churn). Only
+   * when the in-flight refresh FAILS does the forced caller perform its
+   * own attempt (bypassing the rate-limit gate) — so a forced refresh
+   * never inherits a rate-limited non-forced 429.
    *
    * @param force - When true, bypasses the refresh rate limit (401-triggered
    *   refreshes, Go `force=true` parity).
    */
   private _doRefresh(force = false): Promise<string> {
-    if (this._refreshPromise !== null) {
-      return this._refreshPromise;
+    const inFlight = this._refreshPromise;
+    if (inFlight !== null) {
+      if (!force) return inFlight;
+      return inFlight.then(
+        (token) => token,
+        () => this._doRefresh(true),
+      );
     }
     this._refreshPromise = this._refresh(force)
       .finally(() => {
@@ -324,25 +369,34 @@ export class TokenManager {
    *
    * Rate-limit parity with `go/client.go refreshLocked`: non-forced
    * refreshes are throttled after 3 consecutive failures inside 5s;
-   * 401-triggered refreshes (`force=true`) bypass the guard entirely.
+   * 401-triggered refreshes (`force=true`) bypass the guard entirely
+   * but still advance its clock.
    */
   private async _refresh(force = false): Promise<string> {
+    const now = this._now();
     // Rate limit: only apply to non-forced refreshes after consecutive failures.
     if (!force) {
-      const nowGate = this._now();
       if (
         this._failures >= REFRESH_FAILURE_THRESHOLD &&
         this._lastAttemptMs !== 0 &&
-        nowGate - this._lastAttemptMs < REFRESH_RATE_LIMIT_MS
+        now - this._lastAttemptMs < REFRESH_RATE_LIMIT_MS
       ) {
-        const agoMs = nowGate - this._lastAttemptMs;
-        throw new Error(
-          `mpesa: refresh rate limited after ${this._failures} consecutive failures ` +
-          `(last attempt ${agoMs}ms ago, need ${REFRESH_RATE_LIMIT_MS}ms)`,
-        );
+        const agoMs = now - this._lastAttemptMs;
+        // Typed (MpesaError, HTTP 429) instead of a bare Error so callers
+        // catching the SDK taxonomy see rate limiting like any other
+        // failure mode. renderMessage prepends the canonical "mpesa: ".
+        throw new MpesaError(429, null, null,
+          `refresh rate limited after ${this._failures} consecutive failures ` +
+          `(last attempt ${agoMs}ms ago, need ${REFRESH_RATE_LIMIT_MS}ms)`);
       }
-      this._lastAttemptMs = nowGate;
     }
+    // The clock advances on EVERY attempt — forced (401-triggered)
+    // refreshes bypass the guard above but must still move the window,
+    // or an all-forced crash loop leaves the clock stale and the guard
+    // never fires for the next non-forced attempt (Go/Python parity:
+    // go/client.go, python/mpesa/auth.py). A refused attempt throws
+    // above and never reaches this line, so it never extends the window.
+    this._lastAttemptMs = now;
 
     try {
       const token = await this._fetchToken();
@@ -369,77 +423,79 @@ export class TokenManager {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this._timeoutMs);
 
-    let resp: Response;
+    // One clear, on EVERY exit path: the timeout must cover the BODY read
+    // too (a server that trickles the body after the headers would
+    // otherwise leave this promise pending forever), and it must be
+    // released when the fetch itself fails so no timer outlives the call.
     try {
-      resp = await this._fetch(url, {
-        method: "GET",
-        redirect: "error",
-        headers: {
-          Authorization: `Basic ${auth}`,
-        },
-        signal: controller.signal,
-      });
-    } catch (err) {
-      clearTimeout(timer);
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`mpesa: oauth request: ${msg}`);
+      let resp: Response;
+      try {
+        resp = await this._fetch(url, {
+          method: "GET",
+          redirect: "error",
+          headers: {
+            Authorization: `Basic ${auth}`,
+          },
+          signal: controller.signal,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`mpesa: oauth request: ${msg}`);
+      }
+
+      // First guard: honest Content-Length over the cap → cancel without
+      // consuming the body.
+      const contentLength = resp.headers.get("content-length");
+      if (contentLength !== null) {
+        const claimed = parseInt(contentLength, 10);
+        if (Number.isFinite(claimed) && claimed > MAX_BODY_BYTES) {
+          resp.body?.cancel();
+          throw bodyTooLargeError(OAUTH_PATH, MAX_BODY_BYTES, claimed);
+        }
+      }
+
+      const contentType = resp.headers.get("content-type") ?? "";
+
+      // Second guard: bounded stream read — aborts once the accumulated chunk
+      // total passes the cap even when Content-Length is absent or dishonest.
+      // Abort-aware: a mid-body stall rejects with the typed timeout error.
+      const text = await readBodyBounded(resp.body, OAUTH_PATH, MAX_BODY_BYTES, controller.signal);
+
+      if (resp.status < 200 || resp.status > 299) {
+        throw MpesaError.fromResponse(resp.status, text, contentType);
+      }
+
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = decodeJsonObject<Record<string, unknown>>(text, "oauth");
+      } catch (err) {
+        // Keep the historic, actionable wording while upgrading the type.
+        throw err instanceof MpesaDecodeError
+          ? new MpesaDecodeError("mpesa: decode oauth response", resp.status)
+          : err;
+      }
+
+      const accessToken =
+        typeof parsed["access_token"] === "string"
+          ? parsed["access_token"]
+          : "";
+      if (!accessToken) {
+        throw new Error("mpesa: oauth response missing access_token");
+      }
+
+      // Wire type is string ("3599"), not number — Safaricom quirk.
+      // Non-finite/garbage TTLs normalize to 0 → 50-minute fallback cadence.
+      const expiresInSec = normalizeExpiresIn(parsed["expires_in"]);
+
+      const now = this._now();
+      this._token = accessToken;
+      this._expiresAt = now + refreshCadence(expiresInSec);
+      this._generation++;
+
+      return this._token;
     } finally {
       clearTimeout(timer);
     }
-
-    // First guard: honest Content-Length over the cap → cancel without
-    // consuming the body.
-    const contentLength = resp.headers.get("content-length");
-    if (contentLength !== null) {
-      const claimed = parseInt(contentLength, 10);
-      if (Number.isFinite(claimed) && claimed > MAX_BODY_BYTES) {
-        resp.body?.cancel();
-        throw new Error(
-          `mpesa: ${OAUTH_PATH} response exceeds ${MAX_BODY_BYTES} bytes (Content-Length: ${claimed})`,
-        );
-      }
-    }
-
-    const contentType = resp.headers.get("content-type") ?? "";
-
-    // Second guard: bounded stream read — aborts once the accumulated chunk
-    // total passes the cap even when Content-Length is absent or dishonest.
-    const text = await readBodyBounded(resp.body, OAUTH_PATH, MAX_BODY_BYTES);
-
-    if (resp.status < 200 || resp.status > 299) {
-      throw MpesaError.fromResponse(resp.status, text, contentType);
-    }
-
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(text) as Record<string, unknown>;
-    } catch {
-      throw new Error("mpesa: decode oauth response");
-    }
-
-    const accessToken =
-      typeof parsed["access_token"] === "string"
-        ? parsed["access_token"]
-        : "";
-    if (!accessToken) {
-      throw new Error("mpesa: oauth response missing access_token");
-    }
-
-    // Wire type is string ("3599"), not number — Safaricom quirk
-    const expiresInRaw = parsed["expires_in"];
-    const expiresInSec =
-      typeof expiresInRaw === "number"
-        ? expiresInRaw
-        : typeof expiresInRaw === "string"
-          ? parseInt(expiresInRaw, 10)
-          : 0;
-
-    const now = this._now();
-    this._token = accessToken;
-    this._expiresAt = now + refreshCadence(expiresInSec);
-    this._generation++;
-
-    return this._token;
   }
 }
 

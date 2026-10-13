@@ -36,6 +36,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from decimal import Decimal
+from functools import cached_property
 from typing import Any
 
 # Back-compat re-export from mpesa._limits (see the NOTE below), pinned by
@@ -139,42 +141,56 @@ class StkCallbackResult:
         return sum(1 for item in self._items
                    if item.name in seen or seen.add(item.name))
 
+    @cached_property
+    def _metadata_map(self) -> dict[str, Any]:
+        """Flattened metadata items, built ONCE per callback.
+
+        The accessors below promised "the metadata dict is built once via a
+        single O(n) pass" while each of them called :meth:`metadata` afresh
+        -- four accessors meant four O(n) rebuilds of the same dict.
+        ``cached_property`` makes the promise true and keeps the model
+        frozen, because the cache is written into ``__dict__`` directly and
+        never goes through the frozen ``__setattr__``.
+        """
+        return first_wins([(i.name, i.value_raw) for i in self._items])
+
     def metadata(self) -> dict[str, Any]:
         """Flatten items FIRST-WINS; absent metadata yields {}. Example::
 
             md = result.metadata()   # {'Amount': 1.0, ...}
         """
-        return first_wins([(i.name, i.value_raw) for i in self._items])
+        return self._metadata_map
 
     def classify(self) -> ResultClass:
         """ADR-010 bucket for ``result_code`` (never auto-fail unknowns)."""
         return classify_result_code(self.result_code)
 
-    def amount(self) -> float | None:
-        """Amount as float via shared :func:`coerce_amount`; bools,
-        >2**53 ints (precision), non-finite floats and non-decimal
-        strings all yield None.
+    def amount(self) -> "Decimal | None":
+        """Amount as a 2dp :class:`~decimal.Decimal` via the shared
+        :func:`coerce_amount`; bools, |value| over 2**53, non-finite floats,
+        sub-cent precision and non-decimal strings all yield None.
 
-        First-wins lookup: the metadata dict is built once via
-        :meth:`metadata` (single O(n) ``first_wins`` pass) and the value
-        is an O(1) dict get -- no per-key linear scan.
+        Decimal, not float, because this value is handed straight to
+        ``settle(order, amount=...)``: a binary float cannot hold ``10.10``
+        and would drop the cent. O(1) dict get over the once-built
+        :attr:`_metadata_map` -- no per-accessor rebuild.
         """
-        return coerce_amount(self.metadata().get("Amount"))
+        return coerce_amount(self._metadata_map.get("Amount"))
 
     def mpesa_receipt(self) -> str | None:
         """M-PESA receipt string, or None when absent.
 
-        First-wins O(1) dict get over :meth:`metadata` (see :meth:`amount`).
+        O(1) dict get over :attr:`_metadata_map` (see :meth:`amount`).
         """
-        return coerce_str(self.metadata().get("MpesaReceiptNumber"))
+        return coerce_str(self._metadata_map.get("MpesaReceiptNumber"))
 
     def transaction_date(self) -> int | None:
         """YYYYMMDDHHMMSS stamp as int; string-encoded accepted via
         strict coercion; bools rejected.
 
-        First-wins O(1) dict get over :meth:`metadata` (see :meth:`amount`).
+        O(1) dict get over :attr:`_metadata_map` (see :meth:`amount`).
         """
-        value = self.metadata().get("TransactionDate")
+        value = self._metadata_map.get("TransactionDate")
         if isinstance(value, bool):
             return None
         if isinstance(value, int):
@@ -186,9 +202,9 @@ class StkCallbackResult:
         stringified, hostile magnitudes decode to None via the parse_int
         hook, non-digit/non-ASCII refused.
 
-        First-wins O(1) dict get over :meth:`metadata` (see :meth:`amount`).
+        O(1) dict get over :attr:`_metadata_map` (see :meth:`amount`).
         """
-        value = self.metadata().get("PhoneNumber")
+        value = self._metadata_map.get("PhoneNumber")
         if isinstance(value, bool):
             return None
         text = value.strip() if isinstance(value, str) else (

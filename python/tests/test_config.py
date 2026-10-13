@@ -35,9 +35,26 @@ def test_repr_and_str_redact_all_secrets(populated):
     for rendered in (repr(populated), str(populated), f"{populated}"):
         assert SECRET_VALUE not in rendered
         assert PASSKEY not in rendered
-        assert SECRET_KEY in rendered
+        assert SECRET_KEY not in rendered
+        # Masked first-4/last-4 only (Go/TS maskCredential parity).
+        assert "live\u2026-abc" in rendered
+        assert "live" in rendered and "-abc" in rendered
         assert "secrets=REDACTED" in rendered
         assert "environment=Environment.SANDBOX" in rendered
+
+
+def test_consumer_key_masking_edge_cases():
+    from mpesa.config import _mask_credential
+
+    assert _mask_credential("") == ""
+    assert _mask_credential("k") == "*"
+    assert _mask_credential("key") == "***"
+    assert _mask_credential("abcdefxy") == "****"
+    assert _mask_credential("live-consumer-key-abc") == "live\u2026-abc"
+    assert _mask_credential(SECRET_KEY) not in (SECRET_KEY,)
+    for rendered in (repr(Config(consumer_key="k", consumer_secret="s")),):
+        assert "consumer_key='*'" in rendered
+        assert "consumer_key='k'" not in rendered
 
 
 def test_frozen_immutability(populated):
@@ -53,7 +70,18 @@ def test_dataclasses_replace_works_and_stays_redacted(populated):
 
 
 def test_validate_credentials_ok(populated):
-    populated.validate_credentials()  # must not raise
+    """Was vacuous (zero assertions): pin BOTH the pass and the fixture.
+
+    A "must not raise" test cannot fail for a method that does nothing, so
+    it asserts the return value, the values it was fed and the failing
+    twin -- the negatives are covered below by parametrized cases.
+    """
+    assert populated.validate_credentials() is None
+    assert populated.consumer_key == SECRET_KEY
+    assert populated.consumer_secret == SECRET_VALUE
+    # The same method must still reject its own failure mode.
+    with pytest.raises(ValueError, match="required before calling any endpoint"):
+        Config(consumer_key="").validate_credentials()
 
 
 @pytest.mark.parametrize(

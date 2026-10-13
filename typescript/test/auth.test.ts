@@ -463,6 +463,123 @@ describe("TokenManager peer adoption", () => {
     expect(fresh).toBe("tok-refreshed");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it("forced refresh during a rate-limited in-flight non-forced refresh performs its own attempt", async () => {
+    // Arm the refresh gate: 3 consecutive fetch failures (threshold 3,
+    // frozen clock keeps every attempt inside the 5s window).
+    let calls = 0;
+    fetchMock.mockImplementation(() => {
+      calls++;
+      if (calls <= 3) return Promise.reject(new Error("boom"));
+      return Promise.resolve(
+        jsonResponse({ ...VALID_TOKEN_RESPONSE, access_token: "tok-forced" }),
+      );
+    });
+    const tm = makeManager();
+
+    await expect(tm.getToken()).rejects.toThrow("boom");
+    await expect(tm.getToken()).rejects.toThrow("boom");
+    await expect(tm.getToken()).rejects.toThrow("boom");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    // The next non-forced refresh is rate-limited — keep its rejection
+    // in flight while a 401-triggered forced refresh arrives. The forced
+    // refresh must NOT inherit the 429; it chains a fresh attempt that
+    // bypasses the gate and mints its own token.
+    const gated = tm.getToken();
+    const forced = tm.refreshAfterInvalidToken(tm.generation);
+
+    let gatedErr: unknown;
+    await gated.then(
+      () => { throw new Error("gated refresh should have rejected"); },
+      (err: unknown) => { gatedErr = err; },
+    );
+    expect(gatedErr).toBeInstanceOf(MpesaError);
+    expect((gatedErr as MpesaError).statusCode).toBe(429);
+
+    await expect(forced).resolves.toBe("tok-forced");
+    // 3 failed attempts + exactly one forced attempt — the forced refresh
+    // performed its own fetch instead of joining the gated promise.
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("forced refresh failures advance the rate-limit clock", async () => {
+    // Go/Python parity: EVERY attempt — including 401-triggered forced
+    // ones — advances the 3-failures-in-5s clock. Without this, three
+    // consecutive forced failures leave the clock stale and the next
+    // non-forced refresh escapes the guard entirely (crash loop).
+    let calls = 0;
+    fetchMock.mockImplementation(() => {
+      calls++;
+      if (calls === 1) return Promise.resolve(jsonResponse(VALID_TOKEN_RESPONSE));
+      return Promise.reject(new Error("boom"));
+    });
+    const tm = makeManager();
+
+    // Seed the cache (a successful non-forced refresh starts the clock).
+    await tm.getToken();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Token TTL long past; the frozen clock keeps the three consecutive
+    // forced failures inside the 5s window.
+    nowMs += 3600 * 1000;
+    const gen = tm.generation;
+    await expect(tm.refreshAfterInvalidToken(gen)).rejects.toThrow("boom");
+    await expect(tm.refreshAfterInvalidToken(gen)).rejects.toThrow("boom");
+    await expect(tm.refreshAfterInvalidToken(gen)).rejects.toThrow("boom");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    // The next non-forced refresh is gated: the forced attempts moved
+    // the clock, so the guard fires — and does so before any fetch.
+    await expect(tm.getToken()).rejects.toThrow("refresh rate limited");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("forced refresh during a successful in-flight non-forced refresh adopts its token", async () => {
+    let resolveInFlight!: (v: Response) => void;
+    fetchMock.mockImplementation(
+      () => new Promise<Response>((r) => { resolveInFlight = r; }),
+    );
+    const tm = makeManager();
+
+    // Non-forced refresh goes in flight (mint #1 pending).
+    const inFlight = tm.getToken();
+    // 401-triggered forced refresh arrives while mint #1 is in flight: it
+    // must ADOPT the in-flight token on success — a second mint would
+    // invalidate the token mint #1 just produced (Daraja invalidates all
+    // outstanding tokens on every mint).
+    const forced = tm.refreshAfterInvalidToken(tm.generation);
+
+    resolveInFlight(jsonResponse(VALID_TOKEN_RESPONSE));
+
+    await expect(inFlight).resolves.toBe("tok-abc123");
+    await expect(forced).resolves.toBe("tok-abc123");
+    // Adopted, not re-minted: exactly ONE fetch.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an OAuth response with oversize Content-Length as typed MpesaError (HTTP 413)", async () => {
+    fetchMock.mockResolvedValue(
+      new Response("tiny", {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": String(2 * 1024 * 1024),
+        },
+      }),
+    );
+    const tm = makeManager();
+
+    let caught: unknown;
+    try {
+      await tm.getToken();
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MpesaError);
+    expect((caught as MpesaError).statusCode).toBe(413);
+    expect((caught as Error).message).toContain("exceeds");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -658,5 +775,106 @@ describe("getAccessToken", () => {
       ).rejects.toThrow(/untrusted/);
     }
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NaN / garbage expires_in — the cached-token invariant
+//
+// A non-finite expires_in used to produce `_expiresAt = now + NaN`. Since
+// `now < NaN` is false, the freshness fast path NEVER hit and every call
+// re-minted a token — and Daraja invalidates all outstanding tokens on
+// each mint, so that self-amplified into a 401.003.01 storm. The invariant
+// under test: a garbage TTL behaves EXACTLY like the documented missing
+// TTL fallback (50-minute cadence), i.e. the token is still cached.
+// ---------------------------------------------------------------------------
+
+describe("TokenManager NaN/garbage expires_in", () => {
+  /** Raw JSON text responses — `1e999` only decodes to Infinity via literal text. */
+  function rawTextResponse(text: string, status = 200): Response {
+    return new Response(text, {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const cases: Array<[string, string]> = [
+    ["non-numeric string 'abc'", '{"access_token":"tok-abc123","expires_in":"abc","token_type":"Bearer"}'],
+    ["empty string", '{"access_token":"tok-abc123","expires_in":"","token_type":"Bearer"}'],
+    ["negative '-1'", '{"access_token":"tok-abc123","expires_in":"-1","token_type":"Bearer"}'],
+    ["number literal 1e999 (Infinity)", '{"access_token":"tok-abc123","expires_in":1e999,"token_type":"Bearer"}'],
+    ["number beyond 2^53 (9007199254740993)", '{"access_token":"tok-abc123","expires_in":9007199254740993,"token_type":"Bearer"}'],
+    ["missing field", '{"access_token":"tok-abc123","token_type":"Bearer"}'],
+    ["zero", '{"access_token":"tok-abc123","expires_in":0,"token_type":"Bearer"}'],
+  ];
+
+  for (const [name, body] of cases) {
+    it(`treats ${name} as the 50-minute fallback cadence (token stays cached)`, async () => {
+      fetchMock.mockImplementation(() => rawTextResponse(body));
+      const tm = makeManager();
+
+      await tm.getToken();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // The decisive invariant: the token is STILL cached after 49 minutes —
+      // `_expiresAt` must be a finite number, not NaN.
+      nowMs += 49 * 60_000;
+      await tm.getToken();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // Past the fallback cadence the re-mint happens exactly once.
+      nowMs += 2 * 60_000;
+      await tm.getToken();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+  }
+
+  it("garbage expires_in never triggers a re-mint storm", async () => {
+    fetchMock.mockImplementation(() =>
+      rawTextResponse('{"access_token":"tok-abc123","expires_in":"abc","token_type":"Bearer"}'),
+    );
+    const tm = makeManager();
+
+    await tm.getToken();
+    // Hammer the cache: NaN expiry would re-mint on EVERY call.
+    for (let i = 0; i < 25; i++) {
+      nowMs += 60_000;
+      await tm.getToken();
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Concurrent refresh on an EXPIRED token — exactly one OAuth fetch
+// ---------------------------------------------------------------------------
+
+describe("TokenManager concurrent refresh (single-flight)", () => {
+  it("8 callers on an expired token produce exactly ONE refresh fetch", async () => {
+    let callCount = 0;
+    let resolveSecond!: (v: Response) => void;
+    fetchMock.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return Promise.resolve(jsonResponse(VALID_TOKEN_RESPONSE));
+      }
+      return new Promise<Response>((r) => { resolveSecond = r; });
+    });
+    const tm = makeManager();
+
+    await tm.getToken();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Expire the cached token, then fire 8 concurrent callers.
+    nowMs += 3600 * 1000;
+    const callers = Array.from({ length: 8 }, () => tm.getToken());
+
+    resolveSecond(jsonResponse({ ...VALID_TOKEN_RESPONSE, access_token: "tok-v2" }));
+
+    const results = await Promise.all(callers);
+    for (const tok of results) {
+      expect(tok).toBe("tok-v2");
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2); // initial + exactly one refresh
   });
 });

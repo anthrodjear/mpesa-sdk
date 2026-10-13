@@ -47,6 +47,14 @@ client refuses further OAuth attempts:
 mpesa: refresh rate limited after 3 consecutive failures (last attempt 0.412s ago, need 5.0s)
 ```
 
+The wording is identical in all three engines — only the rendering differs:
+
+- **Go** — `mpesa: refresh rate limited after 3 consecutive failures (last attempt 412ms ago, need 5s)`, returned as a plain `error`.
+- **Python** — the same shape as a typed `RefreshRateLimitedError`: `mpesa: refresh rate limited after 3 consecutive failures (last attempt 0.412s ago, need 5.0s)`.
+- **TypeScript** — a typed `MpesaError` (status `429`), so the canonical prefix carries the status: `mpesa: HTTP 429 refresh rate limited after 3 consecutive failures (last attempt 412ms ago, need 5000ms)`.
+
+Match on the prefix, not on the whole string: the elapsed figure moves with the clock, and the window renders as a Go `Duration` (`5s`), Python seconds (`5.0s`) and milliseconds (`5000ms`).
+
 | Engine | Threshold | Window | Constants |
 |---|---|---|---|
 | Go         | 3 failures | 5 s    | `refreshRateLimit` (`go/client.go`) |

@@ -64,7 +64,7 @@ def normalize_phone(raw: str) -> str:
     Example::
 
         normalize_phone("+254 712-345-678")  # -> "254712345678"
-        normalize_phone("0723 456 789")      # mid-string spaces stripped too
+        normalize_phone("0723 456 789")      # -> "254723456789"
 
     Raises:
         ValueError: overlong input or non-matching final shape (incl.

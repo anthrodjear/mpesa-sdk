@@ -523,9 +523,13 @@ func TestValidationBeforeAnyNetworkCall(t *testing.T) {
 			return err
 		}, "Amount"},
 		{"b2c amount above maximum", func() error {
+			// 250001 is one past the standard Safaricom B2C default ceiling
+			// (250000 KES per transaction, docs/apis/b2c.md). Higher
+			// Safaricom-approved tiers are raised explicitly via
+			// Config.Limits.B2C.MaxPerTransaction.
 			_, err := c.B2CPayout(ctx, B2CPayoutRequest{InitiatorName: "i", SecurityCredential: "c", CommandID: CommandSalaryPayment, Amount: 250001, PartyA: "600992", PartyB: "254705912645", Remarks: "ok", QueueTimeOutURL: "https://a.com/t", ResultURL: "https://a.com/r"})
 			return err
-		}, "Amount"},
+		}, "B2C"},
 		{"b2c invalid command", func() error {
 			_, err := c.B2CPayout(ctx, B2CPayoutRequest{InitiatorName: "i", SecurityCredential: "c", CommandID: "SendMoneyPls", Amount: 500, PartyA: "600992", PartyB: "254705912645", Remarks: "ok", QueueTimeOutURL: "https://a.com/t", ResultURL: "https://a.com/r"})
 			return err
@@ -1253,6 +1257,180 @@ func TestRefreshRateLimit(t *testing.T) {
 	}
 }
 
+// TestForcedRefreshFailuresAdvanceRateLimitClock verifies the rate-limit
+// clock fix: consecutive forced (401-triggered) refresh failures must advance
+// lastRefreshAttempt, so a following non-forced refresh within the 5s window
+// is rate-limited instead of escaping on a stale clock. Forced refreshes
+// themselves still bypass the gate.
+func TestForcedRefreshFailuresAdvanceRateLimitClock(t *testing.T) {
+	var mu sync.Mutex
+	now := fixedClock
+	currentNow := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	oauthHits := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/v1/generate", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		oauthHits++
+		mu.Unlock()
+		writeJSON(t, w, http.StatusInternalServerError, map[string]any{"errorCode": "500.001.1001", "errorMessage": "boom"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c, err := NewClient(Config{
+		ConsumerKey: "test-key", ConsumerSecret: "test-secret",
+		Shortcode: testShortcode, Passkey: testPasskey,
+		Environment: Sandbox, Now: currentNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.baseURL = srv.URL
+	ctx := context.Background()
+
+	// 3 consecutive forced failures: each must dispatch (forced refreshes
+	// bypass the gate) and surface the gateway error, never a rate limit.
+	for i := 0; i < 3; i++ {
+		_, err := c.leadForcedRefresh(ctx)
+		if err == nil {
+			t.Fatalf("forced refresh %d succeeded against a 500ing oauth endpoint, want failure", i)
+		}
+		if strings.Contains(err.Error(), "rate limited") {
+			t.Fatalf("forced refresh %d was rate limited, want gate bypass: %v", i, err)
+		}
+	}
+	mu.Lock()
+	hits := oauthHits
+	mu.Unlock()
+	if hits != 3 {
+		t.Fatalf("oauthHits = %d, want 3 (every forced attempt dispatches)", hits)
+	}
+	c.mu.RLock()
+	failures := c.refreshFailures
+	c.mu.RUnlock()
+	if failures != 3 {
+		t.Fatalf("refreshFailures = %d, want 3", failures)
+	}
+
+	// The 4th refresh is non-forced and (the clock never advanced past
+	// fixedClock) within 5s of the forced failures, so it must be
+	// rate-limited without touching the wire.
+	_, _, err = c.tokenWithGen(ctx)
+	if err == nil || !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("non-forced refresh after 3 forced failures err = %v, want a rate-limit error", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if oauthHits != 3 {
+		t.Fatalf("oauthHits = %d, want still 3 (a rate-limited refresh must not dispatch)", oauthHits)
+	}
+}
+
+// TestRefreshWaitersHonorContextCancellation verifies the uncancellable-waiter
+// fix: a waiter blocked on another goroutine's in-flight refresh must return
+// its context's error instead of blocking until the leader finishes.
+func TestRefreshWaitersHonorContextCancellation(t *testing.T) {
+	newStalledClient := func(t *testing.T) *Client {
+		t.Helper()
+		c, err := NewClient(Config{
+			ConsumerKey: "test-key", ConsumerSecret: "test-secret",
+			Shortcode: testShortcode, Passkey: testPasskey,
+			Environment: Sandbox, Now: func() time.Time { return fixedClock },
+		})
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+		// Simulate an in-flight leader that never finishes: no cached token
+		// (stale) plus a never-closed completion channel.
+		c.mu.Lock()
+		c.refreshing = true
+		c.refreshDone = make(chan struct{})
+		c.mu.Unlock()
+		return c
+	}
+
+	t.Run("leadRefresh", func(t *testing.T) {
+		c := newStalledClient(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, _, err := c.leadRefresh(ctx)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("leadRefresh waiter err = %v, want context.Canceled", err)
+		}
+	})
+
+	t.Run("leadForcedRefresh", func(t *testing.T) {
+		c := newStalledClient(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := c.leadForcedRefresh(ctx)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("leadForcedRefresh waiter err = %v, want context.Canceled", err)
+		}
+	})
+
+	// Slow-leader proof over the wire: the waiter must return on its own
+	// deadline while the leader is still stalled on OAuth, not after it.
+	t.Run("slow leader", func(t *testing.T) {
+		release := make(chan struct{})
+		mux := http.NewServeMux()
+		mux.HandleFunc("/oauth/v1/generate", func(w http.ResponseWriter, r *http.Request) {
+			<-release // leader stalls here until the test releases it
+			writeJSON(t, w, http.StatusOK, map[string]any{"access_token": "tok-slow", "expires_in": "3599"})
+		})
+		srv := httptest.NewServer(mux)
+		defer srv.Close()
+		c := testClient(t, srv.URL)
+
+		leaderDone := make(chan error, 1)
+		go func() {
+			_, err := c.Token(context.Background())
+			leaderDone <- err
+		}()
+		// Wait until the leader has actually claimed single-flight before
+		// starting the waiter; otherwise the waiter could become the leader
+		// itself and the test would prove nothing.
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			c.mu.RLock()
+			claimed := c.refreshing
+			c.mu.RUnlock()
+			if claimed {
+				break
+			}
+			if time.Now().After(deadline) {
+				close(release)
+				t.Fatal("leader never claimed the refresh")
+			}
+			time.Sleep(time.Millisecond)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		_, err := c.Token(ctx)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			close(release)
+			t.Fatalf("waiter err = %v, want context.DeadlineExceeded while the leader is stalled", err)
+		}
+		// The waiter returned on its own deadline: the leader must still be
+		// stalled, proving the waiter did not block on it.
+		select {
+		case lerr := <-leaderDone:
+			t.Fatalf("leader finished before the waiter returned (leader err=%v); the waiter must not block on it", lerr)
+		default:
+		}
+
+		close(release)
+		if lerr := <-leaderDone; lerr != nil {
+			t.Fatalf("leader err = %v, want success after release", lerr)
+		}
+	})
+}
+
 // TestRefreshCadenceOverflowGuard verifies that refreshCadence does not
 // overflow when expires_in is near math.MaxInt64, and that the result is
 // always within [minCadence, maxCadence].
@@ -1264,9 +1442,9 @@ func TestRefreshCadenceOverflowGuard(t *testing.T) {
 	)
 
 	tests := []struct {
-		name     string
+		name      string
 		expiresIn FlexInt64
-		want     time.Duration
+		want      time.Duration
 	}{
 		// Normal values: TTL - 60s safety margin, clamped to [1s, 50min]
 		{"normal_3599s", FlexInt64(3599), maxCadence}, // 3539s > 50min, clamped

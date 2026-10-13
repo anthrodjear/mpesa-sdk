@@ -171,7 +171,8 @@ def test_stk_push_validate_rejections(mutate, fragment):
 
 def test_query_requires_checkout_id():
     with pytest.raises(ValueError, match="CheckoutRequestID is required"):
-        STKQueryRequest(checkout_request_id=" ").validate()
+        STKQueryRequest(business_short_code="174379",
+                        checkout_request_id=" ").validate()
 
 
 @pytest.mark.parametrize(
@@ -186,9 +187,11 @@ def test_query_requires_checkout_id():
                          party_a="600992", party_b="254705912645", remarks="ok",
                          queue_time_out_url=CB, result_url=CB),
         B2CPayoutRequest(initiator_name="i", security_credential="c",
-                         command_id=CommandID.BUSINESS_PAYMENT, amount=250001,
+                         command_id=CommandID.BUSINESS_PAYMENT, amount=500001,
                          party_a="600992", party_b="254705912645", remarks="ok",
                          queue_time_out_url=CB, result_url=CB),
+        # (remarks="x" would fail the 2-char rule for the WRONG reason, so
+        # the amount row above keeps a valid remarks value.)
         B2CPayoutRequest(initiator_name="i", security_credential="c",
                          command_id=CommandID.BUSINESS_PAYMENT, amount=10,
                          party_a="600992", party_b="254705912645", remarks="x",
@@ -367,7 +370,8 @@ def test_omission_pins():
                            amount=5, msisdn="0712345678", bill_ref_number="acct"),
         QRCodeRequest(merchant_name="m", ref_no="r", amount=1,
                       trx_code=QRTrxCode.SEND_MONEY, cpi="1234", size="300"),
-        STKQueryRequest(checkout_request_id="x" * 65),
+        STKQueryRequest(business_short_code="174379",
+                        checkout_request_id="x" * 65),
         C2BSimulateRequest(short_code="174379",
                            command_id=TransactionType.CUSTOMER_PAY_BILL_ONLINE,
                            amount=5, msisdn="254712345678",

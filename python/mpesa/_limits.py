@@ -1,5 +1,11 @@
 """Shared ingestion and streaming guards (single source of truth).
 
+This is the BYTE-CAP module: it bounds how many bytes a wire body may carry
+before any decode. Per-merchant amount ceilings (``max_per_transaction`` /
+``max_per_day``, KES rather than bytes) live in the separate
+``mpesa/limits.py`` module -- different name, different subject, and the two
+are never consulted together.
+
 Every Daraja-facing reader in this package enforces the SAME 1 MiB bound
 (Go ``maxResponseLen`` / TS ``MAX_RESPONSE_LEN`` parity):
 

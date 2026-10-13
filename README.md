@@ -1,6 +1,6 @@
 # M-Pesa Daraja SDK
 
-[![Go](https://img.shields.io/badge/Go-1.26.8+-00ADD8?logo=go&logoColor=white)](https://pkg.go.dev/github.com/anthrodjear/mpesa-sdk/go)
+[![Go](https://img.shields.io/badge/Go-1.26.9+-00ADD8?logo=go&logoColor=white)](https://pkg.go.dev/github.com/anthrodjear/mpesa-sdk/go)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://pypi.org/project/mpesa-sdk/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9+-3178C6?logo=typescript&logoColor=white)](https://www.npmjs.com/package/@mpesa-sdk/core)
 [![CI](https://github.com/anthrodjear/mpesa-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/anthrodjear/mpesa-sdk/actions/workflows/ci.yml)
@@ -11,7 +11,7 @@ A production-grade SDK for the Safaricom **M-Pesa Daraja API** in three language
 
 | Language   | Version  | Install                        | Import                                  | Runtime deps                          |
 |------------|----------|--------------------------------|-----------------------------------------|---------------------------------------|
-| Go         | 1.26.8+  | `go get github.com/anthrodjear/mpesa-sdk/go` | `import mpesa "github.com/anthrodjear/mpesa-sdk/go"` | none (stdlib only)                    |
+| Go         | 1.26.9+  | `go get github.com/anthrodjear/mpesa-sdk/go` | `import mpesa "github.com/anthrodjear/mpesa-sdk/go"` | none (stdlib only)                    |
 | Python     | 3.11+    | `pip install mpesa-sdk`        | `import mpesa`                           | `requests`, `cryptography`            |
 | TypeScript | Node ≥20 | `npm install @mpesa-sdk/core`  | `import { ... } from "@mpesa-sdk/core"`  | none (native `fetch` + `node:crypto`) |
 
@@ -43,7 +43,17 @@ MPESA_PASSKEY=your-passkey
 MPESA_ENVIRONMENT=sandbox
 ```
 
-Credentials never leak through text rendering: `repr()`/`log_safe()` (Python), `GoString`/`Format` (Go), and `toString()`/`toJSON()`/`logSafe()` (TypeScript) all redact secrets. Log configs freely — but only via those accessors. TypeScript additionally ships `MpesaClient.fromEnv()`, wired straight from these variables; Go has no env loader by design — fill `Config` yourself.
+Request timeouts are owned by the client object, not by an environment variable: Go sets
+`Config.Timeout` (default 30 s) and Python `Config.timeout_seconds` (default 30.0). TypeScript is the
+odd one out — it puts **no** timeout on `Config`; the 30 s default lives on `MpesaClientOptions`
+as `timeoutMs`, set with `new MpesaClient({ config, timeoutMs })`. All three clamp a value ≤ 0 back
+to 30 s, and Python additionally rejects a non-numeric `timeout_seconds` when the client is built.
+
+Credentials never leak through text rendering: `repr()`/`log_safe()` (Python), `GoString`/`Format` (Go), and `toString()`/`toJSON()`/`logSafe()` (TypeScript) all redact secrets — `consumerKey` is masked to first-4/last-4 in all three engines, and `consumerSecret`/`passkey` are omitted entirely. Log configs freely — but only via those accessors. TypeScript additionally ships `MpesaClient.fromEnv()`, wired straight from these variables; Go has no env loader by design — fill `Config` yourself.
+
+### Transaction limits
+
+Every engine now enforces per-transaction amount ceilings client-side (opt-in per-day ceilings too), defaulting to the published Safaricom caps — so **standard usage needs no new code**: every quick-start snippet below still works unchanged, and amounts over a ceiling fail in your process with a typed error instead of reaching the gateway. You only touch config if you run above the defaults (e.g. a Safaricom-approved B2C tier) or want daily tracking: `Config.Limits` + `Config.TrackDaily` (Go), `Config(limits=…, track_daily=…)` (Python), `limits` + `trackDaily` (TypeScript). Full reference: [limits.md](docs/apis/limits.md).
 
 ## Quick start
 
@@ -251,7 +261,25 @@ def stk_callback():
     return "", 200                                            # ACK immediately
 ```
 
-(`client`, `settle`, `mark_pending_reconcile` are your functions.) Typed metadata helpers: `amount()`, `mpesa_receipt()`, `phone_number()`, `transaction_date()`, plus `metadata()` for the raw first-wins map — Go exposes `STKCallbackResult.MetadataMap()`, TypeScript `new MetadataMap(items)` with `.get(key)`. Go also offers `mpesa.ParseSTKCallback(body)` accepting the full envelope or a bare result object, and `STKQueryResponse.Classify()` mirroring Python's `classify_result_code(resp.result_code)`. Cap request bodies at your framework level too; `from_json` refuses bodies over 1 MiB (UTF-8 bytes) regardless. Callbacks late or missing? Poll synchronously: `stk_query(STKQueryRequest(checkout_request_id=…))` returns the outcome directly (`resp.result_code`, string-normalized) — back off between polls (+30s/+60s/+120s), classify each result, and only settle on terminal codes.
+(`client`, `settle`, `mark_pending_reconcile` are your functions.) Typed metadata helpers: `amount()`, `mpesa_receipt()`, `phone_number()`, `transaction_date()`, plus `metadata()` for the raw first-wins map — Go exposes `STKCallbackResult.MetadataMap()`, TypeScript `parseSTKCallback(rawBody)` returns a `StkCallback` with `metadata()` (a first-wins `MetadataMap`), `amount()`, `mpesaReceiptNumber()`, `transactionDate()`, `phoneNumber()`, `duplicateKeys()`, and `classify()`; the `MetadataMap` values are also reachable via `.get(key)`. `parseSTKCallback` accepts the full `{"Body":{"stkCallback":{…}}}` envelope OR a bare result object, refuses bodies over 1 MiB (UTF-8 bytes), and raises a typed `MpesaDecodeError` (never a raw `SyntaxError`/`TypeError`) on malformed shapes. `classifyResultCode` mirrors Python's `classify_result_code`. Cap request bodies at your framework level too; `parseSTKCallback` enforces the same 1 MiB cap itself. Callbacks late or missing? Poll synchronously: `stk_query(STKQueryRequest(checkout_request_id=…))` returns the outcome directly (`resp.result_code`, string-normalized) — back off between polls (+30s/+60s/+120s), classify each result, and only settle on terminal codes.
+
+TypeScript STK callback example:
+
+```ts
+import { parseSTKCallback, ResultClass } from "@mpesa-sdk/core";
+
+const result = parseSTKCallback(reqBodyRaw);            // string | Uint8Array
+const order = repo.byCheckout(result.CheckoutRequestID); // dedup FIRST
+if (order === undefined) return ack();                   // unknown: ACK, ignore
+if (result.classify() === ResultClass.SUCCESS) {         // HINT only —
+  const resp = await client.stkQuery({ checkoutRequestID: result.CheckoutRequestID });
+  if (resp.ResultCode === "0") {
+    settle(order, result.mpesaReceiptNumber(), result.amount());
+  }
+} else {
+  markPendingReconcile(order);   // failure/indeterminate → stk_query decides
+}
+```
 
 ### Async results (B2C / Transaction Status / Reversal / Account Balance)
 
@@ -277,7 +305,21 @@ segs, skipped := mpesa.ParseBalanceSegments(params["AccountBalance"])
 cls := r.Result.Classify()
 ```
 
-TypeScript has no envelope parser class — `JSON.parse` the body yourself, then run the `AccountBalance` blob through `parseBalanceSegments(text)`. If you need the full envelope, `parseAsyncResult(body)` accepts the raw JSON string and returns a typed object with the `{"Result": {...}}` wrapper already unwrapped; `parseAsyncResult` also handles the `Result` key extraction so you can call `.parameters()` directly on the result.
+TypeScript has a full envelope parser: `parseAsyncResultBody(rawBody)` accepts the raw callback POST body (string or `Uint8Array`), enforces the 1 MiB cap before parsing, and returns a `ParsedAsyncResult` with the `{"Result": {...}}` wrapper already unwrapped — `ResultType`, `ResultCode`, `ResultDesc`, `OriginatorConversationID`, `ConversationID`, `TransactionID`, optional `ReferenceData`, plus `parameters()` (a first-wins map, Go `Parameters()` / Python `parameters()` parity) and typed accessors `transactionReceipt()`, `transactionStatus()`, `amount()`, `classify()`:
+
+```ts
+import { parseAsyncResultBody, ResultClass, parseBalanceSegments } from "@mpesa-sdk/core";
+
+const result = parseAsyncResultBody(reqBodyText);
+if (result.classify() === ResultClass.SUCCESS) {
+  const receipt = result.transactionReceipt();            // typed accessor
+  const params = result.parameters();                     // first-wins map
+  const segments = parseBalanceSegments(String(params.get("AccountBalance")));
+  for (const seg of segments) console.log(seg.accountName, seg.currency, seg.available, seg.raw);
+}
+```
+
+Malformed bodies raise a typed `MpesaDecodeError` (never a raw `SyntaxError`/`TypeError`). For the light-weight envelope only, `parseAsyncResult(body)` (already-decoded JSON) or `parseAsyncResultJson(raw)` (capped raw body) return the 4-field `AsyncResultEnvelope`.
 
 Bind on `OriginatorConversationID` (echoed back in the result) before acting — these pushes are unsigned like everything else.
 
@@ -416,10 +458,11 @@ catch (err) {
 | Response cap         | Bodies larger than **1 MiB** are rejected before any parsing                                 |
 | Redirect refusal     | 307/308-style redirects are never followed (they would replay bodies at an arbitrary host)   |
 | Token caching        | Cached bearer refreshed eagerly and single-flight; a generation guard resolves `401.003.01` across replicas without stampedes, and the failed call is retried once with the fresh token — transparently |
-| Refresh rate limit   | After **3 consecutive** OAuth refresh failures within **5 s**, further (unforced) refreshes are refused with `mpesa: refresh rate limited ...` — this breaks a crash-loop rather than hammering the token endpoint. The counter resets on the first success, and a 401-triggered forced refresh always bypasses it. All three engines. Details: [docs/apis/oauth.md](docs/apis/oauth.md#refresh-rate-limiting--mpesa-refresh-rate-limited-) |
+| Refresh rate limit   | After **3 consecutive** OAuth refresh failures within **5 s**, further (unforced) refreshes are refused with `mpesa: refresh rate limited ...` — this breaks a crash-loop rather than hammering the token endpoint. The counter resets on the first success, and a 401-triggered forced refresh always bypasses it. All three engines. Rendering differs per engine: Go and Python emit the bare prefix (`mpesa: refresh rate limited after N consecutive failures ...`, Python as the typed `RefreshRateLimitedError`), while TypeScript raises a `MpesaError` rendered as `mpesa: HTTP 429 refresh rate limited ...`. Details: [docs/apis/oauth.md](docs/apis/oauth.md#refresh-rate-limiting--mpesa-refresh-rate-limited-) |
 | Concurrency          | Go `Client` is safe to share across goroutines; Python `TokenManager` is lock-synchronized; TypeScript dedups refreshes via a shared in-flight promise |
-| Value semantics      | Request objects are copied, never mutated — injected defaults stay local to the call          |
+| Value semantics      | Request objects are copied, never mutated — injected defaults stay local to the call            |
 | Secret hygiene       | `Config`/request reprs redact `consumerSecret`, `passkey`, `securityCredential`, tokens      |
+| Transaction ceilings | Per-transaction ceilings enforced client-side before any network I/O (default 250,000 KES per service bucket); per-day ceilings only with daily tracking opt-in; an unset field inherits the default and `0` means unlimited — [limits.md](docs/apis/limits.md) |
 
 ## Wire-format quirks — handled by the SDK
 
@@ -487,7 +530,7 @@ already been tested on the develop push and on the promotion pull request.
 
 | Job | What it runs |
 |---|---|
-| `go` | `go vet`, `golangci-lint`, and `go test -race -v -count=1 ./...` on **Go 1.26.8** — the same toolchain `govulncheck` scans, so build and scan cannot drift |
+| `go` | `go vet`, `golangci-lint`, and `go test -race -v -count=1 ./...` on **Go 1.26.9** — the same toolchain `govulncheck` scans, so build and scan cannot drift |
 | `python` | `pytest` on Python 3.11, then `ruff check` |
 | `typescript` | `npm ci`, typecheck (including examples), `vitest`, then ESLint or `tsc --noEmit` |
 | `security` | `govulncheck ./...` (Go), `bandit -r mpesa/ -ll` (Python), `npm audit --audit-level=high` (TypeScript) — **a hard gate**, and a timeout here is itself a failure |
@@ -500,6 +543,7 @@ longer be satisfied by a push-run result that no PR ever evaluated.
 ## Documentation index
 
 - [getting-started.md](docs/apis/getting-started.md) — environments, SecurityCredential recipe, callback URL validation & IP whitelist, go-live checklist
+- [limits.md](docs/apis/limits.md) — client-side transaction ceilings, opt-in daily tracking, B2C approved-tier overrides
 - [stk-push.md](docs/apis/stk-push.md) — prompt fields, two-clock bug, ResultCode catalog · [stk-query.md](docs/apis/stk-query.md) — polling semantics
 - [b2c.md](docs/apis/b2c.md) — payout flow, initiator rules, async Result shape · [c2b.md](docs/apis/c2b.md) — registration + simulation
 - [transaction-status.md](docs/apis/transaction-status.md) · [reversal.md](docs/apis/reversal.md) — receipt/conversation queries · C2B-only reversal

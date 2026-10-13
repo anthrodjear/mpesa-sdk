@@ -52,7 +52,13 @@ def callback_token_equal(expected: str, provided: str) -> bool:
     stdlib semantics; comparison cost stays flat in byte equality,
     leaking length only, and length is public anyway (the token rides
     in the URL).
+
+    Non-string inputs (``None``, bytes, ints, ...) return False instead
+    of raising ``AttributeError`` on ``.encode()``: a forged or
+    mis-wired callback must fail closed, never crash the endpoint.
     """
+    if not isinstance(expected, str) or not isinstance(provided, str):
+        return False
     if not expected or not provided:
         return False
     return hmac.compare_digest(expected.encode(), provided.encode())

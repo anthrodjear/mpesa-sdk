@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // MpesaError is the typed surface for non-2xx Daraja responses carrying the
@@ -39,10 +40,18 @@ func (e *MpesaError) Error() string {
 }
 
 // errorEnvelope is the wire shape of Daraja's synchronous error body.
+//
+// Every field is a FlexString rather than a string: json.Unmarshal into a
+// struct aborts and discards ALL fields on the FIRST type mismatch, so a
+// gateway that sends `"errorCode": 401` as a bare number used to flatten the
+// whole envelope into "unexpected error response from gateway" — losing the
+// requestId, the errorMessage and, critically, the errorCode the 401 retry
+// probe in Client.post keys on. FlexString coerces strings, numbers, booleans
+// and null, so a single mistyped field can no longer erase the others.
 type errorEnvelope struct {
-	RequestID    string `json:"requestId"`
-	ErrorCode    string `json:"errorCode"`
-	ErrorMessage string `json:"errorMessage"`
+	RequestID    FlexString `json:"requestId"`
+	ErrorCode    FlexString `json:"errorCode"`
+	ErrorMessage FlexString `json:"errorMessage"`
 }
 
 const (
@@ -59,20 +68,28 @@ type ErrorLogger interface {
 
 // parseError converts a non-2xx response into the typed surface. Envelope
 // fields are sanitized (control runes stripped, byte-capped) so hostile or
-// corrupted gateway output can never inject newlines/escapes into logs. A
-// body that is not the envelope at all (WAF pages, HTML errors) yields a
-// generic error message for callers; detailed diagnostics (content-type,
-// byte length, ASCII snippet) are forwarded to the optional logger only.
+// corrupted gateway output can never inject newlines/escapes into logs.
+//
+// Two distinct failure modes are handled separately:
+//
+//   - "not JSON at all" (WAF pages, HTML, truncated bodies, bare scalars,
+//     arrays) — json.Unmarshal into errorEnvelope fails and the caller sees a
+//     generic message, while detailed diagnostics (content-type, byte length,
+//     ASCII snippet) are forwarded to the optional logger.
+//   - "JSON with wrong types" — the tolerant FlexString fields absorb the
+//     mismatch, so whatever survived decoding still reaches the caller. Only a
+//     body that decodes as JSON but carries NO envelope field at all ("null",
+//     "{}") falls back to the generic message.
 func parseError(status int, contentType string, body []byte, logger ErrorLogger) error {
 	var env errorEnvelope
-	_ = json.Unmarshal(body, &env)
+	notJSON := json.Unmarshal(body, &env) != nil
 	e := &MpesaError{
 		StatusCode:   status,
-		RequestID:    sanitizeWireString(env.RequestID, maxWireFieldBytes),
-		ErrorCode:    sanitizeWireString(env.ErrorCode, maxWireFieldBytes),
-		ErrorMessage: sanitizeWireString(env.ErrorMessage, maxWireFieldBytes),
+		RequestID:    sanitizeWireString(string(env.RequestID), maxWireFieldBytes),
+		ErrorCode:    sanitizeWireString(string(env.ErrorCode), maxWireFieldBytes),
+		ErrorMessage: sanitizeWireString(string(env.ErrorMessage), maxWireFieldBytes),
 	}
-	if env.ErrorCode == "" && env.ErrorMessage == "" && env.RequestID == "" {
+	if notJSON || (env.ErrorCode == "" && env.ErrorMessage == "" && env.RequestID == "") {
 		e.ErrorMessage = "unexpected error response from gateway"
 		if logger != nil {
 			logger.LogError(status, contentType, body)
@@ -94,8 +111,11 @@ func sanitizeWireString(s string, limit int) string {
 		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			continue
 		}
-		size := len(string(r))
-		if n+size > limit {
+		// utf8.RuneLen(r) rather than len(string(r)): the latter allocates a
+		// fresh string for every rune on a path that runs over every error
+		// field the gateway ever returns.
+		size := utf8.RuneLen(r)
+		if size < 0 || n+size > limit {
 			break
 		}
 		b.WriteRune(r)

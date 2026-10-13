@@ -7,6 +7,15 @@ members are always sanitized -- Unicode Cc/Cf control runes stripped, each
 field capped at 512 characters -- so corrupted gateway output can never
 inject newlines or ANSI escapes into logs.
 
+ERROR-BODY ISOLATION (go/errors.go ``parseError`` parity): a body that is
+not the envelope at all yields a GENERIC ``error_message``. The upstream
+bytes -- content type, length and a printable-ASCII snippet -- are handed
+to the optional ``error_logger`` and DISCARDED otherwise. Rationale: an
+exception object is logged by every ``logger.exception`` on the call
+path, so embedding upstream body text here would ship raw gateway payloads
+off-box (customer MSISDNs, WAF internals) to whatever log sink happens to
+be configured. Diagnostics are opt-in, never ambient.
+
 Raise/catch::
 
     if resp.status_code >= 300:
@@ -16,17 +25,25 @@ Raise/catch::
         push()
     except MpesaError as exc:
         log.warning("%s", exc)   # mpesa: HTTP 500 msg [code] requestId=...
+
+    # Opt-in diagnostics (the only place upstream bytes surface):
+    MpesaError.from_response(500, body, ctype, my_sink)
 """
 
 from __future__ import annotations
 
 import json
 import unicodedata
+from typing import Callable
 
-__all__ = ["MpesaError"]
+__all__ = ["MpesaError", "InvalidTokenError", "RefreshRateLimitedError"]
 
 _MAX_FIELD_CHARS = 512
 _MAX_SNIPPET_CHARS = 200
+#: Caller-facing text for a non-envelope body (go/errors.go verbatim).
+_UNPARSEABLE_MESSAGE = "unexpected error response from gateway"
+#: Opt-in diagnostic sink: (status_code, content_type, raw body).
+ErrorLogger = Callable[[int, str, bytes], None]
 
 
 def _sanitize(value: str, limit: int = _MAX_FIELD_CHARS) -> str:
@@ -36,7 +53,13 @@ def _sanitize(value: str, limit: int = _MAX_FIELD_CHARS) -> str:
 
 
 def _ascii_snippet(text: str, limit: int = _MAX_SNIPPET_CHARS) -> str:
-    """Return up to *limit* printable-ASCII characters of *text*, for diagnostics."""
+    """Return up to *limit* printable-ASCII characters of *text*, for diagnostics.
+
+    Lives here for OPT-IN error loggers only: an ``error_logger`` handed a
+    raw upstream body may render it through this helper before persisting
+    anything. The SDK itself never interpolates the result into an
+    exception, because exception text travels off-box by default.
+    """
     out: list[str] = []
     for ch in text:
         if len(out) < limit and " " <= ch <= "~":
@@ -91,13 +114,25 @@ class MpesaError(Exception):
 
     @classmethod
     def from_response(cls, status_code: int, body: bytes,
-                      content_type: str = "") -> "MpesaError":
+                      content_type: str = "",
+                      error_logger: "ErrorLogger | None" = None) -> "MpesaError":
         """Build an :class:`MpesaError` from raw non-2xx *body* bytes.
 
         Never raises: malformed JSON, wrong shapes and binary garbage all fall
-        through to an instance whose ``error_message`` carries a diagnostic
-        with content type, byte length and a printable-ASCII body snippet.
-        Non-string envelope members are treated as absent.
+        through to an instance whose ``error_message`` is the generic
+        :data:`_UNPARSEABLE_MESSAGE`. Diagnostics (status, content type, byte
+        length, printable-ASCII snippet) go to the OPT-IN *error_logger*
+        only -- ``(status_code, content_type, body)`` -- and are discarded
+        when it is omitted, so a hostile upstream body can never travel off-box
+        inside the exception text. Non-string envelope members are treated as
+        absent.
+
+        Args:
+            status_code: HTTP status of the failed response.
+            body: Raw response bytes (never interpolated into the error).
+            content_type: Response ``Content-Type`` (diagnostics only).
+            error_logger: Optional sink for upstream diagnostics; a logger
+                that itself raises is swallowed and never masks this error.
         """
         raw = {"requestId": "", "errorCode": "", "errorMessage": ""}
         try:
@@ -115,9 +150,39 @@ class MpesaError(Exception):
             error_message=_sanitize(raw["errorMessage"]) or None,
         )
         if not any(raw.values()):
-            err.error_message = (
-                f"unparseable error body ({len(body)} bytes, "
-                f"content-type {content_type!r}): "
-                f"{_ascii_snippet(body.decode('utf-8', errors='replace'))!r}"
-            )
+            err.error_message = _UNPARSEABLE_MESSAGE
+            if error_logger is not None:
+                try:
+                    error_logger(status_code, content_type, body)
+                except Exception:  # a broken sink must never mask the error
+                    pass
         return err
+
+
+class InvalidTokenError(ValueError):
+    """The OAuth ``access_token`` arrived as a NON-STRING JSON value.
+
+    The old coercion was ``str`` -- so a gateway hiccup sending
+    ``{"access_token": null, ...}`` produced the literal string ``"None"``,
+    which is truthy, passed the ``if not token_response.access_token``
+    gate, and poisoned the process token cache: every subsequent call 401s,
+    the retry re-fires, and the failure counter trips the refresh rate
+    limiter. Numeric/dict/list tokens are equally meaningless as bearers.
+
+    Subclasses :class:`ValueError` (not a bare ``RuntimeError``/``Exception``)
+    so the documented decoder contract -- ``from_json`` raises ``ValueError``
+    for a malformed payload -- stays truthful while still being catchable as
+    its own type. It is NEVER swallowed into a cached token.
+    """
+
+
+class RefreshRateLimitedError(RuntimeError):
+    """OAuth refresh was throttled after too many consecutive failures.
+
+    Raised by :meth:`mpesa.auth.TokenManager` after
+    ``_REFRESH_FAILURE_THRESHOLD`` failed refreshes inside
+    ``_REFRESH_RATE_LIMIT_SECONDS`` (parity with go/client.go
+    ``refreshRateLimit``): a crash-looping gateway must not turn the OAuth
+    endpoint into a hammer. Subclasses :class:`RuntimeError` so existing
+    ``except RuntimeError`` handlers keep working unchanged.
+    """

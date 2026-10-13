@@ -55,6 +55,10 @@ def test_identity_with_source_modules():
     for name in ("generate_password", "normalize_phone",
                  "security_credential"):
         assert getattr(mpesa, name) is getattr(helpers, name)
+    limits = importlib.import_module("mpesa.limits")
+    for name in ("ServiceLimits", "TransactionLimits",
+                 "DEFAULT_TRANSACTION_LIMITS"):
+        assert getattr(mpesa, name) is getattr(limits, name)
     assert mpesa.ORGANIZATION_SHORTCODE == enums.ORGANIZATION_SHORTCODE
 
 

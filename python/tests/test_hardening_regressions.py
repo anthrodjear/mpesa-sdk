@@ -12,6 +12,7 @@ oversize gate, and the ``coerce_amount`` edge table.
 import dataclasses
 import sys
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -279,7 +280,7 @@ def test_async_result_accessors_agree_with_parameters_dict():
            b'{"Key":"TransactionReceipt","Value":"RCPT"}]}}}')
     res = AsyncResult.from_json(raw)
     params = res.parameters()
-    assert res.amount() == params["TransactionAmount"] == 10.0
+    assert res.amount() == params["TransactionAmount"] == Decimal("10.00")
     assert res.transaction_receipt() == params["TransactionReceipt"]
     assert not hasattr(res, "_param")  # linear-scan helper removed
 
@@ -369,31 +370,34 @@ def test_cjk_oversize_rejected_end_to_end_str_and_bytes():
 # ---- 10b. coerce_amount edge table ----------------------------------------------
 
 @pytest.mark.parametrize("raw,want", [
-    ("123456789012", 123456789012.0),   # 12 int digits: valid
-    ("1.123456", 1.123456),             # 6dp: valid
-    (9007199254740992, 9007199254740992.0),  # 2**53: valid boundary
-    ("1234567890123", None),            # 13 int digits: rejected
-    ("1.1234567", None),                # 7dp: rejected
-    ("1_000", None),                    # PEP 515 underscores
-    ("0x10", None),                     # hex literal
-    (" 0x10 ", None),                   # hex with padding
-    ("\u0661\u0662\u0663", None),       # Arabic-Indic Nd digits
-    ("\u00b2", None),                   # superscript two
-    (float("inf"), None),               # non-finite float
-    (float("-inf"), None),              # non-finite float
-    (float("nan"), None),               # non-finite float
-    (True, None),                       # bool is int subclass: refused
-    (False, None),                      # bool is int subclass: refused
-    (2 ** 53 + 1, None),                # precision loss boundary
-    (-(2 ** 53) - 1, None),             # negative precision boundary
-    ("Infinity", None),                 # non-decimal string
-    ("1e30", None),                     # exponent form not in shape
-    ("", None),                         # absent
-    (None, None),                       # absent
-    ({"a": 1}, None),                   # wrong type
+    ("123456789012", Decimal("123456789012.00")),  # 12 int digits: valid
+    ("1.12", Decimal("1.12")),             # 2dp: valid
+    ("1.10", Decimal("1.10")),             # 2dp keeps its trailing zero
+    (9007199254740992, Decimal("9007199254740992.00")),  # 2**53: valid boundary
+    (2 ** 53 + 1, None),                   # precision loss boundary
+    ("1234567890123", None),               # 13 int digits: rejected
+    ("1.123456", None),                    # >2dp: NOT silently rounded
+    ("1_000", None),                       # PEP 515 underscores
+    ("0x10", None),                        # hex literal
+    (" 0x10 ", None),                      # hex with padding
+    ("\u0661\u0662\u0663", None),          # Arabic-Indic Nd digits
+    ("\u00b2", None),                      # superscript two
+    (float("inf"), None),                  # non-finite float
+    (float("-inf"), None),                 # non-finite float
+    (float("nan"), None),                  # non-finite float
+    (1e300, None),                         # magnitude cap now on the FLOAT path
+    (True, None),                          # bool is int subclass: refused
+    (False, None),                         # bool is int subclass: refused
+    (-(2 ** 53) - 1, None),                # negative precision boundary
+    ("-123456789012.34", Decimal("-123456789012.34")),  # negative money ok
+    ("Infinity", None),                    # non-decimal string
+    ("1e30", None),                        # exponent form not in shape
+    ("", None),                            # absent
+    (None, None),                          # absent
+    ({"a": 1}, None),                      # wrong type
 ])
 def test_coerce_amount_edge_table(raw, want):
-    """Daraja amount shape: <=12 int digits, <=6dp, ASCII decimal only."""
+    """Daraja amount shape: <=12 int digits, <=2dp, ASCII decimal only."""
     got = coerce_amount(raw)
     if want is None:
         assert got is None, raw

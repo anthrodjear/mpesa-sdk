@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import json
 import threading
+import warnings
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
@@ -30,7 +31,7 @@ import requests
 
 from ._limits import MAX_BODY_BYTES as _MAX_BODY_BYTES
 from ._limits import read_capped
-from .exceptions import MpesaError
+from .exceptions import MpesaError, RefreshRateLimitedError
 from .responses import OAuthToken
 
 __all__ = ["TokenManager"]
@@ -74,6 +75,13 @@ class TokenManager:
     credentials. Fakes in tests never hit the network, so they use the
     sandbox host too.
 
+    TLS NOTE (client-only guarantee): this manager never mutates
+    ``session.verify`` -- it only warns (``UserWarning``) when handed a
+    session with falsy ``verify``, mirroring the ``Config`` TLS-verify
+    warning. The TLS guarantee lives in :class:`mpesa.client.MpesaClient`,
+    which clones the injected session and forces ``verify=True`` on its
+    own clone before any OAuth or business traffic.
+
     Example::
 
         tm = TokenManager(session, base_url, key, secret)
@@ -94,6 +102,15 @@ class TokenManager:
                 f"mpesa: refusing untrusted OAuth base_url {base_url!r} "
                 "(want https://sandbox.safaricom.co.ke or "
                 "https://api.safaricom.co.ke from Config.environment)")
+        if not getattr(session, "verify", True):
+            warnings.warn(
+                "TLS verification disabled on TokenManager session -- "
+                "OAuth would ship Basic-auth credentials without "
+                "peer verification; pass a verifying session (MpesaClient "
+                "forces verify=True on its clone)",
+                UserWarning,
+                stacklevel=2,
+            )
         self._session = session
         self._base_url = normalized
         self._consumer_key = consumer_key
@@ -174,24 +191,33 @@ class TokenManager:
         Rate-limit parity with ``go/client.go refreshLocked``: non-forced
         refreshes are throttled after ``_REFRESH_FAILURE_THRESHOLD``
         consecutive failures inside ``_REFRESH_RATE_LIMIT_SECONDS``;
-        401-triggered refreshes (``force=True``) bypass the guard entirely.
+        401-triggered refreshes (``force=True``) bypass the GUARD entirely
+        but still advance the attempt clock, so a crash loop of forced
+        failures cannot leave ``_last_attempt`` stale and let a later
+        non-forced refresh escape the 3-in-5s gate.
+        The throttle raises :class:`~mpesa.exceptions.RefreshRateLimitedError`
+        -- a typed SDK exception (RuntimeError subclass) instead of a bare
+        ``RuntimeError``, so callers can distinguish "Daraja/we are
+        throttling YOU" from a programming error without string matching.
         """
         if not self._consumer_key or not self._consumer_secret:
             raise ValueError(_CREDENTIALS_MSG)
-        # Rate limit: only applies to non-forced refreshes after
-        # consecutive failures (Go `if !force` verbatim).
+        # Rate limit: only the GUARD is gated on non-forced refreshes
+        # (Go `if !force` verbatim); the CLOCK advances on EVERY attempt
+        # including forced. A refused (rate-limited) call is not an
+        # attempt and leaves the clock untouched.
+        now_gate = self._now()
         if not force:
-            now_gate = self._now()
             if (self._failures >= _REFRESH_FAILURE_THRESHOLD
                     and self._last_attempt is not None
                     and (now_gate - self._last_attempt).total_seconds()
                     < _REFRESH_RATE_LIMIT_SECONDS):
                 elapsed = (now_gate - self._last_attempt).total_seconds()
-                raise RuntimeError(
+                raise RefreshRateLimitedError(
                     f"mpesa: refresh rate limited after {self._failures} "
                     f"consecutive failures (last attempt {elapsed:.3f}s ago, "
                     f"need {_REFRESH_RATE_LIMIT_SECONDS:.1f}s)")
-            self._last_attempt = now_gate
+        self._last_attempt = now_gate
         try:
             auth = base64.b64encode(
                 f"{self._consumer_key}:{self._consumer_secret}".encode("latin-1"))

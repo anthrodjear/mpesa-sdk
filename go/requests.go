@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -261,6 +262,127 @@ func requireMaxLen(field string, v string, max int) error {
 	return nil
 }
 
+// inetATonPartRe matches one inet_aton component: decimal ("127"),
+// octal (leading zero, "0177") or 0x-hex ("0x7f"). Anything else means the
+// host is a DNS name, not a numeric literal.
+var inetATonPartRe = regexp.MustCompile(`^(?:0[xX][0-9a-fA-F]+|[0-9]+)$`)
+
+// inetATonPartsMax is inet_aton's documented maximum of four dot-separated
+// components.
+const inetATonPartsMax = 4
+
+// looksLikeNumericHost reports whether every dot-separated component of host
+// is an inet_aton-style number (decimal/octal/hex). Such a host is ALWAYS an
+// attempt to name an IPv4 address by value, so it must be normalised before
+// the blocklist runs — see normalizeNumericHost. The part count is NOT capped
+// here: a five-part numeric host is numeric-looking and must be rejected by
+// normalizeNumericHost, not waved through as an ordinary DNS name.
+func looksLikeNumericHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	for _, p := range strings.Split(host, ".") {
+		if p == "" || !inetATonPartRe.MatchString(p) {
+			return false
+		}
+	}
+	return true
+}
+
+// inetATonPartValue parses one inet_aton component in decimal, octal (leading
+// 0) or 0x-hex. strconv is used with an explicit base rather than
+// ParseUint's base-detection so a leading "0" is treated as octal — the
+// inet_aton behaviour that makes "017700000001" resolve to 127.0.0.1.
+func inetATonPartValue(s string) (uint64, bool) {
+	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		v, err := strconv.ParseUint(s[2:], 16, 32)
+		return v, err == nil
+	}
+	if len(s) > 1 && s[0] == '0' {
+		v, err := strconv.ParseUint(s, 8, 32)
+		return v, err == nil
+	}
+	v, err := strconv.ParseUint(s, 10, 32)
+	return v, err == nil
+}
+
+// normalizeNumericHost converts an inet_aton-style literal to its dotted-quad
+// form, or reports that it cannot be a valid IPv4 address.
+//
+// The blocklist below used to test the raw host with net.ParseIP, which
+// returns nil for every alternative inet_aton spelling — "2852039166",
+// "0x7f000001", "2130706433", "017700000001" and the short form "127.1" all
+// slipped through and were sent straight to the resolver, which happily
+// connects to 169.254.169.254 (the cloud metadata service) or 127.0.0.1.
+//
+// inet_aton's part-to-byte mapping, verified against glibc/Python:
+//
+//	n=4 "a.b.c.d" → a<<24 | b<<16 | c<<8 | d
+//	n=3 "a.b.c"   → a<<24 | b<<16 | c        (c owns the low 8 bits)
+//	n=2 "a.b"     → a<<24 | b                (b owns the low 24 bits)
+//	n=1 "a"       → a                        (a full 32-bit value)
+//
+// So every part before the LAST is top-aligned at 8*(3-i) bits and always
+// gets the widest slot available to it, while the last part never shifts.
+// That is why "127.1" is 127.0.0.1 and "2130706433" is 127.0.0.1 too.
+//
+// Numeric host but no valid IPv4 → (nil, false): fail closed. A host that
+// tries hard to look like an IP literal and still fails (e.g. "1.2.3.4.5",
+// "999.1.1.1", "0xzz") is far more likely an SSRF obfuscation attempt than a
+// misconfigured callback, so it is rejected rather than allowed.
+func normalizeNumericHost(host string) (net.IP, bool) {
+	parts := strings.Split(host, ".")
+	if len(parts) > inetATonPartsMax {
+		return nil, false
+	}
+	var value uint64
+	for i, p := range parts {
+		v, valid := inetATonPartValue(p)
+		if !valid {
+			return nil, false
+		}
+		// Byte slot for this part (see the doc comment for the mapping):
+		// a lone part IS the whole 32-bit value; every part before the last
+		// is top-aligned; the last part fills the lowest bytes.
+		var shift, width int
+		switch {
+		case len(parts) == 1:
+			shift, width = 0, 32
+		case i == len(parts)-1:
+			shift, width = 0, 8
+		default:
+			shift, width = 8*(inetATonPartsMax-1-i), 8*(inetATonPartsMax-i)
+		}
+		if v >= uint64(1)<<width {
+			return nil, false // does not fit the bytes this part owns
+		}
+		value |= v << shift
+	}
+	return net.IPv4(byte(value>>24), byte(value>>16), byte(value>>8), byte(value)), true
+}
+
+// nonRoutableIPReason reports why ip must not be used as a callback target,
+// or "" when it is publicly routable. Loopback, RFC1918, unspecified,
+// link-local (unicast + multicast), interface-local and other multicast
+// ranges are all SSRF sinks.
+func nonRoutableIPReason(ip net.IP) string {
+	switch {
+	case ip.IsLoopback():
+		return "loopback"
+	case ip.IsPrivate():
+		return "private"
+	case ip.IsUnspecified():
+		return "unspecified"
+	case ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast():
+		return "link-local"
+	case ip.IsInterfaceLocalMulticast():
+		return "interface-local"
+	case ip.IsMulticast():
+		return "multicast"
+	}
+	return ""
+}
+
 func requireURL(field, v string) error {
 	if err := requireNonEmpty(field, v); err != nil {
 		return err
@@ -283,16 +405,38 @@ func requireURL(field, v string) error {
 	if host == "" {
 		return fmt.Errorf("mpesa: %s must have a valid host", field)
 	}
+	// The root label is optional in DNS ("localhost." is the same name as
+	// "localhost"), so strip trailing dots before every host comparison —
+	// url.Parse keeps them, and an FQDN with a trailing dot would otherwise
+	// sail past the localhost guard. Python (host.rstrip(".")) and
+	// TypeScript already do this.
+	host = strings.TrimRight(host, ".")
+	if host == "" {
+		return fmt.Errorf("mpesa: %s must have a valid host", field)
+	}
 	// Reject localhost by name (SSRF protection)
 	if strings.EqualFold(host, "localhost") {
 		return fmt.Errorf("mpesa: %s must not point to localhost", field)
 	}
-	// Reject internal/private IP addresses (SSRF protection)
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
-			ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-			ip.IsInterfaceLocalMulticast() || ip.IsMulticast() {
-			return fmt.Errorf("mpesa: %s must not point to an internal or private IP address", field)
+	// Reject internal/private IP addresses (SSRF protection).
+	//
+	// net.ParseIP alone is not enough: it only understands dotted-quad and
+	// (compressed) IPv6 text, so it returns nil for every inet_aton alias of
+	// an IPv4 address. Normalise first — see normalizeNumericHost — and run
+	// the blocklist on the RESULT, never on the raw host.
+	ip := net.ParseIP(host)
+	if looksLikeNumericHost(host) {
+		normalized, ok := normalizeNumericHost(host)
+		if !ok {
+			// Numeric-looking host that is not a valid IPv4 literal: reject
+			// (fail closed) instead of letting the resolver interpret it.
+			return fmt.Errorf("mpesa: %s host %q is not a valid IP address", field, host)
+		}
+		ip = normalized
+	}
+	if ip != nil {
+		if reason := nonRoutableIPReason(ip); reason != "" {
+			return fmt.Errorf("mpesa: %s must not point to an internal or private IP address (%s)", field, reason)
 		}
 	}
 	return nil
@@ -310,11 +454,54 @@ var b2cCommands = map[CommandID]bool{
 	CommandSalaryPayment: true, CommandBusinessPayment: true, CommandPromotionPayment: true,
 }
 
+// shortcodeRe matches the shortcode shape Daraja documents for STK Push
+// PartyB/BusinessShortCode (stk-push.md): a numeric receiving shortcode,
+// 5-10 digits. Same shape as Config.Validate's Shortcode gate.
+var shortcodeRe = regexp.MustCompile(`^\d{5,10}$`)
+
+// requireShortcode enforces the documented shortcode shape. Used for
+// STK Push PartyB, which the client default-injects from BusinessShortCode.
+//
+// Why validate it here: PartyB used to reach the wire unvalidated, so a typo
+// surfaced as the gateway's generic 500.001.1001 "wrong credentials" (which
+// reads like a password/timestamp problem) instead of a clear client-side
+// error naming the field.
+func requireShortcode(field, v string) error {
+	if !shortcodeRe.MatchString(v) {
+		return fmt.Errorf("mpesa: %s %q must be a numeric shortcode of 5-10 digits", field, v)
+	}
+	return nil
+}
+
 // Validate checks every documented STK Push constraint (amount, MSISDNs,
-// length caps, callback URL, transaction-type enum) — safe to call before
-// hand-marshalling. TransactionType has NO default: callers must choose.
+// PartyB shortcode, length caps, callback URL, transaction-type enum) — safe
+// to call before hand-marshalling. TransactionType has NO default: callers
+// must choose.
+//
+// Validate delegates to ValidateWithLimits with DefaultTransactionLimits so
+// the behaviour of a direct call is unchanged; the Client calls the
+// limits-aware variant with the caller's resolved Config.Limits.
 func (r *STKPushRequest) Validate() error {
+	return r.ValidateWithLimits(DefaultTransactionLimits())
+}
+
+// ValidateWithLimits is Validate with a configurable per-transaction ceiling.
+// Every other check is identical. Existing minimums are preserved (Amount
+// must be positive); only the maximum now comes from Config.
+//
+// The limits are enforced AS GIVEN — this function does NOT merge anything —
+// so pass a materialized set: DefaultTransactionLimits(), or the Client's
+// resolved Config.Limits (which is merged once at NewClient). Merging here
+// would re-resolve a config on every request, and a nil field handed
+// straight to this function means "no ceiling", not "inherit the baseline".
+func (r *STKPushRequest) ValidateWithLimits(limits TransactionLimits) error {
 	if err := requireNonEmpty("BusinessShortCode", r.BusinessShortCode); err != nil {
+		return err
+	}
+	if err := requireShortcode("BusinessShortCode", r.BusinessShortCode); err != nil {
+		return err
+	}
+	if err := requireShortcode("PartyB", r.PartyB); err != nil {
 		return err
 	}
 	if r.TransactionType == "" {
@@ -327,6 +514,9 @@ func (r *STKPushRequest) Validate() error {
 	}
 	if r.Amount <= 0 {
 		return fmt.Errorf("mpesa: Amount must be a positive whole number, got %d", r.Amount)
+	}
+	if err := checkPerTransaction(ServiceSTK, r.Amount, limits.limitsFor(ServiceSTK)); err != nil {
+		return err
 	}
 	partyA, err := requireMSISDN("PartyA", r.PartyA)
 	if err != nil {
@@ -363,12 +553,25 @@ func (r *STKQueryRequest) Validate() error {
 // command enum, URL shape) and normalizes PartyB — safe to call before
 // hand-marshalling.
 //
+// Validate delegates to ValidateWithLimits with DefaultTransactionLimits;
+// the Client calls the limits-aware variant with its resolved Config.Limits.
+// B2C defaults to the standard Safaricom cap (250000 KES per transaction,
+// 500000 KES per day, docs/apis/b2c.md); Safaricom-approved higher tiers
+// are raised explicitly via Config.Limits.B2C.
+//
 // OriginatorConversationID bound: Daraja requires <20 chars (1..19 bytes).
 // Client.B2CPayout auto-generates a 16-char lowercase-hex idempotency key
 // when empty, so direct Validate() rejects empty (callers must either set
 // one or go through the client) and rejects longer than 19 chars to fail
 // fast instead of surfacing a gateway rejection.
 func (r *B2CPayoutRequest) Validate() error {
+	return r.ValidateWithLimits(DefaultTransactionLimits())
+}
+
+// ValidateWithLimits is Validate with a configurable per-transaction ceiling
+// (B2C). The documented B2C MINIMUM of 10 KES is preserved verbatim; only the
+// maximum comes from Config. Limits are enforced as given, never merged here.
+func (r *B2CPayoutRequest) ValidateWithLimits(limits TransactionLimits) error {
 	// OriginatorConversationID is the async idempotency key: contract <20
 	// chars, generated IDs are 16 lowercase-hex chars (see newOriginatorID).
 	if err := requireNonEmpty("OriginatorConversationID", r.OriginatorConversationID); err != nil {
@@ -386,8 +589,11 @@ func (r *B2CPayoutRequest) Validate() error {
 	if !b2cCommands[r.CommandID] {
 		return fmt.Errorf("mpesa: B2C CommandID %q not in {SalaryPayment, BusinessPayment, PromotionPayment}", r.CommandID)
 	}
-	if r.Amount < 10 || r.Amount > 250000 {
-		return fmt.Errorf("mpesa: B2C Amount %d outside [10,250000] KES", r.Amount)
+	if r.Amount < 10 {
+		return fmt.Errorf("mpesa: B2C Amount %d outside [10,...] KES (below the documented minimum)", r.Amount)
+	}
+	if err := checkPerTransaction(ServiceB2C, r.Amount, limits.limitsFor(ServiceB2C)); err != nil {
+		return err
 	}
 	if err := requireNonEmpty("PartyA", r.PartyA); err != nil {
 		return err
@@ -409,7 +615,16 @@ func (r *B2CPayoutRequest) Validate() error {
 // Validate enforces the exactly-one-of TransactionID XOR OriginalConversationID
 // rule plus credential/URL/remarks constraints; fills IdentifierType default
 // expectations — safe to call before hand-marshalling.
+//
+// Validate delegates to ValidateWithLimits with DefaultTransactionLimits;
+// TransactionStatus has no dedicated ceiling entry, so it is bounded by
+// TransactionLimits.Default.
 func (r *TransactionStatusRequest) Validate() error {
+	return r.ValidateWithLimits(DefaultTransactionLimits())
+}
+
+// ValidateWithLimits is Validate with the Default ceiling applied to Amount.
+func (r *TransactionStatusRequest) ValidateWithLimits(limits TransactionLimits) error {
 	switch {
 	case r.TransactionID == "" && r.OriginalConversationID == "":
 		return fmt.Errorf("mpesa: exactly one of TransactionID or OriginalConversationID is required")
@@ -431,6 +646,9 @@ func (r *TransactionStatusRequest) Validate() error {
 	if n := len(strings.TrimSpace(r.Remarks)); n < 1 || n > 100 {
 		return fmt.Errorf("mpesa: Remarks must be 1-100 characters, got %d", n)
 	}
+	// TransactionStatusRequest carries NO Amount, so there is nothing to
+	// gate here; the Default ceiling exists for symmetry with the other
+	// requests and for the other language bindings.
 	if err := requireURL("ResultURL", r.ResultURL); err != nil {
 		return err
 	}
@@ -439,7 +657,15 @@ func (r *TransactionStatusRequest) Validate() error {
 
 // Validate checks reversal constraints; RecieverIdentifierType defaulting to
 // "11" is applied by the client — safe to call before hand-marshalling.
+//
+// Validate delegates to ValidateWithLimits with DefaultTransactionLimits;
+// Reversal is bounded by TransactionLimits.Default.
 func (r *ReversalRequest) Validate() error {
+	return r.ValidateWithLimits(DefaultTransactionLimits())
+}
+
+// ValidateWithLimits is Validate with the Default ceiling applied to Amount.
+func (r *ReversalRequest) ValidateWithLimits(limits TransactionLimits) error {
 	if r.CommandID != "" && r.CommandID != CommandTransactionReversal {
 		return fmt.Errorf("mpesa: Reversal CommandID must be TransactionReversal")
 	}
@@ -454,6 +680,9 @@ func (r *ReversalRequest) Validate() error {
 	}
 	if r.Amount <= 0 {
 		return fmt.Errorf("mpesa: Reversal Amount must be positive, got %d", r.Amount)
+	}
+	if err := checkPerTransaction(ServiceDefault, r.Amount, limits.limitsFor(ServiceDefault)); err != nil {
+		return err
 	}
 	if err := requireNonEmpty("ReceiverParty", r.ReceiverParty); err != nil {
 		return err
@@ -507,7 +736,15 @@ func (r *C2BRegisterRequest) Validate() error {
 
 // Validate checks simulation constraints and normalizes Msisdn — safe to call
 // before hand-marshalling.
+//
+// Validate delegates to ValidateWithLimits with DefaultTransactionLimits;
+// C2BSimulate is bounded by TransactionLimits.C2B.
 func (r *C2BSimulateRequest) Validate() error {
+	return r.ValidateWithLimits(DefaultTransactionLimits())
+}
+
+// ValidateWithLimits is Validate with the C2B ceiling applied to Amount.
+func (r *C2BSimulateRequest) ValidateWithLimits(limits TransactionLimits) error {
 	switch r.CommandID {
 	case TransactionTypePayBillOnline, TransactionTypeBuyGoodsOnline:
 	default:
@@ -515,6 +752,9 @@ func (r *C2BSimulateRequest) Validate() error {
 	}
 	if r.Amount <= 0 {
 		return fmt.Errorf("mpesa: simulate Amount must be positive, got %d", r.Amount)
+	}
+	if err := checkPerTransaction(ServiceC2B, r.Amount, limits.limitsFor(ServiceC2B)); err != nil {
+		return err
 	}
 	msisdn, err := requireMSISDN("Msisdn", r.Msisdn)
 	if err != nil {
@@ -531,7 +771,15 @@ var qrTrxCodes = map[TrxCode]bool{QRTrxBuyGoods: true, QRTrxWithdrawAtAgentTill:
 
 // Validate checks merchant/reference presence, amount positivity, TrxCode
 // whitelist, CPI digit-shape and Size — safe to call before hand-marshalling.
+//
+// Validate delegates to ValidateWithLimits with DefaultTransactionLimits; the
+// QR flow is bounded by TransactionLimits.Default.
 func (r *QRCodeRequest) Validate() error {
+	return r.ValidateWithLimits(DefaultTransactionLimits())
+}
+
+// ValidateWithLimits is Validate with the Default ceiling applied to Amount.
+func (r *QRCodeRequest) ValidateWithLimits(limits TransactionLimits) error {
 	if err := requireNonEmpty("MerchantName", r.MerchantName); err != nil {
 		return err
 	}
@@ -540,6 +788,9 @@ func (r *QRCodeRequest) Validate() error {
 	}
 	if r.Amount <= 0 {
 		return fmt.Errorf("mpesa: QR Amount must be positive, got %d", r.Amount)
+	}
+	if err := checkPerTransaction(ServiceDefault, r.Amount, limits.limitsFor(ServiceDefault)); err != nil {
+		return err
 	}
 	if !qrTrxCodes[r.TrxCode] {
 		return fmt.Errorf("mpesa: TrxCode %q not in {BG, WA, PB, SM, SB}", r.TrxCode)

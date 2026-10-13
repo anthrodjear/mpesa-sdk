@@ -8,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MpesaClient, createClient, createClientFromEnv } from "../src/client.js";
 import { Config, ConfigError, Environment } from "../src/config.js";
-import { MpesaError } from "../src/errors.js";
+import { MpesaError, MpesaDecodeError } from "../src/errors.js";
 import {
   TransactionType,
   CommandID,
@@ -409,7 +409,7 @@ describe("All endpoints hit documented paths with Bearer", () => {
 
     // C2B Register
     const regAck = await client.c2bRegisterURL({
-      responseType: ResponseType.Success,
+      responseType: ResponseType.Completed,
       confirmationURL: "https://mydomain.com/c2b/confirmation",
       validationURL: "https://mydomain.com/c2b/validation",
     });
@@ -692,7 +692,7 @@ describe("Default injection", () => {
 
     const client = testClient("https://sandbox.safaricom.co.ke");
     await client.c2bRegisterURL({
-      responseType: ResponseType.Success,
+      responseType: ResponseType.Completed,
       confirmationURL: "https://a.com/c",
       validationURL: "https://a.com/v",
     });
@@ -1206,13 +1206,16 @@ describe("Validation before network", () => {
         want: "Amount",
       },
       {
-        name: "b2c amount above maximum",
+        // The B2C ceiling is CONFIGURABLE (standard Safaricom default
+        // 250_000 per transaction; approved-tier merchants raise via Config
+        // limits) — the over-ceiling rejection is the typed limits error.
+        name: "b2c amount above the configurable maximum",
         call: () => client.b2cPayout({
           initiatorName: "i", securityCredential: "c", commandID: CommandID.BusinessPayment,
-          amount: 250001, partyA: "600992", partyB: "254705912645", remarks: "ok",
+          amount: 250_001, partyA: "600992", partyB: "254705912645", remarks: "ok",
           queueTimeOutURL: "https://a.com/t", resultURL: "https://a.com/r",
         }),
-        want: "Amount",
+        want: "exceeds the configured per-transaction limit of 250000",
       },
       {
         name: "txstatus both identifiers",
@@ -1270,7 +1273,7 @@ describe("Validation before network", () => {
 // ---------------------------------------------------------------------------
 
 describe("C2B Register URL", () => {
-  it("maps ResponseType.Success to Completed on wire", async () => {
+  it("sends ResponseType.Completed verbatim on wire", async () => {
     let capturedBody: Record<string, unknown> = {};
 
     fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
@@ -1290,7 +1293,7 @@ describe("C2B Register URL", () => {
 
     const client = testClient("https://sandbox.safaricom.co.ke");
     await client.c2bRegisterURL({
-      responseType: ResponseType.Success,
+      responseType: ResponseType.Completed,
       confirmationURL: "https://a.com/c",
       validationURL: "https://a.com/v",
     });
@@ -1298,7 +1301,7 @@ describe("C2B Register URL", () => {
     expect(capturedBody["ResponseType"]).toBe("Completed");
   });
 
-  it("maps ResponseType.Fail to Cancelled on wire", async () => {
+  it("sends ResponseType.Cancelled verbatim on wire", async () => {
     let capturedBody: Record<string, unknown> = {};
 
     fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
@@ -1318,12 +1321,36 @@ describe("C2B Register URL", () => {
 
     const client = testClient("https://sandbox.safaricom.co.ke");
     await client.c2bRegisterURL({
-      responseType: ResponseType.Fail,
+      responseType: ResponseType.Cancelled,
       confirmationURL: "https://a.com/c",
       validationURL: "https://a.com/v",
     });
 
     expect(capturedBody["ResponseType"]).toBe("Cancelled");
+  });
+
+  it("REJECTS deprecated Success alias (Go/Python parity — no silent remap)", async () => {
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await expect(
+      client.c2bRegisterURL({
+        responseType: ResponseType.Success,
+        confirmationURL: "https://a.com/c",
+        validationURL: "https://a.com/v",
+      }),
+    ).rejects.toThrow('mpesa: ResponseType "Success" must be Completed or Cancelled');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("REJECTS deprecated Fail alias (Go/Python parity — no silent remap)", async () => {
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await expect(
+      client.c2bRegisterURL({
+        responseType: ResponseType.Fail,
+        confirmationURL: "https://a.com/c",
+        validationURL: "https://a.com/v",
+      }),
+    ).rejects.toThrow('mpesa: ResponseType "Fail" must be Completed or Cancelled');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
@@ -1696,7 +1723,35 @@ describe("Bounded response reader", () => {
 
     await expect(
       client.stkPush(validSTKPushRequest()),
-    ).rejects.toThrow(`mpesa: /mpesa/stkpush/v1/processrequest response exceeds ${MAX} bytes`);
+    ).rejects.toThrow(`mpesa: HTTP 413 /mpesa/stkpush/v1/processrequest response exceeds ${MAX} bytes`);
+  });
+
+  it("the streamed over-cap rejection is a typed MpesaError (HTTP 413)", async () => {
+    const MAX = 1024 * 1024;
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      if (path === "/mpesa/stkpush/v1/processrequest") {
+        return streamResponse([
+          new Uint8Array(MAX),
+          new Uint8Array(1),
+        ]);
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+
+    let caught: unknown;
+    try {
+      await client.stkPush(validSTKPushRequest());
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MpesaError);
+    expect((caught as MpesaError).statusCode).toBe(413);
   });
 
   it("accepts a streamed body of exactly MAX bytes without Content-Length", async () => {
@@ -1749,6 +1804,33 @@ describe("Content-Length pre-check", () => {
     await expect(
       client.stkPush(validSTKPushRequest()),
     ).rejects.toThrow("Content-Length");
+  });
+
+  it("the Content-Length over-cap rejection is a typed MpesaError (HTTP 413)", async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      return new Response("tiny", {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": String(2 * 1024 * 1024), // 2 MiB
+        },
+      });
+    });
+
+    const client = testClient("https://sandbox.safaricom.co.ke");
+
+    let caught: unknown;
+    try {
+      await client.stkPush(validSTKPushRequest());
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MpesaError);
+    expect((caught as MpesaError).statusCode).toBe(413);
   });
 
   it("passes when Content-Length is within limit", async () => {
@@ -2197,5 +2279,466 @@ describe("C2B Register URL wire-correct values", () => {
 
   it("maps ResponseType.Cancelled to Cancelled on wire", async () => {
     expect(await registerWith(ResponseType.Cancelled)).toBe("Cancelled");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Timeout covers response-BODY streaming (not just headers)
+// ---------------------------------------------------------------------------
+
+describe("Timeout covers the body read", () => {
+  /** A response whose HEADERS resolve immediately but whose body stalls. */
+  function headerThenStallResponse(): () => Response {
+    return () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            // First chunk arrives, then the stream trickles forever.
+            controller.enqueue(new TextEncoder().encode('{"MerchantRequestID"'));
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+  }
+
+  function timeoutClient(timeoutMs: number): MpesaClient {
+    return new MpesaClient({
+      config: new Config({
+        consumerKey: CONSUMER_KEY,
+        consumerSecret: CONSUMER_SECRET,
+        shortcode: SHORTCODE,
+        passkey: PASSKEY,
+        environment: Environment.SANDBOX,
+      }),
+      timeoutMs,
+      now: () => nowMs,
+    });
+  }
+
+  it("a stalled mid-body stream rejects with a typed timeout error inside the budget", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
+      return headerThenStallResponse()();
+    });
+    const client = timeoutClient(80);
+
+    const started = Date.now();
+    let caught: unknown;
+    try {
+      await client.stkPush(validSTKPushRequest());
+    } catch (err) {
+      caught = err;
+    }
+    const elapsed = Date.now() - started;
+
+    expect(caught).toBeInstanceOf(MpesaError);
+    expect((caught as MpesaError).message).toContain("response body read timed out");
+    expect((caught as MpesaError).statusCode).toBe(408);
+    // The 80ms budget bound the whole exchange — no indefinite hang.
+    expect(elapsed).toBeLessThan(2000);
+  });
+
+  it("the OAuth leg also rejects a stalled body inside its timeout", async () => {
+    fetchMock.mockImplementation(() => headerThenStallResponse()());
+    const tm = timeoutClient(80);
+
+    await expect(tm.token()).rejects.toThrow(/response body read timed out/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Typed decode errors — never raw SyntaxError/TypeError
+// ---------------------------------------------------------------------------
+
+describe("Typed decode errors", () => {
+  function decodeCaseClient(): MpesaClient {
+    return testClient("https://sandbox.safaricom.co.ke");
+  }
+
+  function mockBusiness(status: number, body: string, contentType = "application/json"): void {
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
+      return new Response(body, { status, headers: { "Content-Type": contentType } });
+    });
+  }
+
+  it("a 2xx HTML error page rejects with MpesaDecodeError (never SyntaxError)", async () => {
+    mockBusiness(200, "<html><body>proxy login</body></html>", "text/html");
+    const client = decodeCaseClient();
+
+    let caught: unknown;
+    try {
+      await client.stkPush(validSTKPushRequest());
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MpesaDecodeError);
+    expect(caught).toBeInstanceOf(MpesaError); // taxonomy contract preserved
+    expect((caught as MpesaError).message).toContain("mpesa: decode /mpesa/stkpush/v1/processrequest body");
+  });
+
+  it("an empty 2xx body rejects with MpesaDecodeError", async () => {
+    mockBusiness(200, "");
+    const client = decodeCaseClient();
+
+    await expect(client.stkPush(validSTKPushRequest())).rejects.toThrow(MpesaDecodeError);
+  });
+
+  it("a 2xx JSON array body rejects with MpesaDecodeError", async () => {
+    mockBusiness(200, '[{"MerchantRequestID":"mr"}]');
+    const client = decodeCaseClient();
+
+    await expect(client.stkPush(validSTKPushRequest())).rejects.toThrow(MpesaDecodeError);
+  });
+
+  it("a 401 whose body is literal null rejects with MpesaError, never TypeError", async () => {
+    mockBusiness(401, "null");
+    const client = decodeCaseClient();
+
+    let caught: unknown;
+    try {
+      await client.stkPush(validSTKPushRequest());
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MpesaError);
+    expect(caught).not.toBeInstanceOf(TypeError);
+    expect((caught as MpesaError).message).toContain("unparseable error body");
+    // No retry was attempted on the malformed body.
+    expect(fetchMock).toHaveBeenCalledTimes(2); // oauth + one business attempt
+  });
+
+  it("a 401 whose body is a JSON array rejects with MpesaError, never TypeError", async () => {
+    mockBusiness(401, "[]");
+    const client = decodeCaseClient();
+
+    await expect(client.stkPush(validSTKPushRequest())).rejects.toThrow(MpesaError);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SSRF / host blocklist — full table (Go + Python parity)
+// ---------------------------------------------------------------------------
+
+describe("Callback URL host blocklist (SSRF table)", () => {
+  const REJECT_HOSTS = [
+    "localhost",
+    "localhost.",
+    "LOCALHOST",
+    "127.0.0.1",
+    "127.1",
+    "0x7f000001",
+    "2130706433",
+    "017700000001",
+    "2852039166",
+    "0.0.0.0",
+    "10.0.0.1",
+    "192.168.1.1",
+    "172.16.0.1",
+    "169.254.169.254",
+    "::1",
+    "::ffff:127.0.0.1",
+    "fe80::1",
+    "fc00::1",
+    "224.0.0.1",
+    "ff02::1",
+    "0x0a000001",
+  ];
+
+  const ACCEPT_HOSTS = [
+    "192.167.1.1",
+    "223.255.255.255",
+    "8.8.8.8",
+    "hook.example.com",
+    "user-facing-brand.com",
+  ];
+
+  function ssrfClient(): MpesaClient {
+    return testClient("https://sandbox.safaricom.co.ke");
+  }
+
+  function urlFor(host: string): string {
+    const authority = host.includes(":") && !host.includes(".") ? `[${host}]` : host;
+    // "::ffff:127.0.0.1" contains dots AND colons — bracket it anyway.
+    const needsBrackets = host.includes(":") && !host.startsWith("user:");
+    return `https://${needsBrackets ? `[${host}]` : host}/callback`;
+  }
+
+  it("rejects the full internal/private/malformed host table", async () => {
+    for (const host of REJECT_HOSTS) {
+      const client = ssrfClient();
+      await expect(
+        client.stkPush({ ...validSTKPushRequest(), callBackURL: urlFor(host) }),
+        `host ${host} must be rejected`,
+      ).rejects.toThrow(/^mpesa: /);
+      expect(fetchMock, `host ${host}`).not.toHaveBeenCalled();
+    }
+  });
+
+  it("rejects embedded credentials in the callback authority", async () => {
+    const client = ssrfClient();
+    await expect(
+      client.stkPush({
+        ...validSTKPushRequest(),
+        callBackURL: "https://user:pass@hook.example.com/callback",
+      }),
+    ).rejects.toThrow("mpesa: CallBackURL must not contain embedded credentials");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts the public host table", async () => {
+    for (const host of ACCEPT_HOSTS) {
+      fetchMock.mockImplementation(async (url: string) => {
+        const path = new URL(url).pathname;
+        if (path === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
+        return jsonResponse({
+          MerchantRequestID: "mr-1",
+          CheckoutRequestID: "ws_CO_1",
+          ResponseCode: "0",
+          ResponseDescription: "accepted",
+          CustomerMessage: "ok",
+        });
+      });
+      const client = ssrfClient();
+      const resp = await client.stkPush({
+        ...validSTKPushRequest(),
+        callBackURL: urlFor(host),
+      });
+      expect(resp.CheckoutRequestID, `host ${host} must pass validation`).toBe("ws_CO_1");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX 6 — cross-language validation parity
+// ---------------------------------------------------------------------------
+
+describe("B2C OriginatorConversationID length", () => {
+  function b2cRequest(ocid: string) {
+    return {
+      originatorConversationID: ocid,
+      initiatorName: "testapi",
+      securityCredential: "cred",
+      commandID: CommandID.BusinessPayment,
+      amount: 100,
+      partyA: "600992",
+      partyB: "254705912645",
+      remarks: "refund order 42",
+      queueTimeOutURL: "https://mydomain.com/timeout",
+      resultURL: "https://mydomain.com/result",
+    };
+  }
+
+  beforeEach(() => {
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
+      return jsonResponse({
+        OriginatorConversationID: "o",
+        ConversationID: "AG_1",
+        ResponseCode: "0",
+        ResponseDescription: "ok",
+      });
+    });
+  });
+
+  it("rejects a 20-char OriginatorConversationID (gateway 500.002.1001 parity)", async () => {
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await expect(client.b2cPayout(b2cRequest("a".repeat(20)))).rejects.toThrow(
+      /OriginatorConversationID must be 1-19 characters/,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts a 19-char OriginatorConversationID", async () => {
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await client.b2cPayout(b2cRequest("a".repeat(19)));
+    // No validation throw — the business call reached the transport.
+    const businessCall = fetchMock.mock.calls.find(
+      (c) => new URL(c[0] as string).pathname === "/mpesa/b2c/v3/paymentrequest",
+    );
+    expect(businessCall).toBeDefined();
+  });
+});
+
+describe("STK Query payload shape", () => {
+  function captureQueryBody(businessShortCode?: string): Promise<Record<string, unknown>> {
+    return new Promise((resolve) => {
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        const path = new URL(url).pathname;
+        if (path === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
+        if (init?.body) resolve(JSON.parse(init.body as string));
+        return jsonResponse({
+          ResponseCode: "0",
+          ResponseDescription: "desc",
+          MerchantRequestID: "mr-1",
+          CheckoutRequestID: "ws_CO_1",
+          ResultCode: "1032",
+          ResultDesc: "Request cancelled by user",
+        });
+      });
+      const client = testClient("https://sandbox.safaricom.co.ke");
+      void client.stkQuery({
+        checkoutRequestID: "ws_CO_1",
+        ...(businessShortCode !== undefined && { businessShortCode }),
+      });
+    });
+  }
+
+  it("OMITS BusinessShortCode when the effective shortcode is empty (Go omitempty parity)", async () => {
+    const client = new MpesaClient({
+      config: new Config({
+        consumerKey: CONSUMER_KEY,
+        consumerSecret: CONSUMER_SECRET,
+        shortcode: "",
+        passkey: PASSKEY,
+        environment: Environment.SANDBOX,
+      }),
+      now: () => nowMs,
+    });
+    let captured: Record<string, unknown> = {};
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
+      if (init?.body) captured = JSON.parse(init.body as string);
+      return jsonResponse({
+        ResponseCode: "0", ResponseDescription: "desc", MerchantRequestID: "mr",
+        CheckoutRequestID: "ws_CO_1", ResultCode: "0", ResultDesc: "ok",
+      });
+    });
+    await client.stkQuery({ checkoutRequestID: "ws_CO_1" });
+    expect(captured).not.toHaveProperty("BusinessShortCode");
+    expect(captured["CheckoutRequestID"]).toBe("ws_CO_1");
+  });
+
+  it("includes BusinessShortCode when explicitly overridden", async () => {
+    const body = await captureQueryBody("999888");
+    expect(body["BusinessShortCode"]).toBe("999888");
+  });
+
+  it("rejects a 65-char CheckoutRequestID (Go non-empty + Python <=64 printable)", async () => {
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await expect(
+      client.stkQuery({ checkoutRequestID: "x".repeat(65) }),
+    ).rejects.toThrow(/exceeds 64 characters/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a CheckoutRequestID with control characters", async () => {
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await expect(
+      client.stkQuery({ checkoutRequestID: "ws_CO_1\ninjected" }),
+    ).rejects.toThrow(/non-printable/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts a 64-char printable CheckoutRequestID", async () => {
+    const body = await captureQueryBody();
+    expect(body["CheckoutRequestID"]).toBe("ws_CO_1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Business-endpoint 5xx + transport timeout (previously zero coverage)
+// ---------------------------------------------------------------------------
+
+describe("Business endpoint failures", () => {
+  it("surfaces a real HTTP 500 gateway envelope as MpesaError(500)", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
+      return errorResponse(500, {
+        requestId: "27504-4b64-1",
+        errorCode: "500.001.1001",
+        errorMessage: "Bad Request - Invalid BusinessShortCode",
+      });
+    });
+    const client = testClient("https://sandbox.safaricom.co.ke");
+
+    let caught: unknown;
+    try {
+      await client.stkPush(validSTKPushRequest());
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MpesaError);
+    const err = caught as MpesaError;
+    expect(err.statusCode).toBe(500);
+    expect(err.errorCode).toBe("500.001.1001");
+    expect(err.errorMessage).toBe("Bad Request - Invalid BusinessShortCode");
+    expect(err.requestId).toBe("27504-4b64-1");
+  });
+
+  it("a business-call transport timeout rejects inside the budget", async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
+      // Honor the AbortSignal like a real fetch would on timeout.
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("The operation was aborted.", "AbortError")),
+          { once: true },
+        );
+      });
+    });
+    const client = new MpesaClient({
+      config: new Config({
+        consumerKey: CONSUMER_KEY,
+        consumerSecret: CONSUMER_SECRET,
+        shortcode: SHORTCODE,
+        passkey: PASSKEY,
+        environment: Environment.SANDBOX,
+      }),
+      timeoutMs: 80,
+      now: () => nowMs,
+    });
+
+    const started = Date.now();
+    await expect(client.stkPush(validSTKPushRequest())).rejects.toThrow(
+      /^mpesa: POST \/mpesa\/stkpush\/v1\/processrequest: /,
+    );
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shared process-wide token cache (fromEnv fix)
+// ---------------------------------------------------------------------------
+
+describe("Shared token cache across default clients", () => {
+  it("two fromEnv clients with the same credentials share ONE OAuth fetch", async () => {
+    vi.stubEnv("MPESA_CONSUMER_KEY", "shared-key");
+    vi.stubEnv("MPESA_CONSUMER_SECRET", "shared-secret");
+    vi.stubEnv("MPESA_SHORTCODE", SHORTCODE);
+    vi.stubEnv("MPESA_PASSKEY", PASSKEY);
+    delete process.env.MPESA_ENVIRONMENT;
+
+    let oauthHits = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        oauthHits++;
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      return jsonResponse({
+        MerchantRequestID: "mr-1",
+        CheckoutRequestID: "ws_CO_1",
+        ResponseCode: "0",
+        ResponseDescription: "accepted",
+        CustomerMessage: "ok",
+      });
+    });
+
+    const clientA = MpesaClient.fromEnv();
+    const clientB = MpesaClient.fromEnv();
+
+    await clientA.stkPush(validSTKPushRequest());
+    await clientB.stkPush(validSTKPushRequest());
+
+    expect(oauthHits).toBe(1); // one cache, one mint — no cross-invalidation
   });
 });

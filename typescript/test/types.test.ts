@@ -4,6 +4,8 @@
  */
 
 import { describe, it, expect } from "vitest";
+import { ResultClass } from "../src/classification.js";
+import { MpesaDecodeError, MpesaError } from "../src/errors.js";
 import {
   STKPushRequest,
   STKQueryRequest,
@@ -32,6 +34,8 @@ import {
   isAccepted,
   parseAsyncResult,
   parseAsyncResultJson,
+  ParsedAsyncResult,
+  parseAsyncResultBody,
   MAX_ASYNC_RESULT_BYTES,
   TransactionType,
   CommandID,
@@ -674,9 +678,25 @@ describe("parseAsyncResultJson", () => {
 
   it("delegates envelope validation (missing ResultCode throws TypeError)", () => {
     expect(() => parseAsyncResultJson('{"ResultDesc":"x"}')).toThrow(TypeError);
-    expect(() => parseAsyncResultJson(new TextEncoder().encode("null"))).toThrow(
-      TypeError,
-    );
+  });
+
+  it("non-object JSON (null/array) throws MpesaDecodeError, not TypeError", () => {
+    // decodeJsonObject rejects non-plain-object JSON before envelope
+    // validation runs — previously JSON.parse("null") succeeded and the
+    // property read threw a raw TypeError.
+    expect(() => parseAsyncResultJson("null")).toThrow(MpesaDecodeError);
+    expect(() => parseAsyncResultJson("[1,2]")).toThrow(MpesaDecodeError);
+  });
+
+  it("invalid JSON throws MpesaDecodeError, never a raw SyntaxError", () => {
+    let caught: unknown;
+    try {
+      parseAsyncResultJson("not json{{{");
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MpesaDecodeError);
+    expect(caught).not.toBeInstanceOf(SyntaxError);
   });
 
   it("rejects an oversize string body (> 1 MiB UTF-8)", () => {
@@ -687,23 +707,40 @@ describe("parseAsyncResultJson", () => {
       '{"ResultCode":"0","ResultDesc":"' +
       "A".repeat(MAX_ASYNC_RESULT_BYTES - overhead + 1) +
       '"}';
-    expect(new TextEncoder().encode(oversize).length).toBeGreaterThan(
-      MAX_ASYNC_RESULT_BYTES,
+    const byteLen = new TextEncoder().encode(oversize).length;
+    expect(byteLen).toBeGreaterThan(MAX_ASYNC_RESULT_BYTES);
+    expect(() => parseAsyncResultJson(oversize)).toThrow(
+      `mpesa: HTTP 413 async result body response exceeds ${MAX_ASYNC_RESULT_BYTES} bytes (Content-Length: ${byteLen})`,
     );
-    expect(() => parseAsyncResultJson(oversize)).toThrow(/exceeds/);
   });
 
   it("rejects oversize Uint8Array bytes (> 1 MiB)", () => {
     const oversize = new Uint8Array(MAX_ASYNC_RESULT_BYTES + 1);
     oversize.fill(0x20); // spaces — cap must fire before JSON.parse runs
-    expect(() => parseAsyncResultJson(oversize)).toThrow(/exceeds/);
+    expect(() => parseAsyncResultJson(oversize)).toThrow(
+      `mpesa: HTTP 413 async result body response exceeds ${MAX_ASYNC_RESULT_BYTES} bytes (Content-Length: ${oversize.byteLength})`,
+    );
   });
 
   it("cap counts UTF-8 bytes, not UTF-16 units (multibyte trap)", () => {
     // "é" is 1 UTF-16 unit but 2 UTF-8 bytes: 600k chars = 1.2 MiB.
     const tricky = "é".repeat(600_000);
     expect(tricky.length).toBeLessThan(MAX_ASYNC_RESULT_BYTES);
-    expect(() => parseAsyncResultJson(tricky)).toThrow(/exceeds/);
+    expect(() => parseAsyncResultJson(tricky)).toThrow(
+      `mpesa: HTTP 413 async result body response exceeds ${MAX_ASYNC_RESULT_BYTES} bytes (Content-Length: 1200000)`,
+    );
+  });
+
+  it("the over-cap rejection is a typed MpesaError (HTTP 413)", () => {
+    const oversize = new Uint8Array(MAX_ASYNC_RESULT_BYTES + 1);
+    let caught: unknown;
+    try {
+      parseAsyncResultJson(oversize);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MpesaError);
+    expect((caught as MpesaError).statusCode).toBe(413);
   });
 
   it("accepts a body of exactly 1 MiB", () => {
@@ -834,5 +871,158 @@ describe("parseBalanceSegments hardening", () => {
   it("rejects non-numeric garbage in any numeric column", () => {
     expect(parseBalanceSegments("A|KES|100|abc|0|0")).toEqual([]);
     expect(parseBalanceSegments("A|KES|100|0|0|NaN")).toEqual([]);
+  });
+
+  it("rejects magnitudes beyond ±2^53 TEXTUALLY (Go results.go parity)", () => {
+    // parseFloat("9007199254740993") rounds to exactly 2^53 — a post-parse
+    // check would pass this hostile value, so the gate is textual.
+    expect(parseBalanceSegments("A|KES|9007199254740993|0|0|0")).toEqual([]);
+    expect(parseBalanceSegments("A|KES|0|0|0|99999999999999999999")).toEqual([]);
+    // 2^53 itself is representable and passes; one ulp above does not.
+    expect(parseBalanceSegments("A|KES|9007199254740992|0|0|0")).toHaveLength(1);
+    expect(parseBalanceSegments("A|KES|9007199254740992.00|0|0|0")).toHaveLength(1);
+    expect(parseBalanceSegments("A|KES|9007199254740992.01|0|0|0")).toEqual([]);
+  });
+});
+
+// ─── Section 17: ParsedAsyncResult (full envelope + parameters map) ───────────
+
+describe("ParsedAsyncResult", () => {
+  const FULL_RESULT = {
+    Result: {
+      ResultType: 0,
+      ResultCode: 0,
+      ResultDesc: "The service request is processed successfully.",
+      OriginatorConversationID: "16730-27514462-1",
+      ConversationID: "AG_20210819_20107e4e9f8b7bd66723",
+      TransactionID: "OK41FL9B7V",
+      ResultParameters: {
+        ResultParameter: [
+          { Key: "TransactionReceipt", Value: "NLJ7RT61SV" },
+          { Key: "TransactionAmount", Value: 100 },
+          { Key: "TransactionStatus", Value: "Completed" },
+        ],
+      },
+      ReferenceData: {
+        ReferenceItem: [{ Key: "QueueTimeoutURL", Value: "https://example.com/timeout" }],
+      },
+    },
+  };
+
+  it("exposes the full field set (Go AsyncResultBody / Python AsyncResult parity)", () => {
+    const result = ParsedAsyncResult.parse(FULL_RESULT);
+    expect(result.ResultType).toBe(0);
+    expect(result.ResultCode).toBe("0");
+    expect(result.ResultDesc).toBe("The service request is processed successfully.");
+    expect(result.OriginatorConversationID).toBe("16730-27514462-1");
+    expect(result.ConversationID).toBe("AG_20210819_20107e4e9f8b7bd66723");
+    expect(result.TransactionID).toBe("OK41FL9B7V");
+    expect(result.classify()).toBe(ResultClass.SUCCESS);
+  });
+
+  it("normalizes ResultType/ResultCode across wire encodings", () => {
+    const result = ParsedAsyncResult.parse({
+      Result: { ResultType: "0", ResultCode: "0", ResultDesc: "ok" },
+    });
+    expect(result.ResultType).toBe(0);
+    expect(result.ResultCode).toBe("0");
+  });
+
+  it("parameters() is a first-wins map (duplicate keys keep the first)", () => {
+    const result = ParsedAsyncResult.parse({
+      Result: {
+        ResultCode: 0,
+        ResultDesc: "ok",
+        ResultParameters: {
+          ResultParameter: [
+            { Key: "TransactionReceipt", Value: "AAA111" },
+            { Key: "TransactionReceipt", Value: "BBB222" },
+          ],
+        },
+      },
+    });
+    expect(result.parameters().get("TransactionReceipt")).toBe("AAA111");
+    expect(result.duplicateKeys()).toBe(1);
+  });
+
+  it("exposes typed accessors: receipt, status, amount", () => {
+    const result = ParsedAsyncResult.parse(FULL_RESULT);
+    expect(result.transactionReceipt()).toBe("NLJ7RT61SV");
+    expect(result.transactionStatus()).toBe("Completed");
+    expect(result.amount()).toBe(100);
+  });
+
+  it("normalizes single-object and list ReferenceData shapes", () => {
+    const single = ParsedAsyncResult.parse({
+      Result: { ResultCode: 0, ResultDesc: "ok", ReferenceData: { ReferenceItem: { Key: "K", Value: "V" } } },
+    });
+    expect(single.referenceItems()).toEqual([{ Key: "K", Value: "V" }]);
+    const list = ParsedAsyncResult.parse({
+      Result: { ResultCode: 0, ResultDesc: "ok", ReferenceData: { ReferenceItem: [{ Key: "A", Value: "1" }, { Key: "B", Value: "2" }] } },
+    });
+    expect(list.referenceItems()).toHaveLength(2);
+  });
+
+  it("tolerates absent ResultParameters / ReferenceData", () => {
+    const result = ParsedAsyncResult.parse({ Result: { ResultCode: 1, ResultDesc: "fail" } });
+    expect(result.parameters().size).toBe(0);
+    expect(result.transactionReceipt()).toBeNull();
+    expect(result.referenceItems()).toEqual([]);
+    expect(result.TransactionID).toBe("");
+    expect(result.MerchantRequestID).toBeUndefined();
+  });
+
+  it("rejects a missing/malformed Result wrapper with a typed error", () => {
+    expect(() => ParsedAsyncResult.parse({})).toThrow(/missing or malformed Result/);
+    expect(() => ParsedAsyncResult.parse([])).toThrow(/missing or malformed Result/);
+    expect(() => ParsedAsyncResult.parse({ Result: { ResultDesc: "x" } })).toThrow(/missing ResultCode/);
+  });
+
+  it("parseAsyncResultBody applies the 1 MiB cap before parsing", () => {
+    expect(() => parseAsyncResultBody('{"Result":{"ResultCode":0,"ResultDesc":"ok"}}')).not.toThrow();
+    const oversize = '{"Result":{"ResultCode":0,"ResultDesc":"' + "A".repeat(1_048_577) + '"}}';
+    const byteLen = new TextEncoder().encode(oversize).length;
+    expect(() => parseAsyncResultBody(oversize)).toThrow(
+      `mpesa: HTTP 413 async result body response exceeds ${MAX_ASYNC_RESULT_BYTES} bytes (Content-Length: ${byteLen})`,
+    );
+  });
+
+  it("the parseAsyncResultBody over-cap rejection is a typed MpesaError (HTTP 413)", () => {
+    const oversize = '{"Result":{"ResultCode":0,"ResultDesc":"' + "A".repeat(1_048_577) + '"}}';
+    let caught: unknown;
+    try {
+      parseAsyncResultBody(oversize);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MpesaError);
+    expect((caught as MpesaError).statusCode).toBe(413);
+  });
+
+  it("parseAsyncResultBody parses the raw callback body end-to-end", () => {
+    const result = parseAsyncResultBody(JSON.stringify(FULL_RESULT));
+    expect(result.transactionReceipt()).toBe("NLJ7RT61SV");
+    expect(result.amount()).toBe(100);
+    const bytes = new TextEncoder().encode(JSON.stringify(FULL_RESULT));
+    expect(parseAsyncResultBody(bytes).TransactionID).toBe("OK41FL9B7V");
+  });
+
+  it("parseAsyncResultBody rejects non-object bodies with the typed decode error", () => {
+    expect(() => parseAsyncResultBody("null")).toThrow(/expected a JSON object/);
+    expect(() => parseAsyncResultBody("")).toThrow(/invalid JSON/);
+  });
+
+  it("compile-time: the extended AsyncResult shape carries TransactionID + ReferenceData", () => {
+    const shape: AsyncResult = {
+      ResultType: 0,
+      ResultCode: "0",
+      ResultDesc: "ok",
+      OriginatorConversationID: "o",
+      ConversationID: "c",
+      TransactionID: "t",
+      ReferenceData: [{ Key: "QueueTimeoutURL", Value: "https://example.com/timeout" }],
+    };
+    expect(shape.TransactionID).toBe("t");
+    expect(shape.ReferenceData).toHaveLength(1);
   });
 });

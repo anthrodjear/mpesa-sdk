@@ -1,3 +1,139 @@
+# Changes — 0.4.0 (2026-10-13)
+
+All three engines ship `0.4.0` together. This is a **minor** bump, per the
+0.x rule `0.3.0` already stated: under SemVer 0.x, breaking changes increment
+the minor version, so existing `^0.3.0` / `~=0.3.0` ranges will **not**
+auto-upgrade into it — pin `0.4.0` explicitly. The headline is
+**configurable transaction limits**: all three engines now refuse an amount
+above a configured ceiling *client-side*, where before the gateway was the
+only enforcer.
+
+## BREAKING
+
+- **Go minimum toolchain raised to 1.26.9** (`go/go.mod`,
+  `.github/workflows/ci.yml`): the `go` directive and both `setup-go` pins move
+  from `1.26.8` to `1.26.9` — the 1.26.9 patch fixes nine reachable
+  standard-library CVEs the SDK calls into (GO-2026-6603/6605/6607/6608/6610/
+  6611/6612/6613/6617 in `net/http`, `net/textproto`, `crypto/tls`), which is
+  what fails the `govulncheck` gate on a 1.26.8 build. Consumers on an older
+  patch must upgrade their Go install (or let `GOTOOLCHAIN=auto` fetch 1.26.9)
+  before `go get` will resolve. A full patch floor, not `1.26`, on purpose —
+  the 0.3.0 toolchain note explains why. No SDK API changed.
+
+- **Amount ceilings are now enforced client-side.** The gateway used to be the
+  only enforcer; each engine now refuses an amount above a per-service ceiling
+  *before any network I/O* (default 250,000 KES per transaction for every
+  bucket — STK Push, C2B, B2C, and the `default` bucket that also covers
+  Reversal, Transaction Status and Dynamic QR). A flow that used to fail at the
+  gateway now fails locally with a typed error naming the config path to raise;
+  set the service ceiling to `0` (unlimited) to restore the old pass-through.
+  Per-day ceilings apply only when daily tracking is switched on (off by
+  default). Reference: `docs/apis/limits.md`.
+- **B2C defaults to the published Safaricom caps** (250,000 per transaction,
+  500,000 per day). A paybill on a Safaricom-approved higher tier must raise
+  `b2c` explicitly instead of relying on the old in-flight 500k default.
+- **A 401-triggered forced refresh now advances the OAuth rate-limit clock**
+  (all three engines): a crash-loop of forced failures can no longer leave the
+  window stale, so the next unforced refresh can now be refused with
+  `refresh rate limited` where previously it never was.
+- **`repr()`/`log_safe()` of Python `Config` masks the consumer key**
+  (first-4/last-4), as Go and TypeScript already did — do not scrape it from
+  logs.
+- **Smaller break-shaped changes**: TypeScript oversize-response errors are now
+  typed `MpesaError` (HTTP 413) and render `mpesa: HTTP 413 …`; TypeScript
+  `Config.limits` is deep-frozen at construction (later mutation is a silent
+  no-op); Python now validates `STKQueryRequest.business_short_code`
+  client-side, rejects a naive `Config.now` under daily tracking, and rejects a
+  non-numeric `timeout_seconds` with `ValueError` instead of `TypeError`; Go
+  rejects an empty STK passkey client-side; callback URLs with an uppercase
+  scheme (`HTTP://…`) are now accepted by the Python validator.
+
+## Features
+
+- **Configurable per-service transaction limits (all three engines)**
+  (`go/limits.go`, `python/mpesa/limits.py`, `typescript/src/limits.ts`): every
+  amount-carrying request is gated on a per-transaction ceiling and — only when
+  daily tracking is switched on — a per-day ceiling, per service bucket: STK
+  Push, C2B, B2C, and a `default` bucket that also covers Reversal, Transaction
+  Status and Dynamic QR. Configuration is a **partial overlay** on the Safaricom
+  baseline, resolved once when the client is built: a field left unset
+  *inherits* the default, while an explicit `0` (`Limit(0)` in Go,
+  `ServiceLimits(max_per_transaction=0)` in Python, `maxPerTransaction: 0` in
+  TypeScript) means **unlimited**. A partially-filled config therefore cannot
+  silently disarm a ceiling it never mentioned, and a merchant on an unlimited
+  tier can still say so. Go reads `Config.Limits` (merged in `NewClient`),
+  Python `Config(limits=...)`, TypeScript the `limits` option on `Config`. The
+  per-transaction check runs before any network I/O, and a rejection is one
+  typed error per engine (`*LimitError` / `ValueError` / `MpesaError` 400) that
+  names the exact config path to raise, e.g. `Config.Limits.STK.MaxPerTransaction`.
+- **Opt-in daily accumulation (all three engines)**: `Config.TrackDaily` (Go),
+  `Config(track_daily=True)` (Python), `trackDaily` (TypeScript) — **off by
+  default**. One process cannot observe the replicas that share its shortcode, so
+  a local accumulator under-counts the platform-wide cap: treat it as a circuit
+  breaker for the single worst-case process, not as a control. Check and
+  increment are atomic in all three (Go's ledger mutex, Python's daily lock,
+  TypeScript's synchronous gate), and the day rolls at Africa/Nairobi (UTC+3, no
+  DST) midnight — the day Daraja's merchant reporting uses. A request rejected
+  before dispatch consumes no quota; an amount that passes is consumed on
+  attempt.
+- **B2C default now the published Safaricom caps (all three engines)**
+  (`docs/apis/b2c.md`): B2C defaults to 250,000 KES per transaction and 500,000
+  KES per day, replacing the old hardcoded `[10, 250000]` per-transaction
+  literal; the documented 10 KES minimum is unchanged. A merchant on a
+  Safaricom-approved higher tier raises the ceiling explicitly through the
+  config override above instead of waiting for an SDK release. The gateway stays
+  the final authority — an amount above your tier still fails there with
+  `ResultCode 3`.
+- **TypeScript STK callback parser shipped** (`typescript/src/callbacks.ts`):
+  `parseSTKCallback(raw)` accepts the full `{"Body":{"stkCallback":{…}}}`
+  envelope **or** a bare `stkCallback` result object, measures the raw body in
+  UTF-8 bytes and refuses anything over 1 MiB *before* `JSON.parse`, and raises a
+  typed `MpesaDecodeError` (never a bare `SyntaxError`/`TypeError`) on a
+  malformed shape. It returns a `StkCallback` with first-wins `metadata()`,
+  `amount()`, `mpesaReceiptNumber()`, `transactionDate()`, `phoneNumber()`,
+  `duplicateKeys()` and `classify()` — Go `ParseSTKCallback` / Python
+  `StkCallbackResult.from_json` parity. This closes the entry the 0.2.0
+  changelog left under "Deferred (need design first)".
+
+## Security
+
+- **OAuth refresh rate-limit clock hardened (all three engines)**
+  (`go/client.go`, `python/mpesa/auth.py`, `typescript/src/auth.ts`): a
+  401-triggered **forced** refresh still bypasses the guard, but it now also
+  advances the attempt clock, so a crash-loop of forced failures can no longer
+  leave the clock stale and let the next unforced refresh slip through the
+  3-in-5s gate. A *refused* refresh is not an attempt, so it leaves both the
+  clock and the failure counter untouched.
+- **Forced-refresh bypass made safe (TypeScript)** (`typescript/src/auth.ts`):
+  adoption is success-only — a forced refresh that finds an in-flight *unforced*
+  refresh runs its own attempt rather than inheriting a rate-limited rejection,
+  and that rejection is a typed `MpesaError` (HTTP 429) rather than a bare
+  `Error`. The clock parity above now holds here too: a forced attempt advances
+  the window like any other.
+- **Go single-flight waiters honour their own context** (`go/client.go`): a
+  caller blocked on another goroutine's in-flight refresh now selects on
+  `ctx.Done()`, so a hung OAuth endpoint can no longer pin a waiter past its own
+  deadline. The leader keeps refreshing; only the waiter returns.
+- **Consumer keys masked in every rendered form (all three engines)**
+  (`go/config.go`, `python/mpesa/config.py`, `typescript/src/config.ts`):
+  `consumerKey` now renders first-4/last-4 in `GoString`/`Format`/`MarshalJSON`,
+  in `repr()`/`log_safe()` and in `toString()`/`toJSON()`/`logSafe()`, while
+  `consumerSecret` and `passkey` stay omitted. A consumer key authenticates
+  every token request, so it is a secret rather than an identifier — see
+  [SECURITY.md](SECURITY.md).
+- **TLS verification posture made loud (Python)** (`python/mpesa/auth.py`): a
+  `TokenManager` handed a session whose `verify` is falsy now warns
+  (`UserWarning`) before any OAuth traffic. It never mutates `session.verify`
+  itself — `MpesaClient` clones the injected session and forces `verify=True` on
+  its own clone, so the guarantee stays client-side.
+- **Callback URL validator edges (Python)** (`python/mpesa/requests_sync.py`):
+  the scheme match is case-insensitive, and the zone-id strip is IPv6-only, so
+  an IPv4 literal carrying a `%` suffix is no longer silently rewritten into a
+  bare address ahead of the SSRF check.
+- **Callback-token comparison is type-strict (Python)**
+  (`python/mpesa/callback_token.py`): `callback_token_equal` returns `False` for
+  any non-string operand instead of comparing across types.
+
 # Changes — 0.3.0 (2026-10-01)
 
 All three engines ship `0.3.0` together. This is a **minor** bump on purpose: under
@@ -168,8 +304,8 @@ Behavior / parity (known changes):
   body cap worded as UTF-8 bytes.
 
 Deferred (need design first): C2B validation/confirmation parsers,
-STK poll helper, TS `parseSTKCallback`, `{segments, skipped}` return
-change, `client.ts`/`types.ts` module splits.
+STK poll helper, `{segments, skipped}` return change,
+`client.ts`/`types.ts` module splits.
 
 ## Security fixes (act on these)
 

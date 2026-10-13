@@ -25,6 +25,10 @@ import {
   QRTrxCode,
 } from "./enums.js";
 export { TransactionType, CommandID, ResponseType, QRTrxCode };
+import { coerceAmount, coerceWireInt, coerceWireString } from "./coercion.js";
+import { ResultClass, classifyResultCode } from "./classification.js";
+import { MpesaDecodeError, decodeJsonObject } from "./errors.js";
+import { bodyTooLargeError } from "./_bounded-read.js";
 
 // ─── Section 2: Request interfaces ───────────────────────────────────────────
 
@@ -311,10 +315,10 @@ export interface StkCallbackResult {
  *
  * If the callback contains duplicate keys (malformed or gateway retries),
  * the first occurrence wins — subsequent values are silently dropped.
- * Use {@link MetadataMap.get} for O(n) lookup; for bulk access, iterate
- * with {@link MetadataMap.entries}. Use {@link MetadataMap.duplicateKeys}
- * to detect lossy collisions (Go `DuplicateKeys` / Python
- * `duplicate_keys` parity).
+ * Use {@link MetadataMap.get} for O(1) lookup (backed by a `Map` index,
+ * not a scan); for bulk access, iterate with {@link MetadataMap.entries}.
+ * Use {@link MetadataMap.duplicateKeys} to detect lossy collisions (Go
+ * `DuplicateKeys` / Python `duplicate_keys` parity).
  */
 export class MetadataMap {
   private readonly items: MetadataItem[];
@@ -419,7 +423,10 @@ export class MetadataMap {
  * Simplified async result — the callback contains a lot of nested JSON but
  * callers rarely need every field. This captures the essential envelope.
  *
- * For full payload inspection, use `AsyncResult.raw` and parse yourself.
+ * For the full envelope — `ResultType`, `TransactionID`, `ReferenceData`
+ * plus a first-wins `parameters()` map — use {@link ParsedAsyncResult}
+ * (built by {@link parseAsyncResultBody}), which mirrors Go
+ * `AsyncResultBody` / Python `AsyncResult` field-for-field.
  */
 export interface AsyncResult {
   readonly ResultType: number;
@@ -427,9 +434,15 @@ export interface AsyncResult {
   readonly ResultDesc: string;
   readonly OriginatorConversationID: string;
   readonly ConversationID: string;
+  /**
+   * TransactionID echo — present on transaction-status / reversal
+   * results, empty on the rest (Go `AsyncResultBody.TransactionID`
+   * parity).
+   */
+  readonly TransactionID: string;
   /** M-Pesa receipt number when present. */
   readonly TransactionReceipt?: string;
-readonly B2CUtilityAccountAvailableFunds?: string;
+  readonly B2CUtilityAccountAvailableFunds?: string;
   readonly B2CUtilityAccountPaidFunds?: string;
   readonly B2CWorkingAccountAvailableFunds?: string;
   readonly B2CWorkingAccountPaidFunds?: string;
@@ -438,6 +451,24 @@ readonly B2CUtilityAccountAvailableFunds?: string;
   readonly B2CFlag?: string;
   readonly TransactionStatus?: string;
   readonly Occassion?: string;
+  /**
+   * Optional ReferenceData echo some async results carry (e.g. B2C
+   * `QueueTimeoutURL`). Single-object and list shapes are both
+   * normalized to this array (Go `ReferenceData.UnmarshalJSON` parity).
+   */
+  readonly ReferenceData?: readonly ReferenceItem[];
+}
+
+/** One echoed `{Key, Value}` entry inside an async-result `ReferenceData` section. */
+export interface ReferenceItem {
+  readonly Key: string;
+  readonly Value: string;
+}
+
+/** One `{Key, Value}` pair inside `ResultParameters.ResultParameter`. */
+export interface AsyncResultParameter {
+  readonly Key: string;
+  readonly Value: unknown;
 }
 
 /** A single balance segment from AccountBalance callback text. */
@@ -460,6 +491,44 @@ export interface BalanceSegment {
  */
 const BALANCE_NUM_RE = /^[+-]?[0-9]{1,18}(\.[0-9]{1,6})?$/;
 
+/** Decimal rendering of 2^53 for exact string comparison (Go `maxSafeBalanceStr` parity). */
+const MAX_SAFE_BALANCE_STR = "9007199254740992";
+
+/**
+ * Does the ASCII-gated decimal `text` exceed ±2^53 in magnitude — decided
+ * WITHOUT rounding through float64 first?
+ *
+ * Why string comparison (precision trap): float64 cannot represent
+ * 9007199254740993 — `parseFloat` rounds it to exactly 2^53, so a
+ * post-parse `Math.abs(v) > 2**53` check would pass a hostile value that
+ * is textually beyond the safe-integer boundary. Comparing stripped
+ * integer digits by length, then lexicographically (numeric compare for
+ * equal digit counts), rejects the hostile text exactly. Any non-zero
+ * fraction when the integer part equals 2^53 also exceeds it. Call only
+ * with {@link BALANCE_NUM_RE}-passing input (Go `exceedsSafeBalance`
+ * parity).
+ */
+function exceedsSafeBalance(text: string): boolean {
+  let s = text;
+  if (s.startsWith("+") || s.startsWith("-")) s = s.slice(1);
+  let intPart = s;
+  let fracPart = "";
+  const dot = s.indexOf(".");
+  if (dot >= 0) {
+    intPart = s.slice(0, dot);
+    fracPart = s.slice(dot + 1);
+  }
+  // Strip leading zeros so the length comparison is by magnitude.
+  intPart = intPart.replace(/^0+/, "");
+  if (intPart === "") intPart = "0";
+  if (intPart.length > MAX_SAFE_BALANCE_STR.length) return true;
+  if (intPart.length < MAX_SAFE_BALANCE_STR.length) return false;
+  if (intPart > MAX_SAFE_BALANCE_STR) return true;
+  if (intPart < MAX_SAFE_BALANCE_STR) return false;
+  // Integer part is exactly 2^53: any non-zero fraction exceeds it.
+  return /[1-9]/.test(fracPart);
+}
+
 /**
  * Parse the pipe-delimited AccountBalance callback text into structured
  * segments. Malformed or incomplete rows are silently skipped.
@@ -467,7 +536,10 @@ const BALANCE_NUM_RE = /^[+-]?[0-9]{1,18}(\.[0-9]{1,6})?$/;
  * Each numeric field must match {@link BALANCE_NUM_RE} (ASCII digits
  * only) before `parseFloat` — this rejects `"1_000"`, `"0x10"`, and
  * Unicode digits that `parseFloat` would otherwise mis-parse or that
- * Python's `_BALANCE_NUM_RE` rejects.
+ * Python's `_BALANCE_NUM_RE` rejects. Values beyond ±2^53 are rejected
+ * TEXTUALLY via {@link exceedsSafeBalance} (Go `results.go` parity):
+ * `parseFloat("9007199254740993")` rounds to exactly 2^53, so a
+ * post-parse check would let the precision-corrupting magnitude through.
  *
  * **Skipped-count limitation**: malformed rows are dropped without a
  * count in this pass — the return type stays `BalanceSegment[]` for
@@ -515,6 +587,10 @@ export function parseBalanceSegments(text: string): BalanceSegment[] {
     if (
       !BALANCE_NUM_RE.test(availT) || !BALANCE_NUM_RE.test(unclearedT) ||
       !BALANCE_NUM_RE.test(reservedT) || !BALANCE_NUM_RE.test(minT)
+    ) continue;
+    if (
+      exceedsSafeBalance(availT) || exceedsSafeBalance(unclearedT) ||
+      exceedsSafeBalance(reservedT) || exceedsSafeBalance(minT)
     ) continue;
     const available = parseFloat(availT);
     const uncleared = parseFloat(unclearedT);
@@ -613,9 +689,10 @@ export const MAX_ASYNC_RESULT_BYTES = 1 << 20;
  * {@link AsyncResultEnvelope} with a bounded size pre-check.
  *
  * Measures the UTF-8 byte length FIRST — `string` via
- * `new TextEncoder().encode(raw).length`, `Uint8Array` via `byteLength` —
- * and rejects bodies over {@link MAX_ASYNC_RESULT_BYTES} (1 MiB) BEFORE
- * calling `JSON.parse`, then delegates envelope validation to
+ * `Buffer.byteLength(raw, "utf-8")` (counts without allocating an encoded
+ * copy of the whole body), `Uint8Array` via `byteLength` — and rejects
+ * bodies over {@link MAX_ASYNC_RESULT_BYTES} (1 MiB) BEFORE calling
+ * `JSON.parse`, then delegates envelope validation to
  * {@link parseAsyncResult}.
  *
  * SECURITY: never `JSON.parse` uncapped callback bodies — an unbounded
@@ -625,9 +702,11 @@ export const MAX_ASYNC_RESULT_BYTES = 1 << 20;
  *
  * @param raw - Raw callback POST body: JSON text, or the raw request bytes.
  * @returns The validated envelope (`ResultCode` always `string`).
- * @throws {Error} When the body exceeds 1 MiB
- *   (`mpesa: async result body exceeds 1048576 bytes`).
- * @throws {SyntaxError} When the body is not valid JSON (from `JSON.parse`).
+ * @throws {MpesaError} When the body exceeds 1 MiB
+ *   (`mpesa: HTTP 413 async result body response exceeds 1048576 bytes
+ *   (Content-Length: <byteLen>)`).
+ * @throws {MpesaDecodeError} When the body is not valid JSON or not a JSON
+ *   object (via {@link decodeJsonObject} — never a raw `SyntaxError`).
  * @throws {TypeError} When the parsed JSON is not a valid envelope
  *   (from {@link parseAsyncResult}).
  *
@@ -643,16 +722,300 @@ export const MAX_ASYNC_RESULT_BYTES = 1 << 20;
 export function parseAsyncResultJson(raw: string | Uint8Array): AsyncResultEnvelope {
   const byteLen =
     typeof raw === "string"
-      ? new TextEncoder().encode(raw).length
+      ? Buffer.byteLength(raw, "utf-8")
       : raw.byteLength;
   if (byteLen > MAX_ASYNC_RESULT_BYTES) {
-    throw new Error(
-      `mpesa: async result body exceeds ${MAX_ASYNC_RESULT_BYTES} bytes (got ${byteLen})`,
-    );
+    // Typed (MpesaError, HTTP 413) via the shared oversize helper so
+    // `catch (e instanceof MpesaError)` sees the cap like any other
+    // failure mode — the same taxonomy as the auth/client transport caps.
+    // Label "async result body" preserves the historic message text; the
+    // measured byteLen rides along as the `actual` size.
+    throw bodyTooLargeError("async result body", MAX_ASYNC_RESULT_BYTES, byteLen);
   }
   const text =
     typeof raw === "string"
       ? raw
       : new TextDecoder("utf-8", { ignoreBOM: true }).decode(raw);
-  return parseAsyncResult(JSON.parse(text) as unknown);
+  return parseAsyncResult(decodeJsonObject<Record<string, unknown>>(text, "async result"));
+}
+
+// ─── Section 6b: full async-result envelope (ParsedAsyncResult) ──────────────
+
+/**
+ * Is `value` a plain (non-array, non-null) JSON object?
+ *
+ * Local (not exported): the async-envelope strictness check — Python
+ * `isinstance(inner, dict)` parity for the required `Result` wrapper.
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Wire scalars the async-result envelope requires (Python parity:
+ *  `ResultCode` + `ResultDesc`; the rest are coerced leniently). */
+const ASYNC_RESULT_REQUIRED_KEYS = ["ResultCode", "ResultDesc"] as const;
+
+/**
+ * The full async-result envelope POSTed to `ResultURL` — Go
+ * `AsyncResultBody` / Python `AsyncResult` parity: every documented
+ * scalar plus the first-wins `ResultParameters` map and the
+ * `ReferenceData` echo. Unsigned like every Safaricom push: bind on
+ * `OriginatorConversationID` against your own records before acting, and
+ * never auto-fail an INCONCLUSIVE result (ADR-010).
+ *
+ * Built via {@link ParsedAsyncResult.parse} (already-decoded JSON) or
+ * {@link parseAsyncResultBody} (raw POST body with the 1 MiB cap).
+ *
+ * @example
+ * ```ts
+ * const result = parseAsyncResultBody(reqBodyText);
+ * if (result.classify() === ResultClass.SUCCESS) {
+ *   const receipt = result.transactionReceipt();          // typed accessor
+ *   const params = result.parameters();                   // first-wins map
+ *   const receipt2 = params.get("TransactionReceipt");
+ * }
+ * ```
+ */
+export class ParsedAsyncResult {
+  /** ResultType as a number (0 when absent/non-numeric). */
+  readonly ResultType: number;
+  /** ResultCode normalized to string (Python parity). */
+  readonly ResultCode: string;
+  /** ResultDesc normalized to string. */
+  readonly ResultDesc: string;
+  readonly OriginatorConversationID: string;
+  readonly ConversationID: string;
+  readonly TransactionID: string;
+  /** Present when the gateway echoes it. */
+  readonly MerchantRequestID: string | undefined;
+  /** Present when the gateway echoes it. */
+  readonly CheckoutRequestID: string | undefined;
+  /** Optional ReferenceData echo; both wire shapes normalized to an array. */
+  readonly ReferenceData: readonly ReferenceItem[] | undefined;
+  /** First-wins parameter map (reuses {@link MetadataMap} semantics). */
+  private readonly _parameters: MetadataMap;
+
+  /**
+   * @param init - Pre-normalized fields (see {@link ParsedAsyncResult.parse}).
+   */
+  private constructor(init: {
+    resultType: number;
+    resultCode: string;
+    resultDesc: string;
+    originatorConversationID: string;
+    conversationID: string;
+    transactionID: string;
+    merchantRequestID: string | undefined;
+    checkoutRequestID: string | undefined;
+    referenceData: readonly ReferenceItem[] | undefined;
+    parameters: MetadataMap;
+  }) {
+    this.ResultType = init.resultType;
+    this.ResultCode = init.resultCode;
+    this.ResultDesc = init.resultDesc;
+    this.OriginatorConversationID = init.originatorConversationID;
+    this.ConversationID = init.conversationID;
+    this.TransactionID = init.transactionID;
+    this.MerchantRequestID = init.merchantRequestID;
+    this.CheckoutRequestID = init.checkoutRequestID;
+    this.ReferenceData = init.referenceData;
+    this._parameters = init.parameters;
+  }
+
+  /**
+   * Parse an already-decoded async-result JSON body. Accepts the wire
+   * shape `{"Result": {...}}` (a bare inner object is tolerated); the
+   * `Result` wrapper and the `ResultCode`/`ResultDesc` scalars are
+   * required, every other field is coerced leniently.
+   *
+   * @param body - Decoded JSON value (object expected).
+   * @returns The parsed envelope.
+   * @throws {MpesaDecodeError} When `Result` is missing or not an object,
+   *   or `ResultCode`/`ResultDesc` are absent.
+   */
+  static parse(body: unknown): ParsedAsyncResult {
+    const shapeError = (): MpesaDecodeError =>
+      new MpesaDecodeError(
+        "mpesa: unexpected AsyncResult shape: missing or malformed Result",
+      );
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      throw shapeError();
+    }
+    const outer = body as Record<string, unknown>;
+    const innerRaw = outer["Result"];
+    // Python parity: the {"Result": {...}} wrapper is REQUIRED — a bare
+    // inner object (or no wrapper at all) is a shape failure, not an
+    // envelope with empty fields.
+    if (!isPlainObject(innerRaw)) {
+      throw shapeError();
+    }
+    const inner: Record<string, unknown> = innerRaw;
+    const missing = ASYNC_RESULT_REQUIRED_KEYS.filter(
+      (k) => !Object.prototype.hasOwnProperty.call(inner, k),
+    );
+    if (missing.length > 0) {
+      throw new MpesaDecodeError(
+        `mpesa: unexpected AsyncResult shape: missing ${missing.join(", ")}`,
+      );
+    }
+
+    // ResultParameters / ReferenceData walk.
+    const items: MetadataItem[] = [];
+    const paramsRaw = inner["ResultParameters"];
+    if (typeof paramsRaw === "object" && paramsRaw !== null && !Array.isArray(paramsRaw)) {
+      const list = (paramsRaw as Record<string, unknown>)["ResultParameter"];
+      if (Array.isArray(list)) {
+        for (const entry of list) {
+          if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+          const e = entry as Record<string, unknown>;
+          items.push({
+            Name: coerceWireString(e["Key"]) ?? "",
+            Value: e["Value"],
+          });
+        }
+      }
+    }
+
+    const referenceItems: ReferenceItem[] = [];
+    const refRaw = inner["ReferenceData"];
+    if (typeof refRaw === "object" && refRaw !== null && !Array.isArray(refRaw)) {
+      const list = (refRaw as Record<string, unknown>)["ReferenceItem"];
+      const entries: unknown[] =
+        typeof list === "object" && list !== null && !Array.isArray(list)
+          ? [list] // single-object shape (b2c.md sample)
+          : Array.isArray(list) ? list : [];
+      for (const entry of entries) {
+        if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+        const e = entry as Record<string, unknown>;
+        referenceItems.push({
+          Key: coerceWireString(e["Key"]) ?? "",
+          Value: coerceWireString(e["Value"]) ?? "",
+        });
+      }
+    }
+
+    return new ParsedAsyncResult({
+      resultType: coerceWireInt(inner["ResultType"]) ?? 0,
+      resultCode: coerceWireString(inner["ResultCode"]) ?? "",
+      resultDesc: coerceWireString(inner["ResultDesc"]) ?? "",
+      originatorConversationID: coerceWireString(inner["OriginatorConversationID"]) ?? "",
+      conversationID: coerceWireString(inner["ConversationID"]) ?? "",
+      transactionID: coerceWireString(inner["TransactionID"]) ?? "",
+      merchantRequestID: coerceWireString(inner["MerchantRequestID"]) ?? undefined,
+      checkoutRequestID: coerceWireString(inner["CheckoutRequestID"]) ?? undefined,
+      referenceData: referenceItems.length > 0 ? referenceItems : undefined,
+      parameters: new MetadataMap(items),
+    });
+  }
+
+  /**
+   * First-wins `ResultParameters` map (Go `Parameters()` / Python
+   * `parameters()` parity). Absent sections yield an empty map; duplicate
+   * keys keep the FIRST value — count losses with
+   * {@link ParsedAsyncResult.duplicateKeys}.
+   *
+   * @returns The flattened parameter map.
+   */
+  parameters(): MetadataMap {
+    return this._parameters;
+  }
+
+  /**
+   * @returns Count of parameter items shadowed by an earlier same-key item.
+   */
+  duplicateKeys(): number {
+    return this._parameters.duplicateKeys();
+  }
+
+  /**
+   * @returns The echoed ReferenceItem entries (empty when absent).
+   */
+  referenceItems(): readonly ReferenceItem[] {
+    return this.ReferenceData ?? [];
+  }
+
+  /**
+   * ADR-010 bucket for {@link ParsedAsyncResult.ResultCode} — never
+   * auto-fail unknowns.
+   *
+   * @returns The classified {@link ResultClass}.
+   */
+  classify(): ResultClass {
+    return classifyResultCode(this.ResultCode);
+  }
+
+  /**
+   * @returns `TransactionReceipt` parameter, or null when absent.
+   */
+  transactionReceipt(): string | null {
+    const raw = this._parameters.get("TransactionReceipt");
+    const s = coerceWireString(raw);
+    return s !== null && s !== "" ? s : null;
+  }
+
+  /**
+   * @returns `TransactionStatus` parameter (status APIs), or null.
+   */
+  transactionStatus(): string | null {
+    const raw = this._parameters.get("TransactionStatus");
+    const s = coerceWireString(raw);
+    return s !== null && s !== "" ? s : null;
+  }
+
+  /**
+   * @returns `TransactionAmount` parameter as a number, or null when
+   *   absent/hostile (governed by the shared amount coercion).
+   */
+  amount(): number | null {
+    return coerceAmount(this._parameters.get("TransactionAmount"));
+  }
+}
+
+/**
+ * Parse a RAW async-result callback body (string or UTF-8 bytes) into the
+ * full {@link ParsedAsyncResult} envelope with a bounded size pre-check
+ * and a TYPED decode failure.
+ *
+ * Measures the UTF-8 byte length FIRST (`Buffer.byteLength` for strings —
+ * no throwaway encode of the whole body, halving peak memory) and rejects
+ * bodies over {@link MAX_ASYNC_RESULT_BYTES} (1 MiB) BEFORE
+ * `JSON.parse`, then delegates envelope validation to
+ * {@link ParsedAsyncResult.parse}.
+ *
+ * SECURITY: never `JSON.parse` uncapped callback bodies — an unbounded
+ * parse materializes attacker-controlled memory before validation runs.
+ * Route every raw callback POST body through this entry.
+ *
+ * @param raw - Raw callback POST body: JSON text, or the raw request bytes.
+ * @returns The validated full envelope.
+ * @throws {MpesaError} When the body exceeds 1 MiB
+ *   (`mpesa: HTTP 413 async result body response exceeds 1048576 bytes
+ *   (Content-Length: <byteLen>)`).
+ * @throws {MpesaDecodeError} When the body is not a JSON object or the
+ *   envelope shape is malformed.
+ *
+ * @example
+ * ```ts
+ * const result = parseAsyncResultBody(reqBodyText);
+ * if (result.classify() === ResultClass.SUCCESS) settle(order, result.transactionReceipt());
+ * ```
+ */
+export function parseAsyncResultBody(raw: string | Uint8Array): ParsedAsyncResult {
+  const byteLen =
+    typeof raw === "string"
+      ? Buffer.byteLength(raw, "utf-8")
+      : raw.byteLength;
+  if (byteLen > MAX_ASYNC_RESULT_BYTES) {
+    // Typed (MpesaError, HTTP 413) via the shared oversize helper so
+    // `catch (e instanceof MpesaError)` sees the cap like any other
+    // failure mode — the same taxonomy as the auth/client transport caps.
+    // Label "async result body" preserves the historic message text; the
+    // measured byteLen rides along as the `actual` size.
+    throw bodyTooLargeError("async result body", MAX_ASYNC_RESULT_BYTES, byteLen);
+  }
+  const text =
+    typeof raw === "string"
+      ? raw
+      : new TextDecoder("utf-8", { ignoreBOM: true }).decode(raw);
+  return ParsedAsyncResult.parse(decodeJsonObject<Record<string, unknown>>(text, "async result"));
 }

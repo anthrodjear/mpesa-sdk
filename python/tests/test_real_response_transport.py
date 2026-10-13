@@ -158,7 +158,7 @@ def test_real_response_midstream_abort_still_releases_connection():
     assert doomed.closed_calls == 1           # finally ran despite the abort
 
 
-def test_real_response_non_2xx_typed_error_carries_content_type():
+def test_real_response_non_2xx_typed_error_keeps_upstream_body_private():
     waf_page = RealResponse(status_code=500, body=b"<html>blocked</html>",
                             content_type="text/html")
     client, _ = make([RealResponse(body=OAUTH_OK), waf_page])
@@ -167,8 +167,13 @@ def test_real_response_non_2xx_typed_error_carries_content_type():
         client.stk_push(valid_stk())
 
     assert excinfo.value.status_code == 500
-    assert excinfo.value.error_code is None   # hostile body -> diagnostic text
-    assert "text/html" in excinfo.value.error_message
+    assert excinfo.value.error_code is None   # hostile body -> generic text
+    # The upstream body never travels inside the exception: content-type,
+    # byte count and HTML snippet are opt-in logger material only, so a
+    # logger.exception() on this path cannot ship them off-box.
+    assert excinfo.value.error_message == "unexpected error response from gateway"
+    assert "text/html" not in str(excinfo.value)
+    assert "blocked" not in str(excinfo.value)
     assert waf_page.closed_calls == 1
 
 

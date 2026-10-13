@@ -8,9 +8,20 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // AsyncResult is the shared envelope POSTed to ResultURL by async APIs.
+//
+// Size scoping for the 1 MiB-before-parse guarantee: the SDK caps every body
+// IT reads before parsing — OAuth/business responses in client.go
+// (maxResponseLen, enforced before json.Unmarshal) and STK callbacks in
+// ParseSTKCallback (maxCallbackBodyBytes). AsyncResult has NO SDK-side parse
+// entry point — ingestion happens in caller-owned ResultURL handlers via a
+// direct json.Unmarshal — so there is no SDK-side body to gate and no cap is
+// added here. Callers must enforce the same 1 MiB bound themselves, e.g. by
+// wrapping the request body in http.MaxBytesReader before unmarshalling,
+// exactly as ParseSTKCallback's documentation recommends for callbacks.
 type AsyncResult struct {
 	Result AsyncResultBody `json:"Result"`
 }
@@ -179,6 +190,21 @@ func exceedsSafeBalance(text string) bool {
 	return false
 }
 
+// hasNonSpace reports whether any string in parts contains a rune that is not
+// Unicode whitespace. It is the allocation-free equivalent of checking
+// len(strings.TrimSpace(strings.Join(parts, ""))) == 0 on the hot
+// segment-splitting path.
+func hasNonSpace(parts []string) bool {
+	for _, p := range parts {
+		for _, r := range p {
+			if !unicode.IsSpace(r) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ParseBalanceSegments splits the Account Balance result blob — segments
 // joined by "&", fields joined by "|" into typed rows. Per account-balance.md
 // tolerance requirements, trailing separators, unknown extra fields and
@@ -192,7 +218,10 @@ func exceedsSafeBalance(text string) bool {
 func ParseBalanceSegments(s string) (segments []BalanceSegment, skipped int) {
 	for _, seg := range strings.Split(s, "&") {
 		fields := strings.Split(seg, "|")
-		if len(strings.TrimSpace(strings.Join(fields, ""))) == 0 {
+		// Blank-segment detection: scan for the first non-space rune instead
+		// of strings.Join(fields, "") == "", which allocates the whole
+		// concatenated string for every row just to test emptiness.
+		if !hasNonSpace(fields) {
 			continue
 		}
 		row := BalanceSegment{Raw: seg}

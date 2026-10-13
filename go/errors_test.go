@@ -82,6 +82,30 @@ func TestParseErrorNonEnvelopeGenericMessage(t *testing.T) {
 	}
 }
 
+// An envelope field carrying an array (or object) is a hard FlexString error,
+// so the whole body falls back to the generic message with logger diagnostics
+// — callers never see raw "[...]" text as an error code/message.
+func TestParseErrorArrayFieldFallsBackToGeneric(t *testing.T) {
+	body := []byte(`{"requestId":"27504-1","errorCode":["401.003.01"],"errorMessage":"Bad Request"}`)
+	var logger captureLogger
+	err := parseError(401, "application/json", body, &logger)
+
+	e, ok := err.(*Error)
+	if !ok {
+		t.Fatalf("parseError returned %T, want *Error", err)
+	}
+	if e.ErrorMessage != "unexpected error response from gateway" {
+		t.Errorf("ErrorMessage = %q, want generic message", e.ErrorMessage)
+	}
+	if !logger.called {
+		t.Error("ErrorLogger.LogError was not called for the mistyped envelope")
+	}
+	// The raw array text must not leak into the caller-facing message.
+	if msg := e.Error(); strings.Contains(msg, "[") || strings.Contains(msg, "401.003.01") {
+		t.Errorf("Error() = %q, must not contain the raw array field", msg)
+	}
+}
+
 // When an ErrorLogger is configured, it must receive the full diagnostic
 // (status, content-type, body) even though the caller sees a generic message.
 func TestParseErrorLoggerReceivesDiagnostics(t *testing.T) {

@@ -7,7 +7,7 @@
  * garbage bytes.
  */
 import { describe, expect, it } from "vitest";
-import { MpesaError } from "../src/errors.js";
+import { MpesaDecodeError, MpesaError, decodeJsonObject, tryDecodeJsonObject } from "../src/errors.js";
 
 const ENVELOPE =
   '{"requestId":"43169-3253970-1","errorCode":"500.001.1001",' +
@@ -127,3 +127,58 @@ describe("sanitizer Unicode property escapes (Cc/Cf)", () => {
   });
 });
 
+
+// ---------------------------------------------------------------------------
+// MpesaDecodeError + the guarded decoders
+// ---------------------------------------------------------------------------
+
+describe("MpesaDecodeError", () => {
+  it("is a MpesaError subclass (existing catch blocks keep working)", () => {
+    const err = new MpesaDecodeError("mpesa: decode test body");
+    expect(err).toBeInstanceOf(MpesaDecodeError);
+    expect(err).toBeInstanceOf(MpesaError);
+    expect(err.name).toBe("MpesaDecodeError");
+    expect(err.statusCode).toBe(0);
+  });
+
+  it("enforces the mpesa: prefix", () => {
+    expect(new MpesaDecodeError("decode failed").message).toBe("mpesa: decode failed");
+    expect(new MpesaDecodeError("mpesa: already prefixed").message).toBe("mpesa: already prefixed");
+  });
+
+  it("carries the HTTP status when the body came from a response", () => {
+    expect(new MpesaDecodeError("mpesa: x", 200).statusCode).toBe(200);
+  });
+});
+
+describe("decodeJsonObject", () => {
+  it("returns the decoded object", () => {
+    expect(decodeJsonObject<{ a: number }>('{"a":1}')).toEqual({ a: 1 });
+  });
+
+  it("rejects invalid JSON with a typed decode error", () => {
+    expect(() => decodeJsonObject("<html>")).toThrow(MpesaDecodeError);
+    expect(() => decodeJsonObject("")).toThrow(/invalid JSON/);
+  });
+
+  it("rejects non-object JSON (null/array/scalar) with a typed decode error", () => {
+    expect(() => decodeJsonObject("null")).toThrow(/expected a JSON object, got null/);
+    expect(() => decodeJsonObject("[]")).toThrow(/expected a JSON object, got array/);
+    expect(() => decodeJsonObject("42")).toThrow(/expected a JSON object, got number/);
+  });
+
+  it("includes the label when provided", () => {
+    expect(() => decodeJsonObject("", "/mpesa/stkpush/v1/processrequest")).toThrow(
+      /decode \/mpesa\/stkpush\/v1\/processrequest body/,
+    );
+  });
+});
+
+describe("tryDecodeJsonObject", () => {
+  it("never throws — null for anything that is not a plain object", () => {
+    expect(tryDecodeJsonObject("<html>")).toBeNull();
+    expect(tryDecodeJsonObject("null")).toBeNull();
+    expect(tryDecodeJsonObject("[]")).toBeNull();
+    expect(tryDecodeJsonObject('{"errorCode":"401.003.01"}')).toEqual({ errorCode: "401.003.01" });
+  });
+});

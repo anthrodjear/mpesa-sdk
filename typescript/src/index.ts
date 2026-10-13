@@ -49,6 +49,9 @@
  *   authentication — settle only via {@link MpesaClient.stkQuery} bound to
  *   your stored CheckoutRequestID; see the bearer-capability bullet below
  *   for endpoint gating, and reserve IP allowlisting for defense-in-depth.
+ * - **Parse callback bodies with {@link parseSTKCallback}** — malformed or
+ *   hostile bodies surface as typed {@link MpesaDecodeError}s, never as raw
+ *   `SyntaxError`/`TypeError` escaping the {@link MpesaError} contract.
  * - **Callback URLs are bearer capabilities.** Embed
  *   {@link newCallbackToken} in your CallBackURL path and gate hits with
  *   {@link callbackTokenEqual}; a hit proves URL knowledge only — never
@@ -56,14 +59,28 @@
  *   bound to your CheckoutRequestID, and scrub tokens from access logs/APM.
  * - **Secrets are redacted in representations.** {@link Config.toString},
  *   {@link Config.toJSON}, and {@link Config.logSafe} omit
- *   `consumerSecret` and `passkey` entirely (the `consumerKey` renders in
- *   cleartext, matching Go/Python). Never log the raw {@link Config} object.
+ *   `consumerSecret` and `passkey` entirely, while `consumerKey` renders
+ *   MASKED (first-4/last-4, e.g. `abcd...wxyz`). Never log the raw
+ *   {@link Config} object.
  *
  * @packageDocumentation
  */
 
 // ── Config ──────────────────────────────────────────────────────────────
 export { Environment, ConfigError, Config } from "./config.js";
+
+// ── Limits (configurable transaction ceilings) ──────────────────────────
+export {
+  DEFAULT_TRANSACTION_LIMITS,
+  LIMIT_SERVICE_KEYS,
+  effectiveCeiling,
+  resolveTransactionLimits,
+} from "./limits.js";
+export type {
+  LimitService,
+  ServiceLimits,
+  TransactionLimits,
+} from "./limits.js";
 
 // ── Auth ────────────────────────────────────────────────────────────────
 export { TokenManager, getAccessToken } from "./auth.js";
@@ -74,7 +91,10 @@ export { MpesaClient, createClient, createClientFromEnv } from "./client.js";
 export type { MpesaClientOptions } from "./client.js";
 
 // ── Errors ──────────────────────────────────────────────────────────────
-export { MpesaError } from "./errors.js";
+export { MpesaError, MpesaDecodeError } from "./errors.js";
+
+// ── Callbacks (STK Push ingestion) ──────────────────────────────────────
+export { StkCallback, parseSTKCallback } from "./callbacks.js";
 
 // ── Enums ───────────────────────────────────────────────────────────────
 export {
@@ -115,6 +135,8 @@ export {
   isAccepted,
   parseAsyncResult,
   parseAsyncResultJson,
+  ParsedAsyncResult,
+  parseAsyncResultBody,
   MAX_ASYNC_RESULT_BYTES,
 } from "./types.js";
 
@@ -146,9 +168,11 @@ export type {
   MetadataItem,
   AsyncResult,
   AsyncResultEnvelope,
+  AsyncResultParameter,
+  ReferenceItem,
   BalanceSegment,
 } from "./types.js";
 
 // ── Version ─────────────────────────────────────────────────────────────
 /** SDK version — kept in sync with package.json. */
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
