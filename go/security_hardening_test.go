@@ -240,8 +240,14 @@ func TestConfigMarshalJSONRedactsSecrets(t *testing.T) {
 			t.Errorf("MarshalJSON missing safe key %q in %s", key, s)
 		}
 	}
-	if m["ConsumerKey"] != "ck-visible" {
-		t.Errorf("ConsumerKey = %v, want ck-visible (visible by design)", m["ConsumerKey"])
+	// ConsumerKey is masked (first/last 4 runes). The full value is a secret:
+	// it authenticates every OAuth token request, so it must never reach a
+	// structured log in cleartext (SECURITY.md "Consumer Keys are secrets").
+	if m["ConsumerKey"] == "ck-visible" {
+		t.Errorf("ConsumerKey = %v, want the masked form, not the cleartext key", m["ConsumerKey"])
+	}
+	if masked, _ := m["ConsumerKey"].(string); !strings.HasPrefix(masked, "ck-v") || !strings.HasSuffix(masked, "ible") {
+		t.Errorf("ConsumerKey = %q, want first4…last4 masking", m["ConsumerKey"])
 	}
 	if m["Shortcode"] != "174379" {
 		t.Errorf("Shortcode = %v, want 174379", m["Shortcode"])

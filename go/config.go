@@ -16,7 +16,7 @@ import (
 // *http.Client (proxies, tracing, tests) — it is cloned, never mutated, and
 // always inherits the SDK's never-follow-redirects policy plus a timeout
 // default when zero. Config contains credentials — never log directly;
-// GoString/Format redact.
+// GoString/Format redact and ConsumerKey is masked to its first/last 4 runes.
 type Config struct {
 	ConsumerKey       string
 	ConsumerSecret    string
@@ -27,16 +27,95 @@ type Config struct {
 	Now               func() time.Time
 	HTTPClient        *http.Client
 	TLSPinningEnabled bool
+	// Limits bounds per-transaction and per-day amounts per service.
+	//
+	// It is a PARTIAL OVERLAY, not a replacement: nil
+	// (Config.Limits == nil) means DefaultTransactionLimits(), and any
+	// individual field left nil inside it inherits the baseline value for
+	// that field. Configuring only B2C therefore cannot silently disarm the
+	// STK/C2B/Default ceilings — the failure mode of an all-or-nothing
+	// struct. To DISABLE a ceiling, set it explicitly to 0 or a negative
+	// value with mpesa.Limit(): that is the only spelling for "unlimited",
+	// and it stays a deliberate act rather than a side effect of an unset
+	// field.
+	//
+	// Example — raise B2C to 700k, leave everything else at the baseline:
+	//	Limits: &TransactionLimits{
+	//		B2C: ServiceLimits{MaxPerTransaction: Limit(700_000)},
+	//	}
+	//
+	// The merge is resolved once in NewClient; the Client owns a fully
+	// materialized, immutable copy thereafter.
+	Limits *TransactionLimits
+	// TrackDaily enables per-service daily accumulation against
+	// Limits.*.MaxPerDay. OPT-IN and OFF by default.
+	//
+	// Why off: the accumulator lives in this process, so it only observes
+	// traffic that goes through THIS Client. Daraja merchants routinely run
+	// several replicas (or several processes) behind one shortcode, and
+	// Daraja enforces the daily ceiling on the SHORTCODE, not per process.
+	// A local accumulator would therefore under-count the day's volume and
+	// reject a legitimate transaction that the gateway would accept — a
+	// false negative that is worse than no ceiling at all. Enable it only
+	// when you know this process is the sole originator for the service.
+	TrackDaily bool
 	// ErrorLogger optionally receives detailed diagnostics for non-standard
 	// error responses (content-type, body snippet). When nil, detailed
 	// diagnostics are discarded. Not serialized by GoString/Format/MarshalJSON.
 	ErrorLogger ErrorLogger
 }
 
-// GoString redacts ConsumerSecret and Passkey for %#v formatting.
+// resolvedLimits merges Config.Limits over the Safaricom baseline and returns
+// a FULLY MATERIALIZED set (every field non-nil), so the enforcement helpers
+// never have to resolve anything and never see an unmerged config.
+//
+// This is the single place the merge happens — NewClient calls it once, which
+// is what makes the result immutable and lock-free to read afterwards.
+// Nil-pointee safety matters here: a zero-value *TransactionLimits field
+// (all-nil ServiceLimits) must inherit every baseline, not disable it.
+func (c Config) resolvedLimits() TransactionLimits {
+	base := DefaultTransactionLimits()
+	if c.Limits == nil {
+		return base
+	}
+	over := *c.Limits
+	return TransactionLimits{
+		STK:     overlay(base.STK, over.STK),
+		C2B:     overlay(base.C2B, over.C2B),
+		B2C:     overlay(base.B2C, over.B2C),
+		Default: overlay(base.Default, over.Default),
+	}
+}
+
+// maskCredential renders a value with only its first and last four runes
+// visible ("9f3d…c1a2") so logs stay correlatable without exposing the whole
+// secret. Values shorter than 8 runes carry no useful anchor, so they collapse
+// to a same-length run of asterisks (an empty value renders empty — an empty
+// consumer key is itself the diagnostic).
+func maskCredential(s string) string {
+	r := []rune(s)
+	switch {
+	case len(r) == 0:
+		return ""
+	case len(r) < 8:
+		return strings.Repeat("*", len(r))
+	default:
+		return string(r[:4]) + "\u2026" + string(r[len(r)-4:])
+	}
+}
+
+// GoString redacts ConsumerSecret and Passkey for %#v formatting and masks
+// ConsumerKey (first 4 … last 4 runes).
+//
+// Why mask the key too: SECURITY.md ("Consumer Keys are secrets, not
+// identifiers") — a consumer key authenticates every OAuth token request and
+// grants full access to the Daraja app, so printing it in cleartext writes a
+// long-lived credential into logs, APM traces and crash dumps that outlive
+// the process. The masked form keeps enough of the value to correlate
+// "which app is this?" at a glance.
 func (c Config) GoString() string {
 	return fmt.Sprintf("mpesa.Config{ConsumerKey:%q Shortcode:%q Environment:%d Timeout:%s secrets:redacted}",
-		c.ConsumerKey, c.Shortcode, int(c.Environment), c.Timeout)
+		maskCredential(c.ConsumerKey), c.Shortcode, int(c.Environment), c.Timeout)
 }
 
 // Format routes EVERY fmt verb (%v, %+v, %s, ...) through the redacted form;
@@ -58,11 +137,13 @@ func (c Config) Format(f fmt.State, verb rune) {
 // encoding/json bypasses fmt.Formatter entirely, so json.Marshal(cfg)
 // must itself be safe.
 //
-// The explicit struct below carries only ConsumerKey (visible by design,
-// GoString parity), Shortcode, Environment NAME ("sandbox"/"production",
-// Python log_safe / TS toJSON parity) and Timeout. ConsumerSecret, Passkey,
-// Now and HTTPClient are omitted by construction, so setting Now or
-// injecting an HTTPClient can neither panic nor leak. See SECURITY.md.
+// The explicit struct below carries ConsumerKey MASKED (see maskCredential —
+// a consumer key authenticates every token request, so it is a secret, not an
+// identifier; the previous cleartext rendering contradicted SECURITY.md),
+// Shortcode, Environment NAME ("sandbox"/"production", Python log_safe / TS
+// toJSON parity) and Timeout. ConsumerSecret, Passkey, Now and HTTPClient are
+// omitted by construction, so setting Now or injecting an HTTPClient can
+// neither panic nor leak. See SECURITY.md.
 func (c Config) MarshalJSON() ([]byte, error) {
 	// safeConfig is the complete JSON shape: no secret, func or transport
 	// fields exist here by design, so future Config fields are deny-by-
@@ -78,7 +159,7 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		envName = "production"
 	}
 	return json.Marshal(safeConfig{
-		ConsumerKey: c.ConsumerKey,
+		ConsumerKey: maskCredential(c.ConsumerKey),
 		Shortcode:   c.Shortcode,
 		Environment: envName,
 		Timeout:     c.Timeout.String(),

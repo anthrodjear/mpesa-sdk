@@ -46,10 +46,17 @@ func parseResultCode(code string) (int64, bool) {
 	// Lenient fallback: integral floats only ("0.0" → 0); non-integral or
 	// out-of-range values are not result codes.
 	f, err := strconv.ParseFloat(s, 64)
-	if err != nil || f != math.Trunc(f) || f < math.MinInt64 || f > math.MaxInt64 {
+	if err != nil || f != math.Trunc(f) {
 		return 0, false
 	}
-	return int64(f), true
+	// Range gate before int64(f): a code of exactly 2^63 would otherwise
+	// convert to a negative int64 and misclassify as a real failure code.
+	// See floatToInt64 for why math.MaxInt64 is the wrong bound.
+	v, cerr := floatToInt64(f)
+	if cerr != nil {
+		return 0, false
+	}
+	return v, true
 }
 
 // ClassifyResultCode maps a result code to its safety class. Success is only
