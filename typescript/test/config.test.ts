@@ -321,8 +321,21 @@ describe("Config.toString", () => {
     });
   }
 
-  it("shows consumerKey in CLEARTEXT (Go GoString parity)", () => {
-    expect(makeCfg().toString()).toContain(`key=${SECRET_KEY}`);
+  it("MASK consumerKey — first-4/last-4 only (SECURITY.md parity)", () => {
+    // 8-char key collapses to a full mask: any reveal is a full reveal.
+    expect(makeCfg().toString()).toContain("key=****");
+  });
+
+  it("never renders the full consumerKey anywhere in toString()", () => {
+    const long = new Config({
+      consumerKey: "visible-consumer-key",
+      consumerSecret: SECRET_SECRET,
+      shortcode: "174379",
+      passkey: SECRET_PASSKEY,
+    });
+    const s = long.toString();
+    expect(s).toContain("key=visi...-key");
+    expect(s).not.toContain("visible-consumer-key");
   });
 
   it("omits consumerSecret entirely", () => {
@@ -347,20 +360,20 @@ describe("Config.toString", () => {
 
   it("format matches expected pattern", () => {
     expect(makeCfg().toString()).toBe(
-      "Config(sandbox, shortcode=174379, key=abcdefxy)",
+      "Config(sandbox, shortcode=174379, key=****)",
     );
   });
 });
 
 // ---------------------------------------------------------------------------
-// Config.toJSON / logSafe — secrets omitted, key cleartext
+// Config.toJSON / logSafe — secrets omitted, key first-4/last-4 masked
 // ---------------------------------------------------------------------------
 
 describe("Config.toJSON / logSafe", () => {
   const SECRET_SECRET = "supersecretsecret123";
   const SECRET_PASSKEY = "supersecretpass";
 
-  it("toJSON returns cleartext key and no secret fields", () => {
+  it("toJSON returns the masked key and no secret fields", () => {
     const cfg = new Config({
       consumerKey: "abcdefxy",
       consumerSecret: SECRET_SECRET,
@@ -371,12 +384,13 @@ describe("Config.toJSON / logSafe", () => {
     expect(json).toEqual({
       shortcode: "174379",
       environment: "sandbox",
-      key: "abcdefxy",
+      key: "****",
     });
     // Secret substrings never appear anywhere in the serialized form.
     const blob = JSON.stringify(json);
     expect(blob).not.toContain(SECRET_SECRET);
     expect(blob).not.toContain(SECRET_PASSKEY);
+    expect(blob).not.toContain("abcdefxy");
     expect(json).not.toHaveProperty("secret");
     expect(json).not.toHaveProperty("passkey");
   });
@@ -385,7 +399,7 @@ describe("Config.toJSON / logSafe", () => {
     const cfg = new Config({
       consumerKey: "key123456",
       consumerSecret: "sec123456",
-      shortcode: "99999",
+      shortcode: "999999",
       passkey: "pass999",
     });
     expect(cfg.logSafe()).toEqual(cfg.toJSON());
@@ -401,6 +415,8 @@ describe("Config.toJSON / logSafe", () => {
     const serialized = JSON.stringify(cfg);
     expect(serialized).not.toContain(SECRET_SECRET);
     expect(serialized).not.toContain(SECRET_PASSKEY);
+    expect(serialized).not.toContain("visible-consumer-key");
+    expect(serialized).toContain("visi...-key");
   });
 });
 
@@ -626,5 +642,25 @@ describe("immutability", () => {
       passkey: "p",
     });
     expect(Object.isFrozen(cfg)).toBe(true);
+  });
+
+  it("Config limits are deep-frozen (nested buckets immutable)", () => {
+    const cfg = new Config({
+      consumerKey: "k",
+      consumerSecret: "s",
+      shortcode: "12345",
+      passkey: "p",
+    });
+    expect(Object.isFrozen(cfg.limits)).toBe(true);
+    // Code freezes every LIMIT_SERVICE_KEYS bucket (stk, c2b, b2c, default).
+    expect(Object.isFrozen(cfg.limits.stk)).toBe(true);
+    expect(Object.isFrozen(cfg.limits.c2b)).toBe(true);
+    expect(Object.isFrozen(cfg.limits.b2c)).toBe(true);
+    expect(Object.isFrozen(cfg.limits.default)).toBe(true);
+    const before = cfg.limits.stk.maxPerTransaction;
+    expect(() => {
+      (cfg.limits.stk as { maxPerTransaction?: number }).maxPerTransaction = 1;
+    }).toThrow(TypeError);
+    expect(cfg.limits.stk.maxPerTransaction).toBe(before);
   });
 });

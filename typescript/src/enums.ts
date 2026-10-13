@@ -174,7 +174,9 @@ export class CommandID extends MpesaEnum<
  * The wire-correct members are `Completed` / `Cancelled` (Go/Py
  * parity — these are the exact strings Safaricom matches on the
  * wire). `Success` / `Fail` are deprecated aliases kept for
- * back-compat; new code MUST use `Completed` / `Cancelled`.
+ * back-compat; {@link MpesaClient.c2bRegisterURL} REJECTS them (Go
+ * `c2bResponseTypes` / Python whitelist parity) — remapping them
+ * silently sent a wire value the caller never asked for.
  *
  * @example
  * ```ts

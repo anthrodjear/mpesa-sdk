@@ -40,14 +40,21 @@
  */
 
 import { Config, ConfigError, Environment } from "./config.js";
-import { MpesaError } from "./errors.js";
+import { MpesaError, decodeJsonObject, tryDecodeJsonObject } from "./errors.js";
+import {
+  checkDailyLimit,
+  enforcePerTransactionLimit,
+  nairobiDayKey,
+  type LimitService,
+  type TransactionLimits,
+} from "./limits.js";
 import {
   generatePassword,
   normalizePhone,
   newOriginatorID,
 } from "./helpers.js";
 import { TokenManager } from "./auth.js";
-import { readBodyBounded } from "./_bounded-read.js";
+import { readBodyBounded, bodyTooLargeError } from "./_bounded-read.js";
 import type {
   STKPushRequest,
   STKQueryRequest,
@@ -128,6 +135,85 @@ function requireNonEmpty(field: string, value: string): void {
   }
 }
 
+/**
+ * Printable-character gate (Python `str.isprintable` parity): every code
+ * point must be printable, where "printable" excludes Unicode Other
+ * (`C*`) and Separator (`Z*`) categories EXCEPT the ASCII space (0x20) —
+ * exactly CPython's `isprintable` definition. Used for identifier fields
+ * where a control character could forge log lines or confuse the gateway.
+ */
+function isPrintableUnicode(value: string): boolean {
+  for (const ch of value) {
+    if (/\p{C}/u.test(ch)) return false;
+    if (ch !== " " && /\p{Z}/u.test(ch)) return false;
+  }
+  return true;
+}
+
+/** Printable, length-capped identifier (Python `_printable` parity). */
+function requirePrintableMaxLen(field: string, value: string, max: number): void {
+  if (!isPrintableUnicode(value)) {
+    throw new Error(`mpesa: ${field} contains non-printable characters`);
+  }
+  if ([...value].length > max) {
+    throw new Error(
+      `mpesa: ${field} exceeds ${max} characters (got ${[...value].length})`,
+    );
+  }
+}
+
+/**
+ * `inet_aton`-style dotted/numeric IPv4 literal parser (decimal, octal,
+ * hex and short-hand forms). Returns the address as a 32-bit unsigned
+ * integer, or null when `host` is not a numeric literal at all.
+ *
+ * Accepted spellings (glibc/Berkeley `inet_aton` semantics):
+ * - full dotted quad: `127.0.0.1`
+ * - short-hand: `127.1` → 127.0.0.1 (the trailing part fills the
+ *   REMAINING bytes, so it may exceed 255)
+ * - bare 32-bit number: `2130706433`
+ * - octal (leading zero): `017700000001`
+ * - hex (`0x` prefix): `0x7f000001`
+ *
+ * Rationale: the dotted-quad blocklist regex misses every one of these
+ * numeric forms — all four spellings resolve to 127.0.0.1/10.0.0.1 and
+ * must be rejected identically.
+ */
+function parseNumericIPv4(host: string): number | null {
+  if (/^0[xX][0-9a-fA-F]+$/.test(host)) {
+    const v = Number.parseInt(host.slice(2), 16);
+    return Number.isFinite(v) && v >= 0 && v <= 0xffffffff ? v >>> 0 : null;
+  }
+  const parts = host.split(".");
+  if (parts.length === 0 || parts.length > 4) return null;
+  let addr = 0;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const part = parts[i] ?? "";
+    let v: number;
+    if (/^0[xX][0-9a-fA-F]+$/.test(part)) v = Number.parseInt(part.slice(2), 16);
+    else if (/^[0-7]+$/.test(part) && part.length > 1) v = Number.parseInt(part, 8);
+    else if (/^\d+$/.test(part)) v = Number.parseInt(part, 10);
+    else return null;
+    if (!Number.isFinite(v) || v < 0 || v > 255) return null;
+    addr = (addr << 8) | v;
+  }
+  const last = parts[parts.length - 1] ?? "";
+  let lastV: number;
+  if (/^0[xX][0-9a-fA-F]+$/.test(last)) lastV = Number.parseInt(last.slice(2), 16);
+  else if (/^[0-7]+$/.test(last) && last.length > 1) lastV = Number.parseInt(last, 8);
+  else if (/^\d+$/.test(last)) lastV = Number.parseInt(last, 10);
+  else return null;
+  const bytesForLast = 4 - (parts.length - 1);
+  const maxLast = Math.pow(256, bytesForLast) - 1;
+  if (!Number.isFinite(lastV) || lastV < 0 || lastV > maxLast) return null;
+  return (addr * Math.pow(256, bytesForLast) + lastV) >>> 0;
+}
+
+/** Is this host spelled like a numeric (dotted/numeric) IPv4 literal? */
+function looksNumericIPv4(host: string): boolean {
+  return /^(\d+)(\.\d+){0,3}$/.test(host) || /^0[xX][0-9a-fA-F]+$/.test(host);
+}
+
 function isBlockedIPv4(host: string): boolean {
   const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (!m) return false;
@@ -204,8 +290,29 @@ function requireURL(field: string, value: string): void {
   if (host === "") {
     throw new Error(`mpesa: ${field} must have a valid host`);
   }
-  if (host === "localhost" || host === "localhost.") {
+  if (host === "localhost" || host === "localhost." || host.replace(/\.+$/, "") === "localhost") {
     throw new Error(`mpesa: ${field} must not point to localhost`);
+  }
+  // Numeric-host normalization (inet_aton parity with the Go/Python fixes):
+  // the dotted-quad regex above misses `2852039166`, `0x7f000001`,
+  // `2130706433`, `017700000001` and `127.1` — all resolve to blocked
+  // addresses. A numeric-looking host that FAILS to parse is REJECTED
+  // (fail closed: an unparseable numeric literal is either hostile or
+  // misconfigured, and either way it must never reach the gateway).
+  if (looksNumericIPv4(host)) {
+    const numeric = parseNumericIPv4(host);
+    if (numeric === null) {
+      throw new Error(`mpesa: ${field} is not a valid IPv4 literal`);
+    }
+    const octets = [
+      (numeric >>> 24) & 0xff,
+      (numeric >>> 16) & 0xff,
+      (numeric >>> 8) & 0xff,
+      numeric & 0xff,
+    ].join(".");
+    if (isBlockedIPv4(octets)) {
+      throw new Error(`mpesa: ${field} must not point to an internal or private IP address`);
+    }
   }
   if (isBlockedIP(host)) {
     throw new Error(`mpesa: ${field} must not point to an internal or private IP address`);
@@ -225,9 +332,18 @@ function requirePositiveInt(field: string, value: number): void {
   }
 }
 
-function requireMinMax(field: string, value: number, min: number, max: number): void {
-  if (!Number.isFinite(value) || !Number.isInteger(value) || value < min || value > max) {
-    throw new Error(`mpesa: ${field} must be a whole number between ${min} and ${max}, got ${value}`);
+/**
+ * Lower-bound-only amount gate (B2C's MINIMUM is a gateway contract, its
+ * MAXIMUM is configurable): the historical `requireMinMax(..., 10,
+ * 250_000)` hardcoded a ceiling Safaricom raised per-merchant, so only the
+ * minimum stays here; the maximum now flows from {@link Config.limits}
+ * via {@link MpesaClient._enforceLimits}.
+ *
+ * @throws {Error} When `value` is not a whole number ≥ `min`.
+ */
+function requireMinInt(field: string, value: number, min: number): void {
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < min) {
+    throw new Error(`mpesa: ${field} must be a whole number of at least ${min}, got ${value}`);
   }
 }
 
@@ -244,6 +360,46 @@ function requireLengthRange(field: string, value: string, min: number, max: numb
  */
 
 // ─── MpesaClient ──────────────────────────────────────────────────────────────
+
+// ─── Shared token-cache registry ─────────────────────────────────────────────
+
+/**
+ * Process-wide {@link TokenManager} registry keyed by
+ * `baseUrl|consumerKey|consumerSecret`.
+ *
+ * Rationale: a fresh TokenManager per client instance means every
+ * `fromEnv()` call performs its own OAuth round-trip, and because Daraja
+ * INVALIDATES all outstanding tokens on each mint, sibling instances
+ * cycle-invalidate each other into 401.003.01 storms. Sharing one cache
+ * per credential set collapses that to a single process-wide single-flight
+ * refresh.
+ *
+ * Scope discipline: ONLY clients constructed with pure defaults (no
+ * injected `fetch`/`now`/`timeoutMs`) share, so an injected dependency can
+ * never leak across instances or outlive its test. The map is bounded
+ * (oldest entry evicted past {@link SHARED_TOKEN_CACHE_MAX}) so repeated
+ * credential rotation cannot grow it without limit — the cache holds no
+ * secret material beyond what the caller already passes in.
+ */
+const SHARED_TOKEN_CACHE_MAX = 8;
+const sharedTokenManagers = new Map<string, TokenManager>();
+
+function sharedTokenManager(
+  baseUrl: string,
+  consumerKey: string,
+  consumerSecret: string,
+): TokenManager {
+  const key = `${baseUrl}|${consumerKey}|${consumerSecret}`;
+  const existing = sharedTokenManagers.get(key);
+  if (existing !== undefined) return existing;
+  const manager = new TokenManager({ baseUrl, consumerKey, consumerSecret });
+  if (sharedTokenManagers.size >= SHARED_TOKEN_CACHE_MAX) {
+    const oldest = sharedTokenManagers.keys().next();
+    if (!oldest.done) sharedTokenManagers.delete(oldest.value);
+  }
+  sharedTokenManagers.set(key, manager);
+  return manager;
+}
 
 /**
  * Options for constructing a {@link MpesaClient}.
@@ -294,6 +450,24 @@ export class MpesaClient {
   private readonly _fetch: typeof globalThis.fetch;
   /** Token manager with generation-guarded caching. */
   private readonly _tokens: TokenManager;
+  /**
+   * Effective per-service transaction limits (normalized merge of
+   * `config.limits` over {@link DEFAULT_TRANSACTION_LIMITS}).
+   */
+  private readonly _limits: TransactionLimits;
+  /** Daily accumulation opt-in (mirrors `config.trackDaily`). */
+  private readonly _trackDaily: boolean;
+  /**
+   * Per-service whole-KES accumulated for the CURRENT Africa/Nairobi day.
+   * Only mutated when `_trackDaily` is on; reset wholesale at the day
+   * rollover. JS single-threading makes the synchronous
+   * check-then-increment in {@link MpesaClient._enforceLimits} atomic with
+   * respect to concurrent async callers — each caller's gate runs to
+   * completion before any other caller's continuation can interleave.
+   */
+  private readonly _dailyUsed = new Map<LimitService, number>();
+  /** Current Nairobi day key (`YYYY-MM-DD`); `""` until first tracked call. */
+  private _dailyDay = "";
 
   /**
    * Build a MpesaClient.
@@ -303,19 +477,31 @@ export class MpesaClient {
   constructor(opts: MpesaClientOptions) {
     this._config = opts.config;
     this._baseUrl = opts.config.environment.baseUrl.replace(/\/+$/, "");
-    this._timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs! > 0
+    this._timeoutMs = Number.isFinite(opts.timeoutMs) && (opts.timeoutMs ?? 0) > 0
       ? opts.timeoutMs!
       : DEFAULT_TIMEOUT_MS;
     this._now = opts.now ?? (() => Date.now());
     this._fetch = opts.fetch ?? globalThis.fetch.bind(globalThis);
-    this._tokens = new TokenManager({
-      baseUrl: this._baseUrl,
-      consumerKey: opts.config.consumerKey,
-      consumerSecret: opts.config.consumerSecret,
-      timeoutMs: this._timeoutMs,
-      now: this._now,
-      fetch: this._fetch,
-    });
+    this._limits = opts.config.limits;
+    this._trackDaily = opts.config.trackDaily;
+    // Pure-default clients share one process-wide TokenManager per
+    // credential set (Daraja invalidates prior tokens on every mint, so
+    // per-instance caches self-amplify into 401.003.01 storms). Clients
+    // with ANY injected dependency (fetch/now/timeoutMs) keep a private
+    // manager so the injection stays instance-scoped.
+    this._tokens =
+      opts.fetch === undefined &&
+      opts.now === undefined &&
+      opts.timeoutMs === undefined
+        ? sharedTokenManager(this._baseUrl, opts.config.consumerKey, opts.config.consumerSecret)
+        : new TokenManager({
+            baseUrl: this._baseUrl,
+            consumerKey: opts.config.consumerKey,
+            consumerSecret: opts.config.consumerSecret,
+            timeoutMs: this._timeoutMs,
+            now: this._now,
+            fetch: this._fetch,
+          });
   }
 
   /**
@@ -338,6 +524,14 @@ export class MpesaClient {
    * `MPESA_CONSUMER_KEY`, `MPESA_CONSUMER_SECRET`, `MPESA_SHORTCODE`,
    * `MPESA_PASSKEY`, and optionally `MPESA_ENVIRONMENT` (accepted values:
    * exactly `"sandbox"` or `"production"`; unset defaults to sandbox).
+   *
+   * **Token cache is process-wide**: default-constructed clients (this
+   * factory included) share one {@link TokenManager} per credential set.
+   * Daraja invalidates ALL outstanding tokens whenever any client mints a
+   * new one, so a per-instance cache would make sibling clients
+   * cycle-invalidate each other into 401.003.01 storms — one OAuth
+   * round-trip per process is the correct behavior. Inject a custom
+   * `fetch`/`now`/`timeoutMs` to opt a client into a private cache.
    *
    * @param env - Optional environment shorthand: `"sandbox"` (default) or
    *   `"prod"`. When provided, overrides `MPESA_ENVIRONMENT`.
@@ -427,6 +621,38 @@ export class MpesaClient {
     return `MpesaClient(${this._config.environment.name}, timeout=${this._timeoutMs})`;
   }
 
+  // ── Transaction limits ───────────────────────────────────────────────────
+
+  /**
+   * Fail-fast limits gate, called synchronously as the LAST step before
+   * dispatch (so a request rejected by an earlier validator never consumes
+   * quota): per-transaction ceiling first, then — only when
+   * `trackDaily` is on — the Nairobi-day check-and-increment.
+   *
+   * The check+increment is a synchronous block with no `await`, which
+   * makes it atomic for concurrent async callers: one caller's gate cannot
+   * interleave with another's, so each in-flight request is counted
+   * exactly once.
+   *
+   * @param service - Service bucket the amount is spent under
+   *   (`stk`/`c2b`/`b2c`/`default`).
+   * @param amount - Whole-KES amount about to be dispatched.
+   * @throws {MpesaError} 400 when a configured ceiling is exceeded (the
+   *   request is never sent).
+   */
+  private _enforceLimits(service: LimitService, amount: number): void {
+    enforcePerTransactionLimit(service, amount, this._limits);
+    if (!this._trackDaily) return;
+    const day = nairobiDayKey(this._now());
+    if (day !== this._dailyDay) {
+      this._dailyUsed.clear();
+      this._dailyDay = day;
+    }
+    const used = this._dailyUsed.get(service) ?? 0;
+    checkDailyLimit(service, amount, this._limits, used);
+    this._dailyUsed.set(service, used + amount);
+  }
+
   // ── Shared POST helper ────────────────────────────────────────────────────
 
   /**
@@ -448,61 +674,63 @@ export class MpesaClient {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this._timeoutMs);
 
-      let resp: Response;
+      // One clear, on EVERY exit path: the timeout must cover the BODY read
+      // too (a server that trickles the body after the headers would
+      // otherwise leave this promise pending forever), and it must be
+      // released when the fetch itself fails so no timer outlives the call.
       try {
-        resp = await this._fetch(this._baseUrl + path, {
-          method: "POST",
-          redirect: "error",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${token}`,
-          },
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        });
-      } catch (err) {
-        clearTimeout(timer);
-        const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(`mpesa: POST ${path}: ${msg}`);
+        let resp: Response;
+        try {
+          resp = await this._fetch(this._baseUrl + path, {
+            method: "POST",
+            redirect: "error",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${token}`,
+            },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          throw new Error(`mpesa: POST ${path}: ${msg}`);
+        }
+
+        const ct = resp.headers.get("content-type") ?? "";
+
+        // First guard: if Content-Length is present and exceeds the cap,
+        // cancel immediately without consuming the body (decompression bomb
+        // mitigation). The bounded reader below stays as the second guard for
+        // missing/dishonest Content-Length headers.
+        const contentLength = resp.headers.get("content-length");
+        if (contentLength !== null) {
+          const claimed = parseInt(contentLength, 10);
+          if (Number.isFinite(claimed) && claimed > MAX_RESPONSE_LEN) {
+            resp.body?.cancel();
+            throw bodyTooLargeError(path, MAX_RESPONSE_LEN, claimed);
+          }
+        }
+
+        // Second guard: bounded stream read — aborts once the accumulated
+        // chunk total passes the cap (never materializes an oversized body).
+        // Abort-aware: a mid-body stall rejects with the typed timeout error.
+        const text = await readBodyBounded(resp.body, path, MAX_RESPONSE_LEN, controller.signal);
+
+        return { status: resp.status, contentType: ct, body: text };
       } finally {
         clearTimeout(timer);
       }
-
-      const ct = resp.headers.get("content-type") ?? "";
-
-      // First guard: if Content-Length is present and exceeds the cap,
-      // cancel immediately without consuming the body (decompression bomb
-      // mitigation). The bounded reader below stays as the second guard for
-      // missing/dishonest Content-Length headers.
-      const contentLength = resp.headers.get("content-length");
-      if (contentLength !== null) {
-        const claimed = parseInt(contentLength, 10);
-        if (Number.isFinite(claimed) && claimed > MAX_RESPONSE_LEN) {
-          resp.body?.cancel();
-          throw new Error(
-            `mpesa: ${path} response exceeds ${MAX_RESPONSE_LEN} bytes (Content-Length: ${claimed})`,
-          );
-        }
-      }
-
-      // Second guard: bounded stream read — aborts once the accumulated
-      // chunk total passes the cap (never materializes an oversized body).
-      const text = await readBodyBounded(resp.body, path, MAX_RESPONSE_LEN);
-
-      return { status: resp.status, contentType: ct, body: text };
     };
 
     let result = await attempt(tok);
 
-    // Retry-once on 401.003.01 (generation guard)
+    // Retry-once on 401.003.01 (generation guard). The probe decodes
+    // leniently: `JSON.parse("null")` succeeds but a `TypeError` on the
+    // property read would escape the typed error contract, so a
+    // non-object body simply means "no envelope, do not retry".
     if (result.status === 401) {
-      let probe: { errorCode?: string };
-      try {
-        probe = JSON.parse(result.body) as Record<string, unknown>;
-      } catch {
-        probe = {};
-      }
-      if ((probe as Record<string, unknown>)["errorCode"] === ERR_CODE_INVALID_TOKEN) {
+      const probe = tryDecodeJsonObject(result.body);
+      if (probe?.["errorCode"] === ERR_CODE_INVALID_TOKEN) {
         const freshTok = await this._tokens.refreshAfterInvalidToken(gen);
         result = await attempt(freshTok);
       }
@@ -577,6 +805,10 @@ export class MpesaClient {
       new Date(this._now()),
     );
 
+    // Configurable limits gate — fail fast before any network I/O
+    // (per-transaction always; daily only when trackDaily is on).
+    this._enforceLimits("stk", r.amount);
+
     // Build payload with injected Password/Timestamp.
     // NOTE: no Occassion here — Go/Py never send it on STK Push; the
     // double-s `Occassion` wire key belongs to B2C only (docs/apis/b2c.md).
@@ -595,7 +827,7 @@ export class MpesaClient {
     };
 
     return this._post(STK_PUSH_PATH, payload, (body) =>
-      JSON.parse(body) as STKPushResponse,
+      decodeJsonObject<STKPushResponse>(body, STK_PUSH_PATH),
     );
   }
 
@@ -622,8 +854,12 @@ export class MpesaClient {
     // Value copy
     const r = { ...req };
 
-    // Validate
+    // Validate — documented contract: non-empty (Go
+    // requireNonEmpty) AND <= 64 printable characters (Python
+    // `_printable`); the stricter rule wins so control characters and
+    // overlong ids fail before the gateway sees them.
     requireNonEmpty("CheckoutRequestID", r.checkoutRequestID);
+    requirePrintableMaxLen("CheckoutRequestID", r.checkoutRequestID, 64);
 
     // Determine effective shortcode for password derivation
     const effectiveShortcode = r.businessShortCode || this._config.shortcode;
@@ -635,16 +871,20 @@ export class MpesaClient {
     );
 
     // Hand-built flat payload — BusinessShortCode participates in
-    // password derivation alongside the injected fields.
-    const payload = {
-      BusinessShortCode: effectiveShortcode,
+    // password derivation alongside the injected fields. Omitted when
+    // empty (Go `omitempty` parity): sending `"BusinessShortCode": ""`
+    // against the gateway reads as a malformed shortcode.
+    const payload: Record<string, unknown> = {
       Password: password,
       Timestamp: timestamp,
       CheckoutRequestID: r.checkoutRequestID,
     };
+    if (effectiveShortcode !== "") {
+      payload["BusinessShortCode"] = effectiveShortcode;
+    }
 
     return this._post(STK_QUERY_PATH, payload, (body) => {
-      const parsed = JSON.parse(body) as STKQueryResponse;
+      const parsed = decodeJsonObject<STKQueryResponse>(body, STK_QUERY_PATH);
       // Normalize the string|number wire trap to string (parseAsyncResult
       // pattern) so callers always observe `ResultCode: string`.
       return { ...parsed, ResultCode: String(parsed.ResultCode ?? "") };
@@ -688,18 +928,31 @@ export class MpesaClient {
     // Validate
     requireNonEmpty("InitiatorName", r.initiatorName);
     requireNonEmpty("SecurityCredential", r.securityCredential);
+    // OriginatorConversationID is the async idempotency key. Contract:
+    // 1..19 chars (Go requireMaxLen 19 / Python `_printable(..., 19)`
+    // parity) — overlong ids are rejected by the gateway with
+    // 500.002.1001, so fail fast here instead.
+    requireLengthRange("OriginatorConversationID", r.originatorConversationID, 1, 19);
     if (!B2C_COMMANDS.has(r.commandID.value)) {
       throw new Error(
         `mpesa: B2C CommandID ${JSON.stringify(r.commandID.value)} not in {SalaryPayment, BusinessPayment, PromotionPayment}`,
       );
     }
     requirePositiveInt("Amount", r.amount);
-    requireMinMax("Amount", r.amount, 10, 250_000);
+    // Minimum stays a gateway contract (10 KES); the maximum now comes
+    // from Config.limits.b2c (standard Safaricom default 250_000 per
+    // transaction / 500_000 per day; approved-tier merchants raise via
+    // Config limits).
+    requireMinInt("B2C Amount", r.amount, 10);
     requireNonEmpty("PartyA", r.partyA);
     r.partyB = normalizePhone(r.partyB);
     requireLengthRange("Remarks", r.remarks, 2, 100);
     requireURL("QueueTimeOutURL", r.queueTimeOutURL);
     requireURL("ResultURL", r.resultURL);
+
+    // Configurable limits gate — fail fast before any network I/O
+    // (per-transaction always; daily only when trackDaily is on).
+    this._enforceLimits("b2c", r.amount);
 
     // Build payload — only include Occassion when defined
     const payload: Record<string, unknown> = {
@@ -719,7 +972,7 @@ export class MpesaClient {
     }
 
     return this._post(B2C_PATH, payload, (body) =>
-      JSON.parse(body) as ConversationResponse,
+      decodeJsonObject<ConversationResponse>(body, B2C_PATH),
     );
   }
 
@@ -772,6 +1025,9 @@ export class MpesaClient {
     requireURL("ResultURL", r.resultURL);
     requireURL("QueueTimeOutURL", r.queueTimeOutURL);
 
+    // No limits gate: the TransactionStatus wire contract carries NO
+    // amount, so there is nothing to spend under the `default` bucket.
+
     // Build payload — only include optional fields when defined
     const payload: Record<string, unknown> = {
       Initiator: r.initiator,
@@ -794,7 +1050,7 @@ export class MpesaClient {
     }
 
     return this._post(TX_STATUS_PATH, payload, (body) =>
-      JSON.parse(body) as ConversationResponse,
+      decodeJsonObject<ConversationResponse>(body, TX_STATUS_PATH),
     );
   }
 
@@ -841,6 +1097,10 @@ export class MpesaClient {
     requireURL("ResultURL", r.resultURL);
     requireURL("QueueTimeOutURL", r.queueTimeOutURL);
 
+    // Configurable limits gate — `default` bucket (Reversal has no
+    // dedicated tier). Fail fast before any network I/O.
+    this._enforceLimits("default", r.amount);
+
     // Build payload — include RecieverIdentifierType (misspelled wire key)
     const payload: Record<string, unknown> = {
       Initiator: r.initiator,
@@ -856,7 +1116,7 @@ export class MpesaClient {
     };
 
     return this._post(REVERSAL_PATH, payload, (body) =>
-      JSON.parse(body) as ConversationResponse,
+      decodeJsonObject<ConversationResponse>(body, REVERSAL_PATH),
     );
   }
 
@@ -897,6 +1157,9 @@ export class MpesaClient {
     requireURL("QueueTimeOutURL", r.queueTimeOutURL);
     requireURL("ResultURL", r.resultURL);
 
+    // No limits gate: the AccountBalance wire contract carries NO amount,
+    // so there is nothing to spend under the `default` bucket.
+
     // Build payload — only include optional fields when defined
     const payload: Record<string, unknown> = {
       Initiator: r.initiator,
@@ -910,7 +1173,7 @@ export class MpesaClient {
     };
 
     return this._post(ACCOUNT_BALANCE_PATH, payload, (body) =>
-      JSON.parse(body) as ConversationResponse,
+      decodeJsonObject<ConversationResponse>(body, ACCOUNT_BALANCE_PATH),
     );
   }
 
@@ -924,7 +1187,7 @@ export class MpesaClient {
    * @example
    * ```ts
    * const ack = await client.c2bRegisterURL({
-   *   responseType: ResponseType.Success,
+   *   responseType: ResponseType.Completed,
    *   confirmationURL: "https://mydomain.com/c2b/confirm",
    *   validationURL: "https://mydomain.com/c2b/validate",
    * });
@@ -937,31 +1200,32 @@ export class MpesaClient {
     // Inject default
     if (!r.shortCode) r.shortCode = this._config.shortcode;
 
-    // Validate — accept deprecated aliases (Success/Fail) and
-    // wire-correct values (Completed/Cancelled); all map to the wire.
+    // Validate — ONLY the wire-correct values survive. The deprecated
+    // `Success`/`Fail` aliases are hard-rejected (Go
+    // `c2bResponseTypes` / Python `rt not in (Completed, Cancelled)`
+    // parity): silently remapping them sent a wire value the caller never
+    // asked for, so the alias is now a loud local failure instead.
     if (
-      r.responseType.value !== "Success" &&
-      r.responseType.value !== "Fail" &&
       r.responseType.value !== "Completed" &&
       r.responseType.value !== "Cancelled"
     ) {
       throw new Error(
-        `mpesa: ResponseType ${JSON.stringify(r.responseType.value)} must be Success/Completed or Fail/Cancelled`,
+        `mpesa: ResponseType ${JSON.stringify(r.responseType.value)} must be Completed or Cancelled`,
       );
     }
     requireURL("ConfirmationURL", r.confirmationURL);
     requireURL("ValidationURL", r.validationURL);
 
-    // Build payload — C2B uses "Completed"/"Cancelled" wire values
+    // Build payload — the validated enum value IS the wire value.
     const payload: Record<string, unknown> = {
       ShortCode: r.shortCode,
-      ResponseType: (r.responseType.value === "Success" || r.responseType.value === "Completed") ? "Completed" : "Cancelled",
+      ResponseType: r.responseType.value,
       ConfirmationURL: r.confirmationURL,
       ValidationURL: r.validationURL,
     };
 
     return this._post(C2B_REGISTER_PATH, payload, (body) =>
-      JSON.parse(body) as C2BAckResponse,
+      decodeJsonObject<C2BAckResponse>(body, C2B_REGISTER_PATH),
     );
   }
 
@@ -1002,6 +1266,10 @@ export class MpesaClient {
       throw new Error("mpesa: BillRefNumber is required for CustomerPayBillOnline simulation");
     }
 
+    // Configurable limits gate — fail fast before any network I/O
+    // (per-transaction always; daily only when trackDaily is on).
+    this._enforceLimits("c2b", r.amount);
+
     // Build payload
     const payload: Record<string, unknown> = {
       ShortCode: r.shortCode,
@@ -1014,7 +1282,7 @@ export class MpesaClient {
     }
 
     return this._post(C2B_SIMULATE_PATH, payload, (body) =>
-      JSON.parse(body) as C2BAckResponse,
+      decodeJsonObject<C2BAckResponse>(body, C2B_SIMULATE_PATH),
     );
   }
 
@@ -1061,6 +1329,10 @@ export class MpesaClient {
     r.cpi = cpi;
     r.size = size;
 
+    // Configurable limits gate — `default` bucket (Dynamic QR has no
+    // dedicated tier). Fail fast before any network I/O.
+    this._enforceLimits("default", r.amount);
+
     // Build payload
     const payload: Record<string, unknown> = {
       MerchantName: r.merchantName,
@@ -1072,7 +1344,7 @@ export class MpesaClient {
     };
 
     return this._post(QR_CODE_PATH, payload, (body) =>
-      JSON.parse(body) as QRCodeResponse,
+      decodeJsonObject<QRCodeResponse>(body, QR_CODE_PATH),
     );
   }
 }
