@@ -46,7 +46,7 @@ jobs:
           # scanned toolchain must be the same release: govulncheck matches
           # standard-library CVEs against the Go version that built the code, so
           # a mismatch hides every stdlib advisory in the line we actually ship.
-          go-version: '1.26.8'
+          go-version: '1.26.9'
       - name: Vet
         run: go vet ./...
         working-directory: go
@@ -149,7 +149,7 @@ jobs:
       # different release than the build.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.8'
+          go-version: '1.26.9'
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -165,7 +165,7 @@ jobs:
         # Pinned, not `@latest`. `@latest` resolved mutable upstream content at
         # run time, so the scanner's behaviour could change without a commit
         # here. v1.1.4 declares `go 1.22.0`, so it builds under the pinned
-        # 1.26.8 toolchain without any download.
+        # 1.26.9 toolchain without any download.
         #
         # GOTOOLCHAIN=local, not `auto`: `auto` lets the go command silently
         # fetch a newer toolchain when a module needs one, which is precisely

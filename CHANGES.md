@@ -10,6 +10,16 @@ only enforcer.
 
 ## BREAKING
 
+- **Go minimum toolchain raised to 1.26.9** (`go/go.mod`,
+  `.github/workflows/ci.yml`): the `go` directive and both `setup-go` pins move
+  from `1.26.8` to `1.26.9` — the 1.26.9 patch fixes nine reachable
+  standard-library CVEs the SDK calls into (GO-2026-6603/6605/6607/6608/6610/
+  6611/6612/6613/6617 in `net/http`, `net/textproto`, `crypto/tls`), which is
+  what fails the `govulncheck` gate on a 1.26.8 build. Consumers on an older
+  patch must upgrade their Go install (or let `GOTOOLCHAIN=auto` fetch 1.26.9)
+  before `go get` will resolve. A full patch floor, not `1.26`, on purpose —
+  the 0.3.0 toolchain note explains why. No SDK API changed.
+
 - **Amount ceilings are now enforced client-side.** The gateway used to be the
   only enforcer; each engine now refuses an amount above a per-service ceiling
   *before any network I/O* (default 250,000 KES per transaction for every

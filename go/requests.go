@@ -344,7 +344,7 @@ func normalizeNumericHost(host string) (net.IP, bool) {
 		// Byte slot for this part (see the doc comment for the mapping):
 		// a lone part IS the whole 32-bit value; every part before the last
 		// is top-aligned; the last part fills the lowest bytes.
-		shift, width := 0, 8
+		var shift, width int
 		switch {
 		case len(parts) == 1:
 			shift, width = 0, 32

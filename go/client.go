@@ -383,19 +383,12 @@ func (c *Client) Token(ctx context.Context) (string, error) {
 	return tok, err
 }
 
-// setToken securely replaces the cached token, zeroing the old value first
-// to minimise the window where the credential resides in memory. Callers must
-// hold c.mu (see setToken for the locking wrapper).
+// setTokenLocked securely replaces the cached token, zeroing the old value
+// first to minimise the window where the credential resides in memory.
+// Callers must hold c.mu.
 func (c *Client) setTokenLocked(newToken string) {
 	c.zeroTokenLocked()
 	c.tokenBytes = []byte(newToken)
-}
-
-// setToken is the locking wrapper around setTokenLocked.
-func (c *Client) setToken(newToken string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.setTokenLocked(newToken)
 }
 
 // zeroTokenLocked overwrites the cached token bytes with zeros. Callers must
@@ -405,13 +398,6 @@ func (c *Client) zeroTokenLocked() {
 		c.tokenBytes[i] = 0
 	}
 	c.tokenBytes = nil
-}
-
-// zeroToken is the locking wrapper around zeroTokenLocked.
-func (c *Client) zeroToken() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.zeroTokenLocked()
 }
 
 // Close zeros the cached token and marks the client as closed. After Close

@@ -1,6 +1,6 @@
 # M-Pesa Daraja SDK
 
-[![Go](https://img.shields.io/badge/Go-1.26.8+-00ADD8?logo=go&logoColor=white)](https://pkg.go.dev/github.com/anthrodjear/mpesa-sdk/go)
+[![Go](https://img.shields.io/badge/Go-1.26.9+-00ADD8?logo=go&logoColor=white)](https://pkg.go.dev/github.com/anthrodjear/mpesa-sdk/go)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://pypi.org/project/mpesa-sdk/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9+-3178C6?logo=typescript&logoColor=white)](https://www.npmjs.com/package/@mpesa-sdk/core)
 [![CI](https://github.com/anthrodjear/mpesa-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/anthrodjear/mpesa-sdk/actions/workflows/ci.yml)
@@ -11,7 +11,7 @@ A production-grade SDK for the Safaricom **M-Pesa Daraja API** in three language
 
 | Language   | Version  | Install                        | Import                                  | Runtime deps                          |
 |------------|----------|--------------------------------|-----------------------------------------|---------------------------------------|
-| Go         | 1.26.8+  | `go get github.com/anthrodjear/mpesa-sdk/go` | `import mpesa "github.com/anthrodjear/mpesa-sdk/go"` | none (stdlib only)                    |
+| Go         | 1.26.9+  | `go get github.com/anthrodjear/mpesa-sdk/go` | `import mpesa "github.com/anthrodjear/mpesa-sdk/go"` | none (stdlib only)                    |
 | Python     | 3.11+    | `pip install mpesa-sdk`        | `import mpesa`                           | `requests`, `cryptography`            |
 | TypeScript | Node ≥20 | `npm install @mpesa-sdk/core`  | `import { ... } from "@mpesa-sdk/core"`  | none (native `fetch` + `node:crypto`) |
 
@@ -530,7 +530,7 @@ already been tested on the develop push and on the promotion pull request.
 
 | Job | What it runs |
 |---|---|
-| `go` | `go vet`, `golangci-lint`, and `go test -race -v -count=1 ./...` on **Go 1.26.8** — the same toolchain `govulncheck` scans, so build and scan cannot drift |
+| `go` | `go vet`, `golangci-lint`, and `go test -race -v -count=1 ./...` on **Go 1.26.9** — the same toolchain `govulncheck` scans, so build and scan cannot drift |
 | `python` | `pytest` on Python 3.11, then `ruff check` |
 | `typescript` | `npm ci`, typecheck (including examples), `vitest`, then ESLint or `tsc --noEmit` |
 | `security` | `govulncheck ./...` (Go), `bandit -r mpesa/ -ll` (Python), `npm audit --audit-level=high` (TypeScript) — **a hard gate**, and a timeout here is itself a failure |
