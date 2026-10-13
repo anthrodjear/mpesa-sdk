@@ -22,6 +22,8 @@ import json
 import math
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal
+from functools import cached_property
 from typing import Any
 
 # Back-compat re-export from mpesa._limits (see the NOTE below), pinned by
@@ -177,9 +179,22 @@ class AsyncResult:
                      for r in (rlist or []) if isinstance(r, dict))
         return cls(_parameters=items, _reference_items=refs, **kwargs)
 
+    @cached_property
+    def _parameter_map(self) -> dict[str, Any]:
+        """Flattened Key/Value pairs, built ONCE per envelope.
+
+        The docstrings of the accessors below promise "built once via a
+        single O(n) pass": that was untrue -- every accessor called
+        :meth:`parameters` afresh, so four accessors meant four O(n) rebuilds
+        of the same dict. ``cached_property`` keeps the promise (and keeps
+        the model frozen, because the cache is written into ``__dict__``
+        directly, bypassing the frozen ``__setattr__``).
+        """
+        return first_wins([(p.key, p.value_raw) for p in self._parameters])
+
     def parameters(self) -> dict[str, Any]:
         """Flatten Key/Value pairs FIRST-WINS; absent section yields {}."""
-        return first_wins([(p.key, p.value_raw) for p in self._parameters])
+        return self._parameter_map
 
     def reference_items(self) -> tuple[ReferenceItem, ...]:
         """Echoed ReferenceItem entries (single-object shapes merged)."""
@@ -192,25 +207,28 @@ class AsyncResult:
     def transaction_receipt(self) -> str | None:
         """TransactionReceipt string, or None when absent.
 
-        First-wins O(1) dict get over :meth:`parameters` (built once via
-        a single O(n) ``first_wins`` pass) -- no per-key linear scan.
+        O(1) dict get over the once-built :attr:`_parameter_map` -- no
+        per-key linear scan, no per-accessor rebuild.
         """
-        return coerce_str(self.parameters().get("TransactionReceipt"))
+        return coerce_str(self._parameter_map.get("TransactionReceipt"))
 
     def transaction_status(self) -> str | None:
         """TransactionStatus string (status APIs), or None when absent.
 
-        First-wins O(1) dict get over :meth:`parameters` (see
+        O(1) dict get over :attr:`_parameter_map` (see
         :meth:`transaction_receipt`).
         """
-        return coerce_str(self.parameters().get("TransactionStatus"))
+        return coerce_str(self._parameter_map.get("TransactionStatus"))
 
-    def amount(self) -> float | None:
-        """TransactionAmount as float via shared :func:`coerce_amount`;
-        bools, >2**53 ints, non-finite floats and non-decimal strings
+    def amount(self) -> "Decimal | None":
+        """TransactionAmount as a 2dp :class:`~decimal.Decimal` via the
+        shared :func:`coerce_amount`; bools, |value| over 2**53,
+        non-finite floats, sub-cent precision and non-decimal strings all
         yield None (hostile-int guards).
 
-        First-wins O(1) dict get over :meth:`parameters` (see
+        Decimal, not float, because ``settle(order, amount=...)`` receives
+        this value directly: a binary float cannot hold ``10.10`` and would
+        lose the cent. O(1) dict get over :attr:`_parameter_map` (see
         :meth:`transaction_receipt`).
         """
-        return coerce_amount(self.parameters().get("TransactionAmount"))
+        return coerce_amount(self._parameter_map.get("TransactionAmount"))

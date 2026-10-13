@@ -53,11 +53,42 @@ def test_html_page_diagnostic():
     err = MpesaError.from_response(502, page, "text/html; charset=utf-8")
     assert err.request_id is None
     assert err.error_code is None
-    msg = err.error_message or ""
-    assert "text/html; charset=utf-8" in msg
-    assert f"{len(page)} bytes" in msg
-    assert "Request blocked by WAF" in msg
-    assert str(err).startswith("mpesa: HTTP 502 unparseable error body")
+    # Caller-facing text is GENERIC (go/errors.go parity): the upstream
+    # body must never travel inside the exception, because any
+    # logger.exception() on the path would ship it off-box.
+    assert err.error_message == "unexpected error response from gateway"
+    assert "WAF" not in str(err)
+    assert str(err).startswith("mpesa: HTTP 502 unexpected error response")
+
+
+def test_unparseable_body_diagnostics_are_opt_in_only():
+    """The raw body reaches the OPT-IN logger and nothing else."""
+    page = b"<html><body>Request blocked by WAF</body></html>"
+    seen: list[tuple] = []
+
+    def sink(status_code, content_type, body):
+        seen.append((status_code, content_type, body))
+
+    err = MpesaError.from_response(502, page, "text/html; charset=utf-8",
+                                   error_logger=sink)
+    assert "WAF" not in str(err)                     # still generic for callers
+    assert seen == [(502, "text/html; charset=utf-8", page)]
+
+    # Default (no logger): diagnostics are DISCARDED, not stashed anywhere.
+    err_default = MpesaError.from_response(502, page, "text/html; charset=utf-8")
+    assert err_default is not err
+    assert "WAF" not in str(err_default)
+    assert vars(err_default) == vars(MpesaError.from_response(502, page))
+
+
+def test_error_logger_that_raises_never_masks_the_typed_error():
+    def exploding_sink(status_code, content_type, body):
+        raise RuntimeError("logger is down")
+
+    err = MpesaError.from_response(500, b"<html>oops</html>", "text/html",
+                                   error_logger=exploding_sink)
+    assert err.status_code == 500
+    assert err.error_message == "unexpected error response from gateway"
 
 
 def test_from_response_never_raises_on_garbage():

@@ -211,6 +211,13 @@ def test_malformed_authority_rejected(url, fragment):
 )
 def test_public_urls_accepted(url):
     _url("CallBackURL", url)  # must not raise
+    # NEGATIVE CONTROL: the same validator must still reject. Without this
+    # the test above passes for any no-op validator -- which is exactly how
+    # it stayed vacuous while the SSRF bypass was still open.
+    with pytest.raises(ValueError, match="mpesa: CallBackURL"):
+        _url("CallBackURL", "http://127.0.0.1/hook")
+    with pytest.raises(ValueError, match="mpesa: CallBackURL"):
+        _url("CallBackURL", "http://2852039166/hook")   # numeric-IP form
 
 
 # --------------------------------------------------------------------------

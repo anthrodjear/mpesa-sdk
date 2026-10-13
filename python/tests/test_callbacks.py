@@ -1,6 +1,7 @@
 """Tests for mpesa.callbacks -- mirrors go/callbacks_test.go."""
 
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -32,7 +33,11 @@ def test_success_callback_full_metadata():
     assert res.result_code == "0"
     assert res.classify() is ResultClass.SUCCESS
     assert res.amount() == 1.0
-    assert isinstance(res.amount(), float)
+    # Money is a 2dp Decimal, never a binary float: 10.10 could not have
+    # survived as a float (float("10.10") == 10.1) and this value is handed
+    # straight to settle(order, amount=...).
+    assert isinstance(res.amount(), Decimal)
+    assert str(res.amount()) == "1.00"
     assert res.mpesa_receipt() == "NLJ7RT61SV"
     # Integral magnitudes preserved exactly -- never float-corrupted.
     assert res.transaction_date() == 20191219102115
@@ -133,7 +138,8 @@ def test_amount_huge_int_returns_none_not_crash():
 
 
 def test_amount_accepts_string_encoded():
-    assert _meta_result(b'{"Name":"Amount","Value":"1.0"}').amount() == 1.0
+    # "1.0" -> Decimal("1.00"): the 2dp canonical wire form, value unchanged.
+    assert _meta_result(b'{"Name":"Amount","Value":"1.0"}').amount() == Decimal("1.00")
     assert _meta_result(b'{"Name":"Amount","Value":true}').amount() is None
 
 

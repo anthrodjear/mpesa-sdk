@@ -41,8 +41,9 @@ from .enums import (
     ResponseType,
     TransactionType,
 )
-from .exceptions import MpesaError
+from .exceptions import InvalidTokenError, MpesaError, RefreshRateLimitedError
 from .helpers import generate_password, normalize_phone, security_credential
+from .limits import DEFAULT_TRANSACTION_LIMITS, ServiceLimits, TransactionLimits
 from .requests_async import (
     AccountBalanceRequest,
     B2CPayoutRequest,
@@ -81,7 +82,9 @@ __all__ = [
     "CommandID",
     "Config",
     "ConversationResponse",
+    "DEFAULT_TRANSACTION_LIMITS",
     "Environment",
+    "InvalidTokenError",
     "MetadataItem",
     "MpesaClient",
     "MpesaError",
@@ -91,6 +94,7 @@ __all__ = [
     "QRCodeResponse",
     "QRTrxCode",
     "RECEIVER_IDENTIFIER_ORG",
+    "RefreshRateLimitedError",
     "ResponseType",
     "ResultClass",
     "ReversalRequest",
@@ -98,8 +102,10 @@ __all__ = [
     "STKPushResponse",
     "STKQueryRequest",
     "STKQueryResponse",
+    "ServiceLimits",
     "StkCallbackResult",
     "TokenManager",
+    "TransactionLimits",
     "TransactionStatusRequest",
     "TransactionType",
     "callback_token_equal",
