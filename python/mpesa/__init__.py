@@ -68,7 +68,7 @@ from .responses import (
 )
 from .results import AsyncResult, BalanceSegment, parse_balance_segments
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "AccountBalanceRequest",

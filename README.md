@@ -51,6 +51,10 @@ to 30 s, and Python additionally rejects a non-numeric `timeout_seconds` when th
 
 Credentials never leak through text rendering: `repr()`/`log_safe()` (Python), `GoString`/`Format` (Go), and `toString()`/`toJSON()`/`logSafe()` (TypeScript) all redact secrets — `consumerKey` is masked to first-4/last-4 in all three engines, and `consumerSecret`/`passkey` are omitted entirely. Log configs freely — but only via those accessors. TypeScript additionally ships `MpesaClient.fromEnv()`, wired straight from these variables; Go has no env loader by design — fill `Config` yourself.
 
+### Transaction limits
+
+Every engine now enforces per-transaction amount ceilings client-side (opt-in per-day ceilings too), defaulting to the published Safaricom caps — so **standard usage needs no new code**: every quick-start snippet below still works unchanged, and amounts over a ceiling fail in your process with a typed error instead of reaching the gateway. You only touch config if you run above the defaults (e.g. a Safaricom-approved B2C tier) or want daily tracking: `Config.Limits` + `Config.TrackDaily` (Go), `Config(limits=…, track_daily=…)` (Python), `limits` + `trackDaily` (TypeScript). Full reference: [limits.md](docs/apis/limits.md).
+
 ## Quick start
 
 Every snippet below is complete enough to run (fill the env vars first). Accepted ≠ paid: `ResponseCode "0"` means Daraja queued the prompt; settlement arrives via callback or query.

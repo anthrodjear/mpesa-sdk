@@ -1,11 +1,14 @@
-# Changes — Unreleased
+# Changes — 0.4.0 (2026-10-13)
 
-Not yet published: these changes sit on `main` ahead of the next tagged release.
-The headline is **configurable transaction limits** — all three engines now refuse
-an amount above a configured ceiling *client-side*, where before the gateway was
-the only enforcer. Pin the release explicitly once it ships.
+All three engines ship `0.4.0` together. This is a **minor** bump, per the
+0.x rule `0.3.0` already stated: under SemVer 0.x, breaking changes increment
+the minor version, so existing `^0.3.0` / `~=0.3.0` ranges will **not**
+auto-upgrade into it — pin `0.4.0` explicitly. The headline is
+**configurable transaction limits**: all three engines now refuse an amount
+above a configured ceiling *client-side*, where before the gateway was the
+only enforcer.
 
-## Behavior changes (read before upgrading)
+## BREAKING
 
 - **Amount ceilings are now enforced client-side.** The gateway used to be the
   only enforcer; each engine now refuses an amount above a per-service ceiling
