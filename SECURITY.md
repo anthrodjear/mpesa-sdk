@@ -61,6 +61,9 @@ from this document should treat the table below as the authoritative scope — a
 | Trusted base-URL allowlist | ✅ `go/config.go` | ✅ `python/mpesa/auth.py` | ✅ `typescript/src/config.ts` **and** `typescript/src/auth.ts` (TypeScript enforces it in both, so a hand-built `TokenManager` cannot bypass it) |
 | OAuth refresh rate limiting (3 failures / 5 s) | ✅ | ✅ | ✅ |
 | SSRF-hardened callback URL validation | ✅ | ✅ | ✅ |
+| Client-side transaction limits (per-transaction ceiling; per-day ceiling opt-in) | ✅ `go/limits.go`, enforced through `ValidateWithLimits` | ✅ `python/mpesa/limits.py`, enforced through each model's `validate()` | ✅ `typescript/src/limits.ts`, enforced through `MpesaClient._enforceLimits` |
+| 1 MiB body cap enforced before parsing — STK callback | ✅ `ParseSTKCallback` | ✅ `StkCallbackResult.from_json` | ✅ `parseSTKCallback` |
+| 1 MiB body cap enforced before parsing — async `Result` envelope | ❌ absent — no SDK-side parse entry point; ingestion is `json.Unmarshal` in your own `ResultURL` handler | ✅ `AsyncResult.from_json` | ✅ `parseAsyncResultJson` / `parseAsyncResultBody` |
 
 **On the Python `close()` gap:** `MpesaClient.close()` calls `self._session.close()` and nothing
 more. `TokenManager._token` is left in place, so closing a client does **not** erase the cached
@@ -72,6 +75,23 @@ unique-local, unspecified, IPv6 and `::ffff:`-embedded IPv4 tails, bare `localho
 `user:pass@` credentials) is identical across engines, and all three enforce it. But it guards the
 host **literal** only — a DNS name resolving to a private address passes in all three. It is not a
 DNS-rebinding filter, and should not be audited as one.
+
+**On the transaction limits:** these are a LOCAL guard, not a control — the gateway stays the final
+authority, and an amount above your tier still fails there. All three engines check the
+per-transaction ceiling before any network I/O and resolve the configured overrides exactly once, at
+client construction (`NewClient` / `MpesaClient.__init__` / `Config`), so a live client's ceilings
+cannot move under it. Daily accumulation is opt-in and off by default (`Config.TrackDaily` /
+`Config(track_daily=True)` / `Config.trackDaily`): one process cannot observe the replicas sharing
+its shortcode, so a per-process total under-counts a platform-wide cap. Treat it as a circuit breaker
+for the single worst-case process, not as an enforced quota. The day rolls at Africa/Nairobi (UTC+3,
+no DST) midnight in all three engines.
+
+**On the body caps:** the bound is 1 MiB measured in BYTES (UTF-8), applied before any decode, so a
+multi-byte payload cannot slip past a character count. Every engine caps the STK callback body inside
+its own parser. The async `Result` envelope is capped in Python and TypeScript; Go has no SDK-side
+parse entry point for it — your `ResultURL` handler unmarshals the body itself — so there is no
+SDK-side cap to audit there. Bound it yourself, e.g. by wrapping the request body in
+`http.MaxBytesReader` before `json.Unmarshal`, exactly as the callback parsers document.
 
 ## User-Facing Hardening Notes
 
