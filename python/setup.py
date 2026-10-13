@@ -40,6 +40,10 @@ setup(
     },
     license="MIT",
     packages=find_packages(exclude=["tests", "tests.*"]),
+    # PEP 561 marker: the package ships inline annotations, so downstream
+    # type checkers must find mpesa/py.typed inside the installed wheel.
+    package_data={"mpesa": ["py.typed"]},
+    include_package_data=True,
     python_requires=">=3.11",
     install_requires=[
         # >=2.32.4 fixes CVE-2024-35195 (verify=False persistence) and
