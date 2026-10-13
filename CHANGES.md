@@ -133,6 +133,11 @@ only enforcer.
 - **Callback-token comparison is type-strict (Python)**
   (`python/mpesa/callback_token.py`): `callback_token_equal` returns `False` for
   any non-string operand instead of comparing across types.
+- **Python wheels now ship the PEP 561 marker** (`python/mpesa/py.typed`,
+  `MANIFEST.in`, `python/setup.py`): the `mpesa` package carries inline type
+  annotations, and without the marker mypy/pyright resolve every import to
+  `Any`. Installed consumers now get real checking against the SDK's types
+  (sdist verified to include `mpesa/py.typed`).
 
 # Changes — 0.3.0 (2026-10-01)
 
