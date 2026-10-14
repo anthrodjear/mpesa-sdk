@@ -486,7 +486,7 @@ Listed so log inspection doesn't panic you; the SDKs emit/accept these verbatim:
 │   ├── dependabot.yml      # weekly updates for npm · pip · gomod · github-actions, all targeting `develop`
 │   └── workflows/          # ci.yml · promote.yml · dependabot-auto-merge.yml
 ├── ADR-010-m-pesa-adapter.md
-├── CHANGES.md              # per-release changelog (0.3.0 is current)
+├── CHANGES.md              # per-release changelog (0.4.0 is current)
 ├── SECURITY.md             # vulnerability reporting · supported versions · release automation · hardening notes
 └── LICENSE
 ```
