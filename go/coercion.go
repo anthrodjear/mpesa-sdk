@@ -78,11 +78,6 @@ func (f *FlexInt64) UnmarshalJSON(b []byte) error {
 		}
 		// Strict integer fast path: plain ASCII digits with optional sign.
 		if v, err := strconv.ParseInt(str, 10, 64); err == nil {
-			// Explicit range check: Go's ParseInt returns error for out-of-range
-			// but we double-check to be absolutely sure (defense in depth).
-			if v < math.MinInt64 || v > math.MaxInt64 {
-				return fmt.Errorf("mpesa: cannot parse %s as integer", b)
-			}
 			*f = FlexInt64(v)
 			return nil
 		}
@@ -96,9 +91,6 @@ func (f *FlexInt64) UnmarshalJSON(b []byte) error {
 	}
 	// Strict integer fast path for bare numbers.
 	if v, err := strconv.ParseInt(s, 10, 64); err == nil {
-		if v < math.MinInt64 || v > math.MaxInt64 {
-			return fmt.Errorf("mpesa: cannot parse %s as integer", b)
-		}
 		*f = FlexInt64(v)
 		return nil
 	}

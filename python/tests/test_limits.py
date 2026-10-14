@@ -37,10 +37,10 @@ from mpesa.limits import (
     DEFAULT_TRANSACTION_LIMITS,
     ServiceLimits,
     TransactionLimits,
+    _resolved_max,
 )
 from mpesa.limits import (
     _resolve_transaction_limits as _resolve,
-    _resolved_max,
 )
 from mpesa.requests_async import (
     B2CPayoutRequest,

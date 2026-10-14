@@ -381,9 +381,11 @@ def test_refresh_failure_restamps_attempt_clock():
     tm = TokenManager(session, "https://sandbox.safaricom.co.ke",
                       "k", "s", now=clock)
 
+    from mpesa.exceptions import MpesaError
+
     # First failure: attempt starts at T0, lands at T0+4.
     # The gate stamps _last_attempt=T0; the except re-stamps to T0+4.
-    with pytest.raises(Exception):
+    with pytest.raises(MpesaError):
         tm.get_token()
     assert clock.now == T0 + timedelta(seconds=4)
     # _last_attempt is T0+4 (re-stamped), NOT T0 (attempt-start).
@@ -391,13 +393,13 @@ def test_refresh_failure_restamps_attempt_clock():
 
     # Second failure: starts at T0+4, lands at T0+8.
     # Gate stamps T0+4; except re-stamps T0+8.
-    with pytest.raises(Exception):
+    with pytest.raises(MpesaError):
         tm.get_token()
     assert tm._last_attempt == T0 + timedelta(seconds=8)
 
     # Third failure: starts at T0+8, lands at T0+12.
     # Gate stamps T0+8; except re-stamps T0+12. failures=3.
-    with pytest.raises(Exception):
+    with pytest.raises(MpesaError):
         tm.get_token()
     assert tm._last_attempt == T0 + timedelta(seconds=12)
 
