@@ -75,8 +75,9 @@ func (s ServiceLimits) ceiling(max *int64) (int64, bool) {
 	return *max, true
 }
 
-// TransactionLimits holds per-service ceilings. Default applies to services
-// without a dedicated entry (Reversal, TransactionStatus, QR).
+// TransactionLimits holds per-service ceilings. Reversal and QR have their
+// own entries; Default applies to services without a dedicated entry
+// (TransactionStatus and anything unspecialized).
 //
 // A PARTIALLY-FILLED TransactionLimits is an override, not a replacement: a
 // field left nil inherits the value in DefaultTransactionLimits(). Merge it
@@ -84,10 +85,12 @@ func (s ServiceLimits) ceiling(max *int64) (int64, bool) {
 // the enforcement helpers treat nil as unlimited and must therefore never see
 // an unmerged config.
 type TransactionLimits struct {
-	STK     ServiceLimits
-	C2B     ServiceLimits
-	B2C     ServiceLimits
-	Default ServiceLimits
+	STK       ServiceLimits
+	C2B       ServiceLimits
+	B2C       ServiceLimits
+	Reversal  ServiceLimits
+	QR        ServiceLimits
+	Default   ServiceLimits
 }
 
 // DefaultTransactionLimits returns the Safaricom baseline (see docs). It is
@@ -100,10 +103,12 @@ type TransactionLimits struct {
 // merchants are raised explicitly via Config.Limits.
 func DefaultTransactionLimits() TransactionLimits {
 	return TransactionLimits{
-		STK:     ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
-		C2B:     ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
-		B2C:     ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
-		Default: ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
+		STK:       ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
+		C2B:       ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
+		B2C:       ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
+		Reversal:  ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
+		QR:        ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
+		Default:   ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
 	}
 }
 
@@ -144,15 +149,17 @@ func overlay(base, over ServiceLimits) ServiceLimits {
 type Service string
 
 const (
-	ServiceSTK     Service = "STK Push"
-	ServiceC2B     Service = "C2B"
-	ServiceB2C     Service = "B2C"
-	ServiceDefault Service = "Default"
+	ServiceSTK      Service = "STK Push"
+	ServiceC2B      Service = "C2B"
+	ServiceB2C      Service = "B2C"
+	ServiceReversal Service = "Reversal"
+	ServiceQR       Service = "QR"
+	ServiceDefault  Service = "Default"
 )
 
 // limitsFor returns the ceiling entry that governs s. Unknown and
-// un-enumerated services fall back to Default, which is what keeps Reversal,
-// TransactionStatus and QR covered without duplicating a fourth entry.
+// un-enumerated services fall back to Default, which is what keeps
+// TransactionStatus covered without duplicating another entry.
 func (l TransactionLimits) limitsFor(s Service) ServiceLimits {
 	switch s {
 	case ServiceSTK:
@@ -161,6 +168,10 @@ func (l TransactionLimits) limitsFor(s Service) ServiceLimits {
 		return l.C2B
 	case ServiceB2C:
 		return l.B2C
+	case ServiceReversal:
+		return l.Reversal
+	case ServiceQR:
+		return l.QR
 	default:
 		return l.Default
 	}
@@ -230,6 +241,10 @@ func limitsFieldName(service Service) string {
 		return "C2B"
 	case ServiceB2C:
 		return "B2C"
+	case ServiceReversal:
+		return "Reversal"
+	case ServiceQR:
+		return "QR"
 	default:
 		return "Default"
 	}
@@ -285,7 +300,11 @@ func (d *dailyLedger) consume(service Service, amount int64, limits TransactionL
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.used == nil || d.day != today {
+	// Roll FORWARD only: a day strictly after the current bucket resets it;
+	// a same-day or backward-clock reading keeps accumulating. A backward
+	// clock must never zero the accumulator — that would silently discard
+	// the day's real volume and let an over-ceiling merchant spend again.
+	if d.used == nil || d.day == "" || today > d.day {
 		d.day = today
 		d.used = make(map[Service]int64)
 	}
@@ -301,4 +320,23 @@ func (d *dailyLedger) consume(service Service, amount int64, limits TransactionL
 	}
 	d.used[service] = used
 	return nil
+}
+
+// rollback removes amount from today's bucket after a transport-class
+// failure — the mirror of consume for requests that never received a gateway
+// answer. It is a no-op when TrackDaily recorded nothing for the service or
+// the day has rolled (the amount was never counted against the new day), and
+// it floors at zero so a double-rollback can never drive the accumulator
+// negative.
+func (d *dailyLedger) rollback(service Service, amount int64, today string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.used == nil || d.day != today {
+		return
+	}
+	if v := d.used[service] - amount; v > 0 {
+		d.used[service] = v
+	} else {
+		delete(d.used, service)
+	}
 }

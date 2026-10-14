@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net/http"
 	"os"
@@ -387,13 +388,109 @@ func TestPinSPKIDeepCopiesCallerBytes(t *testing.T) {
 		t.Fatal("snapshot mutation moved the live pin set; snapshots must deep-clone each entry")
 	}
 
-	// Mutating the pins handed to SPKIVerifier must not move the verifier —
-	// neither through the inner arrays nor by replacing the outer entries.
+// Mutating the pins handed to SPKIVerifier must not move the verifier —
+// neither through the inner arrays nor by replacing the outer entries.
 	pins := [][]byte{bytes.Clone(want)}
 	verify := SPKIVerifier(hostname, pins)
 	pins[0][0] ^= 0xFF
 	pins[0] = bytes.Repeat([]byte{0x00}, sha256.Size)
 	if err := verify([][]byte{rawDER}, nil); err != nil {
 		t.Fatalf("SPKIVerifier followed caller mutation; it must capture a deep copy: %v", err)
+	}
+}
+
+// TestPinChainVerifierChaining verifies that SPKIVerifier chains correctly
+// with a pre-existing VerifyPeerCertificate on the transport (F14b).
+// The installed callback runs the previous verifier FIRST, then the pin check.
+func TestPinChainVerifierChaining(t *testing.T) {
+	resetPinnedSPKIHashes(t)
+	rawDER, hash := generatePinnedCert(t)
+	hostname := "pin-chain.example.com"
+	if err := PinSPKI(hostname, hash); err != nil {
+		t.Fatalf("PinSPKI: %v", err)
+	}
+
+	// Build a transport with a PREVIOUS verifier that always passes.
+	prevCalled := false
+	prev := func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		prevCalled = true
+		return nil // always passes
+	}
+
+	// Simulate what applyPinning does: chain the pin verifier after prev.
+	pins := [][]byte{hash}
+	verify := SPKIVerifier(hostname, pins)
+	chained := func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		if err := prev(rawCerts, verifiedChains); err != nil {
+			return err
+		}
+		return verify(rawCerts, verifiedChains)
+	}
+
+	// Matching pin: both prev and pin check pass.
+	if err := chained([][]byte{rawDER}, nil); err != nil {
+		t.Fatalf("matching pin with prev verifier rejected: %v", err)
+	}
+	if !prevCalled {
+		t.Fatal("previous verifier was not called; chaining must run prev first")
+	}
+
+	// Mismatched pin: prev passes, pin check fails.
+	prevCalled = false
+	wrong := make([]byte, len(hash))
+	copy(wrong, hash)
+	wrong[0] ^= 0xFF
+	verify2 := SPKIVerifier(hostname, [][]byte{wrong})
+	chained2 := func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		if err := prev(rawCerts, verifiedChains); err != nil {
+			return err
+		}
+		return verify2(rawCerts, verifiedChains)
+	}
+	e := chained2([][]byte{rawDER}, nil)
+	if e == nil {
+		t.Fatal("mismatched pin allowed, want rejection")
+	}
+	if !prevCalled {
+		t.Fatal("previous verifier was not called before pin rejection")
+	}
+	if !strings.Contains(e.Error(), "SPKI hash mismatch") {
+		t.Fatalf("err = %v, want SPKI hash mismatch", e)
+	}
+}
+
+// TestPinChainPrevVerifierFailsShortCircuits verifies that if the PREVIOUS
+// verifier fails, the pin check is NOT reached (short-circuit).
+func TestPinChainPrevVerifierFailsShortCircuits(t *testing.T) {
+	resetPinnedSPKIHashes(t)
+	rawDER, hash := generatePinnedCert(t)
+	hostname := "pin-chain-prev-fail.example.com"
+	if err := PinSPKI(hostname, hash); err != nil {
+		t.Fatalf("PinSPKI: %v", err)
+	}
+
+	pinCalled := false
+	prev := func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		return fmt.Errorf("prev verifier says no")
+	}
+	pins := [][]byte{hash}
+	verify := SPKIVerifier(hostname, pins)
+	chained := func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		if err := prev(rawCerts, verifiedChains); err != nil {
+			return err
+		}
+		pinCalled = true
+		return verify(rawCerts, verifiedChains)
+	}
+
+	err := chained([][]byte{rawDER}, nil)
+	if err == nil {
+		t.Fatal("prev verifier failure should short-circuit")
+	}
+	if pinCalled {
+		t.Fatal("pin verifier was called after prev failed; must short-circuit")
+	}
+	if !strings.Contains(err.Error(), "prev verifier says no") {
+		t.Fatalf("err = %v, want prev verifier error", err)
 	}
 }

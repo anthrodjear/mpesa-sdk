@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -218,6 +219,8 @@ type Client struct {
 	// day. It is only consulted when cfg.TrackDaily is set: an unused
 	// accumulator is a silent under-count (see Config.TrackDaily).
 	daily dailyLedger
+	// closed is set by Close(). When true, all operations return ErrClientClosed.
+	closed bool
 }
 
 // transportDisablesVerification walks the RoundTripper chain looking for any
@@ -374,6 +377,18 @@ func (c *Client) checkDaily(service Service, amount int64) error {
 	return c.daily.consume(service, amount, c.limits, nairobiDay(c.cfg.Now()))
 }
 
+// rollbackDaily returns amount to the daily accumulator after a transport-
+// class failure (the request never received a gateway answer). It is a
+// no-op unless TrackDaily is on. Gateway responses — success or *MpesaError
+// — keep the spend: only errors that mean "never reached Daraja" roll back,
+// matching the Python client's transport-error semantics.
+func (c *Client) rollbackDaily(service Service, amount int64) {
+	if !c.cfg.TrackDaily {
+		return
+	}
+	c.daily.rollback(service, amount, nairobiDay(c.cfg.Now()))
+}
+
 // Token returns the cached Bearer token, refreshing it single-flight before
 // expiry (cadence derived from expires_in minus a 60s safety margin, clamped
 // to at most 50 minutes — a fresh fetch invalidates the previous token).
@@ -407,12 +422,17 @@ func (c *Client) Close() {
 	defer c.mu.Unlock()
 	c.zeroTokenLocked()
 	c.tokenExpiry = time.Time{}
+	c.closed = true
 }
 
 // tokenWithGen pairs the cached bearer with its generation so callers can
 // detect a concurrent refresh later.
 func (c *Client) tokenWithGen(ctx context.Context) (string, uint64, error) {
 	c.mu.RLock()
+	if c.closed {
+		c.mu.RUnlock()
+		return "", 0, ErrClientClosed
+	}
 	tok, gen, fresh := string(c.tokenBytes), c.gen, c.tokenFresh()
 	c.mu.RUnlock()
 	if fresh {
@@ -520,12 +540,14 @@ func (c *Client) tokenFresh() bool {
 }
 
 // refreshCadence converts the OAuth TTL into an eager refresh window:
-// TTL minus a 60s safety margin, clamped to [1s, 50min]. Unknown/zero TTLs
-// fall back to the legacy 50-minute cadence.
+// TTL minus a 60s safety margin, clamped to [60s, 50min]. Unknown/zero TTLs
+// fall back to the legacy 50-minute cadence. The 60s floor mirrors Python
+// and TypeScript (both clamp the eager window at 60.0s), so all three
+// engines refresh on the same cadence for a given expires_in.
 func refreshCadence(expiresIn FlexInt64) time.Duration {
 	const (
 		maxCadence = 50 * time.Minute
-		minCadence = time.Second
+		minCadence = time.Minute
 		safety     = time.Minute
 	)
 	secs := int64(expiresIn)
@@ -570,26 +592,23 @@ func (c *Client) refresh(ctx context.Context, force bool) (string, error) {
 
 	// Rate limit: only apply to non-forced refreshes after consecutive failures.
 	// 401-triggered refreshes (force=true) bypass the rate limit entirely —
-	// they are expected behavior when tokens are invalidated. Forced attempts
-	// still advance lastRefreshAttempt, so a burst of consecutive forced
-	// failures counts toward the gate instead of leaving the clock stale for
-	// the next non-forced refresh to slip through.
+	// they are expected behavior when tokens are invalidated.
+	//
+	// lastRefreshAttempt is advanced ONLY by recordRefreshFailure, so the
+	// window is measured from the last attempt's FAILURE instant, not its
+	// start: a slow in-flight refresh no longer extends the gate past the
+	// 5s window (a caller checking while it hangs sees the previous failure
+	// timestamp, not the hung attempt's start). Forced failures still
+	// count through recordRefreshFailure, so a burst of consecutive forced
+	// failures gates the next non-forced refresh as before.
 	now := c.cfg.Now()
-	if !force {
-		c.mu.Lock()
-		limited := c.refreshFailures >= 3 && !c.lastRefreshAttempt.IsZero() && now.Sub(c.lastRefreshAttempt) < refreshRateLimit
-		if !limited {
-			c.lastRefreshAttempt = now
-		}
-		c.mu.Unlock()
-		if limited {
-			return "", fmt.Errorf("mpesa: refresh rate limited after %d consecutive failures (last attempt %v ago, need %v)",
-				c.refreshFailures, now.Sub(c.lastRefreshAttempt).Round(time.Millisecond), refreshRateLimit)
-		}
-	} else {
-		c.mu.Lock()
-		c.lastRefreshAttempt = now
-		c.mu.Unlock()
+	c.mu.Lock()
+	limited := !force && c.refreshFailures >= 3 && !c.lastRefreshAttempt.IsZero() && now.Sub(c.lastRefreshAttempt) < refreshRateLimit
+	failures, since := c.refreshFailures, now.Sub(c.lastRefreshAttempt)
+	c.mu.Unlock()
+	if limited {
+		return "", fmt.Errorf("mpesa: refresh rate limited after %d consecutive failures (last attempt %v ago, need %v)",
+			failures, since.Round(time.Millisecond), refreshRateLimit)
 	}
 
 	// A failed refresh must never leave a token the gateway has already
@@ -624,7 +643,7 @@ func (c *Client) refresh(ctx context.Context, force bool) (string, error) {
 		return fail(fmt.Errorf("mpesa: read oauth response: %w", err))
 	}
 	if len(body) > maxResponseLen {
-		err := fmt.Errorf("mpesa: %s response exceeds %d bytes", oauthPath, maxResponseLen)
+		err := &OversizeError{Path: oauthPath}
 		c.recordRefreshFailure()
 		return fail(err)
 	}
@@ -727,7 +746,7 @@ func (c *Client) attempt(ctx context.Context, token, path string, payload any) (
 		return 0, ct, nil, fmt.Errorf("mpesa: read %s response: %w", path, err)
 	}
 	if len(body) > maxResponseLen {
-		return 0, ct, nil, fmt.Errorf("mpesa: %s response exceeds %d bytes", path, maxResponseLen)
+		return 0, ct, nil, &OversizeError{Path: path}
 	}
 	return resp.StatusCode, ct, body, nil
 }
@@ -735,7 +754,7 @@ func (c *Client) attempt(ctx context.Context, token, path string, payload any) (
 // post performs an authenticated business call. On HTTP 401 carrying
 // errorCode 401.003.01 (invalid/expired token) it force-refreshes the token
 // once under the generation guard and retries the business call exactly once
-// before surfacing errors.
+// before surfacing errors — unless Config.DisableRetryOnUnauthorized is set.
 func (c *Client) post(ctx context.Context, path string, payload any, out any) error {
 	tok, gen, err := c.tokenWithGen(ctx)
 	if err != nil {
@@ -748,7 +767,7 @@ func (c *Client) post(ctx context.Context, path string, payload any, out any) er
 
 	if status == http.StatusUnauthorized {
 		var probe errorEnvelope
-		if json.Unmarshal(body, &probe) == nil && probe.ErrorCode == errCodeInvalidToken {
+		if json.Unmarshal(body, &probe) == nil && probe.ErrorCode == errCodeInvalidToken && !c.cfg.DisableRetryOnUnauthorized {
 			freshTok, ferr := c.refreshAfterInvalidToken(ctx, gen)
 			if ferr != nil {
 				return ferr
@@ -816,6 +835,10 @@ func (c *Client) STKPush(ctx context.Context, r STKPushRequest) (*STKPushRespons
 
 	var out STKPushResponse
 	if err := c.post(ctx, stkPushPath, payload, &out); err != nil {
+		var me *MpesaError
+		if !errors.As(err, &me) {
+			c.rollbackDaily(ServiceSTK, r.Amount)
+		}
 		return nil, err
 	}
 	return &out, nil
@@ -890,6 +913,10 @@ func (c *Client) B2CPayout(ctx context.Context, r B2CPayoutRequest) (*B2CRespons
 	}
 	var out B2CResponse
 	if err := c.post(ctx, b2cPath, r, &out); err != nil {
+		var me *MpesaError
+		if !errors.As(err, &me) {
+			c.rollbackDaily(ServiceB2C, r.Amount)
+		}
 		return nil, err
 	}
 	return &out, nil
@@ -930,11 +957,15 @@ func (c *Client) Reversal(ctx context.Context, r ReversalRequest) (*Conversation
 	if err := r.ValidateWithLimits(c.limits); err != nil {
 		return nil, err
 	}
-	if err := c.checkDaily(ServiceDefault, r.Amount); err != nil {
+	if err := c.checkDaily(ServiceReversal, r.Amount); err != nil {
 		return nil, err
 	}
 	var out ConversationResponse
 	if err := c.post(ctx, reversalPath, r, &out); err != nil {
+		var me *MpesaError
+		if !errors.As(err, &me) {
+			c.rollbackDaily(ServiceReversal, r.Amount)
+		}
 		return nil, err
 	}
 	return &out, nil
@@ -991,6 +1022,10 @@ func (c *Client) C2BSimulate(ctx context.Context, r C2BSimulateRequest) (*C2BAck
 	}
 	var out C2BAckResponse
 	if err := c.post(ctx, c2bSimulatePath, r, &out); err != nil {
+		var me *MpesaError
+		if !errors.As(err, &me) {
+			c.rollbackDaily(ServiceC2B, r.Amount)
+		}
 		return nil, err
 	}
 	return &out, nil
@@ -1002,11 +1037,15 @@ func (c *Client) GenerateQRCode(ctx context.Context, r QRCodeRequest) (*QRCodeRe
 	if err := r.ValidateWithLimits(c.limits); err != nil {
 		return nil, err
 	}
-	if err := c.checkDaily(ServiceDefault, r.Amount); err != nil {
+	if err := c.checkDaily(ServiceQR, r.Amount); err != nil {
 		return nil, err
 	}
 	var out QRCodeResponse
 	if err := c.post(ctx, qrCodePath, r, &out); err != nil {
+		var me *MpesaError
+		if !errors.As(err, &me) {
+			c.rollbackDaily(ServiceQR, r.Amount)
+		}
 		return nil, err
 	}
 	return &out, nil

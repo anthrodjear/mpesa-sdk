@@ -316,14 +316,19 @@ class MpesaClient:
         dispatch (every ``stk_push``/``b2c_payout``/``c2b_simulate``/
         ``reversal``/``generate_qr_code`` accrues, then calls
         :meth:`_post_model`). A failed send AFTER accrue does NOT roll
-        back -- gateway rejections, transport errors and 401-retry
-        failures all keep their reservation. Only a pre-dispatch
-        rejection (validation or daily-ceiling ``ValueError``) costs
-        nothing, because it never accrues.
+        back -- gateway rejections and 401-retry failures all keep their
+        reservation. Transport-level failures
+        (``requests.exceptions.RequestException``) DO roll back via
+        :meth:`_rollback_daily`, so a network blip does not permanently
+        drain the budget for a payment that never reached Daraja.
+        Only a pre-dispatch rejection (validation or daily-ceiling
+        ``ValueError``) costs nothing, because it never accrues.
 
-        BUCKETS: ``reversal`` and ``generate_qr_code`` share the single
-        ``"default"`` daily bucket (see :mod:`mpesa.limits`); every other
-        amount-bearing endpoint has its own bucket.
+        BUCKETS: ``reversal`` and ``generate_qr_code`` each get their own
+        daily bucket (``"reversal"`` and ``"qr"`` respectively; see
+        :mod:`mpesa.limits`); every other amount-bearing endpoint has its
+        own bucket. ``Transaction Status`` has no amount, so it never
+        accrues.
 
         Raises:
             ValueError: the running total for this Nairobi day would pass
@@ -337,8 +342,12 @@ class MpesaClient:
             return
         with self._daily_lock:
             day = _daily_boundary(self._now())
-            if day != self._daily_day:
+            if self._daily_day is None or day > self._daily_day:
                 # New Nairobi day: a fresh quota for every service.
+                # Forward-only compare (ISO strings sort lexicographically):
+                # a backward clock jump (NTP correction) reuses today's
+                # budget instead of resetting early and letting a
+                # double-spend through a fresh quota.
                 self._daily_day, self._daily_used = day, {}
             used = self._daily_used.get(service, 0)
             if used + amount > ceiling:
@@ -352,6 +361,23 @@ class MpesaClient:
                     f"the field unset (None) to keep the Safaricom default, "
                     f"or set it to 0 to disable the daily ceiling")
             self._daily_used[service] = used + amount
+
+    def _rollback_daily(self, service: str, amount: int) -> None:
+        """Return *amount* to *service*'s daily quota after a transport error.
+
+        Called only on ``requests.exceptions.RequestException`` (Go
+        ``recordTransportRollback`` parity): the payment never reached
+        Daraja, so the reservation must not persist. Gateway
+        rejections and validation errors keep their reservation -- the
+        request WAS sent and the gateway's verdict is authoritative.
+        Clamped at zero: concurrent accruals and clock skew can make the
+        running total smaller than *amount*; we never drive it negative.
+        """
+        if not self._cfg.track_daily:
+            return
+        with self._daily_lock:
+            current = self._daily_used.get(service, 0)
+            self._daily_used[service] = max(0, current - amount)
 
     def _daily_ceiling(self, service: str) -> int | None:
         """Resolved ``max_per_day`` for *service* (None = unlimited).
@@ -399,7 +425,16 @@ class MpesaClient:
             timeout=self._timeout, allow_redirects=False, stream=True,
             headers={"Authorization": f"Bearer {token}",
                      "Content-Type": "application/json"})
-        body = read_capped(response, f"{path} response")
+        try:
+            body = read_capped(response, f"{path} response")
+        except ValueError as exc:
+            # Oversize body: the response arrived but exceeds the
+            # accumulation bound. Typed MpesaError(413) matches Go/TS
+            # parity -- the SDK surfaces HTTP-level failures as
+            # MpesaError, not as a bare ValueError that callers cannot
+            # distinguish from a validation failure.
+            raise MpesaError(
+                413, error_message=f"mpesa: {path} response {exc}") from exc
         content_type = response.headers.get("content-type", "")
         return response.status_code, content_type, body
 
@@ -415,8 +450,9 @@ class MpesaClient:
         ACCOUNTING: callers accrue the daily quota BEFORE this dispatch
         (see :meth:`_accrue_daily`); failures raised here -- gateway
         non-2xx, transport errors -- do NOT roll the reservation back
-        (consumed-on-attempt). Reversal and dynamic QR share the single
-        ``"default"`` daily bucket.
+        (consumed-on-attempt). Callers that need rollback on transport
+        errors catch ``requests.exceptions.RequestException`` at the
+        endpoint level and call :meth:`_rollback_daily`.
         """
         token, gen = self._tokens.get_token_with_gen()
         status_code, content_type, body = self._send(
@@ -453,7 +489,11 @@ class MpesaClient:
             req.business_short_code, self._cfg.passkey, self._now())
         payload = {**req.to_payload(), "Password": password,
                    "Timestamp": timestamp}
-        return self._post_model(STK_PUSH_PATH, payload, STKPushResponse)
+        try:
+            return self._post_model(STK_PUSH_PATH, payload, STKPushResponse)
+        except requests.exceptions.RequestException:
+            self._rollback_daily("stk", req.amount)
+            raise
 
     def stk_query(self, req: STKQueryRequest) -> STKQueryResponse:
         """Check a push outcome when callbacks are late
@@ -499,7 +539,11 @@ class MpesaClient:
             req.party_a = self._cfg.shortcode
         req.validate(self._limits)
         self._accrue_daily("b2c", req.amount)
-        return self._post_model(B2C_PATH, req.to_payload(), B2CResponse)
+        try:
+            return self._post_model(B2C_PATH, req.to_payload(), B2CResponse)
+        except requests.exceptions.RequestException:
+            self._rollback_daily("b2c", req.amount)
+            raise
 
     def transaction_status(
             self, req: TransactionStatusRequest) -> ConversationResponse:
@@ -524,9 +568,9 @@ class MpesaClient:
         """Reverse a recent C2B transaction -- C2B ONLY
         (docs/apis/reversal.md); CommandID <- REVERSAL when unset.
 
-        Daily quota accrues against the shared ``"default"`` bucket (same
-        bucket as dynamic QR; see :meth:`_accrue_daily`), consumed-on-
-        attempt with no rollback on post-accrue failures.
+        Daily quota accrues against the dedicated ``"reversal"`` bucket
+        (see :meth:`_accrue_daily`), consumed-on-attempt with transport-
+        error rollback only.
 
         Example::
 
@@ -536,9 +580,13 @@ class MpesaClient:
         if not req.command_id:
             req.command_id = CommandID.REVERSAL
         req.validate(self._limits)
-        self._accrue_daily("default", req.amount)
-        return self._post_model(REVERSAL_PATH, req.to_payload(),
-                                ConversationResponse)
+        self._accrue_daily("reversal", req.amount)
+        try:
+            return self._post_model(REVERSAL_PATH, req.to_payload(),
+                                    ConversationResponse)
+        except requests.exceptions.RequestException:
+            self._rollback_daily("reversal", req.amount)
+            raise
 
     def account_balance(
             self, req: AccountBalanceRequest) -> ConversationResponse:
@@ -586,8 +634,12 @@ class MpesaClient:
             req.short_code = self._cfg.shortcode
         req.validate(self._limits)
         self._accrue_daily("c2b", req.amount)
-        return self._post_model(C2B_SIMULATE_PATH, req.to_payload(),
-                                C2BAckResponse)
+        try:
+            return self._post_model(C2B_SIMULATE_PATH, req.to_payload(),
+                                    C2BAckResponse)
+        except requests.exceptions.RequestException:
+            self._rollback_daily("c2b", req.amount)
+            raise
 
     def generate_qr_code(self, req: QRCodeRequest) -> QRCodeResponse:
         """Create a dynamic QR payload, fully synchronous
@@ -598,9 +650,9 @@ class MpesaClient:
         trx_code/cpi/size in place), so the caller's object is never
         mutated -- parity with the other 8 endpoints.
 
-        Daily quota accrues against the shared ``"default"`` bucket (same
-        bucket as Reversal; see :meth:`_accrue_daily`), consumed-on-
-        attempt with no rollback on post-accrue failures.
+        Daily quota accrues against the dedicated ``"qr"`` bucket
+        (see :meth:`_accrue_daily`), consumed-on-attempt with transport-
+        error rollback only.
 
         Example::
 
@@ -608,6 +660,10 @@ class MpesaClient:
         """
         req = dataclasses.replace(req)
         req.validate(self._limits)
-        self._accrue_daily("default", req.amount)
-        return self._post_model(QR_CODE_PATH, req.to_payload(),
-                                QRCodeResponse)
+        self._accrue_daily("qr", req.amount)
+        try:
+            return self._post_model(QR_CODE_PATH, req.to_payload(),
+                                    QRCodeResponse)
+        except requests.exceptions.RequestException:
+            self._rollback_daily("qr", req.amount)
+            raise

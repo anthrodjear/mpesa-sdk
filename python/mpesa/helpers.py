@@ -45,10 +45,17 @@ def generate_password(shortcode: str, passkey: str, at: datetime) -> tuple[str, 
         # -> ("MTc0Mzc5...MTIyNDA4", "20210628122408")
 
     Raises:
-        ValueError: if *at* is naive.
+        ValueError: if *at* is naive, or if *passkey* is empty/whitespace.
+            An empty passkey would silently produce a credential derived
+            from shortcode+timestamp alone -- the gateway would reject it
+            with an opaque ``500.001.1001``, and the real cause (missing
+            config) would be invisible. Go/TS parity: both reject empty
+            passkey before derivation.
     """
     if at.tzinfo is None:
         raise ValueError("mpesa: timestamp must be timezone-aware")
+    if not passkey:
+        raise ValueError("mpesa: passkey must not be empty")
     timestamp = at.astimezone(EAT).strftime("%Y%m%d%H%M%S")
     password = base64.b64encode((shortcode + passkey + timestamp).encode()).decode()
     return password, timestamp

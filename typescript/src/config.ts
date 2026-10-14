@@ -87,6 +87,7 @@ import {
   DEFAULT_TRANSACTION_LIMITS,
   LIMIT_SERVICE_KEYS,
   resolveTransactionLimits,
+  type PartialTransactionLimits,
   type TransactionLimits,
 } from "./limits.js";
 
@@ -189,7 +190,7 @@ export class Config {
    */
   readonly trackDaily: boolean;
   /** Raw (pre-merge) limits argument, kept only for shape validation. */
-  private readonly _rawLimits: TransactionLimits | undefined;
+  private readonly _rawLimits: PartialTransactionLimits | undefined;
 
   /**
    * Build a validated Config.
@@ -223,7 +224,7 @@ export class Config {
     shortcode?: string;
     passkey: string;
     environment?: Environment;
-    limits?: TransactionLimits;
+    limits?: PartialTransactionLimits;
     trackDaily?: boolean;
   }) {
     this.consumerKey = opts.consumerKey;

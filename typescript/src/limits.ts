@@ -50,25 +50,41 @@ export interface TransactionLimits {
   c2b: ServiceLimits;
   /** B2C (Business to Customer payouts). */
   b2c: ServiceLimits;
-  /** Fallback bucket: Reversal, Transaction Status, Dynamic QR, anything unspecialized. */
+  /** Reversal. */
+  reversal: ServiceLimits;
+  /** Dynamic QR. */
+  qr: ServiceLimits;
+  /** Fallback bucket: Transaction Status, anything unspecialized. */
   default: ServiceLimits;
 }
 
 /**
- * Service bucket keys. `"default"` is the fallback for endpoints without a
- * dedicated bucket (Reversal / Transaction Status / Dynamic QR).
+ * Caller-facing input shape: any SUBSET of the service buckets. The
+ * documented `Config({ limits: { b2c: { … } } })` example is this type —
+ * requiring the full {@link TransactionLimits} on input would force callers
+ * to spell out every bucket just to raise one ceiling.
  */
-export type LimitService = "stk" | "c2b" | "b2c" | "default";
+export type PartialTransactionLimits = { [K in LimitService]?: ServiceLimits };
+
+/**
+ * Service bucket keys. `"default"` is the fallback for endpoints without a
+ * dedicated bucket (Transaction Status / anything unspecialized).
+ */
+export type LimitService = "stk" | "c2b" | "b2c" | "reversal" | "qr" | "default";
 
 /**
  * Default ceilings. B2C carries the standard Safaricom default (250_000
  * per transaction, 500_000 per day); Safaricom-approved higher tiers are
- * raised explicitly via Config limits overrides.
+ * raised explicitly via Config limits overrides. Reversal / Dynamic QR
+ * carry the same numbers the shared `default` bucket historically applied
+ * to them, so only explicit `default` overrides observe the split.
  */
 export const DEFAULT_TRANSACTION_LIMITS: TransactionLimits = {
   stk: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
   c2b: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
   b2c: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
+  reversal: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
+  qr: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
   default: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
 };
 
@@ -77,11 +93,13 @@ const SERVICE_LABELS: Record<LimitService, string> = {
   stk: "STK Push",
   c2b: "C2B",
   b2c: "B2C",
+  reversal: "Reversal",
+  qr: "Dynamic QR",
   default: "default",
 };
 
 /** Ordered service keys — drives the merge and the Config shape check. */
-const SERVICE_KEYS: readonly LimitService[] = ["stk", "c2b", "b2c", "default"];
+const SERVICE_KEYS: readonly LimitService[] = ["stk", "c2b", "b2c", "reversal", "qr", "default"];
 
 /** Africa/Nairobi is UTC+3 year-round (no DST) — a fixed offset suffices. */
 const NAIROBI_UTC_OFFSET_MS = 3 * 60 * 60 * 1000;
@@ -144,13 +162,16 @@ RESOLVED_LIMITS.add(DEFAULT_TRANSACTION_LIMITS);
  * resolveTransactionLimits({ b2c: { maxPerTransaction: 700_000 } });
  * // b2c.maxPerTransaction = 700000, b2c.maxPerDay = 500000 (standard
  * // Safaricom default; approved-tier merchants raise via Config limits),
- * // stk/c2b/default untouched.
+ * // stk/c2b/reversal/qr/default untouched.
  * ```
  */
 export function resolveTransactionLimits(
-  partial?: TransactionLimits,
+  partial?: PartialTransactionLimits,
 ): TransactionLimits {
-  if (partial !== undefined && RESOLVED_LIMITS.has(partial)) return partial;
+  // Idempotency by identity: anything already in RESOLVED_LIMITS is a
+  // COMPLETE TransactionLimits (the marker is only ever added post-merge),
+  // even though the parameter type accepts partials.
+  if (partial !== undefined && RESOLVED_LIMITS.has(partial)) return partial as TransactionLimits;
   const merged = {} as Record<LimitService, ServiceLimits>;
   for (const key of SERVICE_KEYS) {
     const want = partial?.[key];

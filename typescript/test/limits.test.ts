@@ -20,6 +20,7 @@ import {
   nairobiDayKey,
   resolveTransactionLimits,
   type LimitService,
+  type PartialTransactionLimits,
   type TransactionLimits,
 } from "../src/limits.js";
 
@@ -80,7 +81,7 @@ function mockTransport(): void {
   });
 }
 
-function makeClient(opts?: { limits?: TransactionLimits; trackDaily?: boolean }): MpesaClient {
+function makeClient(opts?: { limits?: PartialTransactionLimits; trackDaily?: boolean }): MpesaClient {
   return new MpesaClient({
     config: new Config({
       consumerKey: "test-key",
@@ -180,7 +181,7 @@ function qrReq(amount: number) {
 // ---------------------------------------------------------------------------
 
 interface ParityRow {
-  readonly input: TransactionLimits | undefined;
+  readonly input: PartialTransactionLimits | undefined;
   readonly service: LimitService;
   readonly probe: number;
   readonly expected: "accept" | "reject";
@@ -320,8 +321,10 @@ const PARITY_TABLE: ReadonlyArray<readonly [string, ParityRow]> = [
   [
     "override_lowers_ceiling",
     {
-      input: { default: { maxPerTransaction: 1_000 } },
-      service: "default",
+      // The override targets the service's OWN bucket — Reversal and QR
+      // no longer fall through to `default` (dedicated buckets).
+      input: { reversal: { maxPerTransaction: 1_000 } },
+      service: "reversal",
       probe: 1_001,
       expected: "reject",
       expectCeiling: 1_000,
@@ -362,8 +365,12 @@ describe("CROSS-LANGUAGE PARITY MATRIX (shared with go/limits_fix_test.go and py
         return client.c2bSimulate(c2bSimReq(amount));
       case "b2c":
         return client.b2cPayout(b2cReq(amount));
-      case "default":
+      case "reversal":
         return client.reversal(reversalReq(amount));
+      case "qr":
+        return client.generateQRCode(qrReq(amount));
+      default:
+        throw new Error(`no dispatch for service ${String(service)}`);
     }
   }
 
@@ -414,7 +421,7 @@ describe("CROSS-LANGUAGE PARITY MATRIX (shared with go/limits_fix_test.go and py
   it("resolution_happens_once_at_config_construction__no_per_request_drift", () => {
     // The client consumes the object Config resolved at construction: two
     // sequential calls with a mutated raw input cannot change the ceiling.
-    const raw: TransactionLimits = { stk: { maxPerTransaction: 100 } };
+    const raw: PartialTransactionLimits = { stk: { maxPerTransaction: 100 } };
     const client = makeClient({ limits: raw });
     (raw.stk as { maxPerTransaction: number }).maxPerTransaction = 999_999;
     mockTransport();
@@ -440,6 +447,8 @@ describe("limit defaults and merge semantics", () => {
       stk: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
       c2b: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
       b2c: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
+      reversal: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
+      qr: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
       default: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
     });
   });
@@ -590,13 +599,27 @@ describe("per-transaction limits", () => {
     expect(businessHits).toBe(1);
   });
 
-  it("the `default` bucket gates Reversal and Dynamic QR", async () => {
+  it("Reversal and Dynamic QR have their own buckets; `default` no longer gates them", async () => {
+    // A `default` override does NOT reach Reversal/QR — they read their
+    // own buckets (250_000/500_000 defaults).
     const client = makeClient({ limits: { default: { maxPerTransaction: 1_000 } } });
-    await expect(client.reversal(reversalReq(2_000))).rejects.toThrow(/per-transaction limit of 1000/);
-    await expect(client.generateQRCode(qrReq(2_000))).rejects.toThrow(/per-transaction limit of 1000/);
-    await client.reversal(reversalReq(1_000));
-    await client.generateQRCode(qrReq(1_000));
+    await client.reversal(reversalReq(2_000));
+    await client.generateQRCode(qrReq(2_000));
     expect(businessHits).toBe(2);
+
+    // Their own buckets DO gate them.
+    const gated = makeClient({
+      limits: { reversal: { maxPerTransaction: 1_000 }, qr: { maxPerTransaction: 500 } },
+    });
+    await expect(gated.reversal(reversalReq(1_001))).rejects.toThrow(
+      /Reversal amount 1001 exceeds the configured per-transaction limit of 1000/,
+    );
+    await expect(gated.generateQRCode(qrReq(501))).rejects.toThrow(
+      /Dynamic QR amount 501 exceeds the configured per-transaction limit of 500/,
+    );
+    await gated.reversal(reversalReq(1_000));
+    await gated.generateQRCode(qrReq(500));
+    expect(businessHits).toBe(4);
   });
 
   it("keeps the B2C >= 10 minimum exactly as before", async () => {
@@ -655,6 +678,58 @@ describe("daily limits (trackDaily)", () => {
     nowMs = DAY2_POST_MIDNIGHT_MS; // 2026-01-02 00:00:30 EAT
     await client.stkPush(stkReq(300_000));
     expect(businessHits).toBe(2);
+  });
+
+  it("rolls the daily accrual back on TRANSPORT failure, keeps it on gateway errors", async () => {
+    const client = makeClient({
+      limits: { stk: { maxPerTransaction: 0, maxPerDay: 500_000 } },
+      trackDaily: true,
+    });
+
+    // (a) Transport failure (fetch rejects) — the reservation is refunded,
+    //     so the same amount fits again (300_000 + 300_000 would otherwise
+    //     exceed 500_000).
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
+      throw new TypeError("fetch failed");
+    });
+    await expect(client.stkPush(stkReq(300_000))).rejects.toThrow(/fetch failed/);
+    mockTransport();
+    await client.stkPush(stkReq(300_000));
+    expect(businessHits).toBe(1);
+
+    // (b) Gateway rejection (400 + MpesaError) — the reservation STICKS:
+    //     300_000 stays charged, so a further 150_001 would total > 400_000.
+    const gated = makeClient({
+      limits: { stk: { maxPerTransaction: 0, maxPerDay: 400_000 } },
+      trackDaily: true,
+    });
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
+      return jsonResponse(
+        { errorCode: "400.000.01", errorMessage: "bad", requestID: "r", conversationID: "c" },
+        400,
+      );
+    });
+    await expect(gated.stkPush(stkReq(300_000))).rejects.toThrow(MpesaError);
+    mockTransport();
+    await expect(gated.stkPush(stkReq(150_001))).rejects.toThrow(/daily limit reached/);
+    await gated.stkPush(stkReq(100_000));
+  });
+
+  it("a backward clock step never wipes accumulated budget (forward-only day)", async () => {
+    const client = makeClient({
+      limits: { stk: { maxPerTransaction: 0, maxPerDay: 300_000 } },
+      trackDaily: true,
+    });
+    nowMs = DAY2_POST_MIDNIGHT_MS;
+    await client.stkPush(stkReq(300_000));
+    // Clock steps BACK (NTP correction / VM restore) — budget survives.
+    nowMs = DAY1_PRE_MIDNIGHT_MS;
+    await expect(client.stkPush(stkReq(1))).rejects.toThrow(/daily limit reached/);
+    expect(businessHits).toBe(1);
   });
 
   it("concurrent async callers accumulate exactly once each", async () => {

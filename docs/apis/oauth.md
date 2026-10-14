@@ -76,7 +76,7 @@ Match on the prefix, not on the whole string: the elapsed figure moves with the 
 
 ## Token Lifecycle & Caching (SDK requirements)
 
-1. TTL ≈ 1 hour → **cache and reuse until ≤ ~50 min old**; refresh proactively before expiry.
+1. TTL ≈ 1 hour → **cache and reuse until ≤ ~50 min old**; refresh proactively before expiry. Minimum refresh interval is 60 seconds (even if the gateway advertises a shorter `expires_in`) — this floor protects the token endpoint from a hostile or misconfigured response.
 2. **Requesting a new token invalidates the previous one** (official FAQ) — a naive multi-goroutine/thread refresh storm can invalidate in-flight tokens. Serialize refreshes:
    - Go: singleflight or `sync.RWMutex` around fetch (ADR-010 pattern)
    - Python: `threading.Lock`

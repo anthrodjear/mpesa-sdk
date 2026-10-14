@@ -652,10 +652,13 @@ describe("immutability", () => {
       passkey: "p",
     });
     expect(Object.isFrozen(cfg.limits)).toBe(true);
-    // Code freezes every LIMIT_SERVICE_KEYS bucket (stk, c2b, b2c, default).
+    // Code freezes every LIMIT_SERVICE_KEYS bucket
+    // (stk, c2b, b2c, reversal, qr, default).
     expect(Object.isFrozen(cfg.limits.stk)).toBe(true);
     expect(Object.isFrozen(cfg.limits.c2b)).toBe(true);
     expect(Object.isFrozen(cfg.limits.b2c)).toBe(true);
+    expect(Object.isFrozen(cfg.limits.reversal)).toBe(true);
+    expect(Object.isFrozen(cfg.limits.qr)).toBe(true);
     expect(Object.isFrozen(cfg.limits.default)).toBe(true);
     const before = cfg.limits.stk.maxPerTransaction;
     expect(() => {

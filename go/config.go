@@ -59,10 +59,15 @@ type Config struct {
 	// false negative that is worse than no ceiling at all. Enable it only
 	// when you know this process is the sole originator for the service.
 	TrackDaily bool
-	// ErrorLogger optionally receives detailed diagnostics for non-standard
-	// error responses (content-type, body snippet). When nil, detailed
-	// diagnostics are discarded. Not serialized by GoString/Format/MarshalJSON.
-	ErrorLogger ErrorLogger
+// ErrorLogger optionally receives detailed diagnostics for non-standard
+// error responses (content-type, body snippet). When nil, detailed
+// diagnostics are discarded. Not serialized by GoString/Format/MarshalJSON.
+ErrorLogger ErrorLogger
+// DisableRetryOnUnauthorized disables the automatic retry on 401.003.01
+// (invalid/expired token). Default is false (retry enabled). Set to true
+// to surface the 401 immediately without a refresh round-trip — useful for
+// observability or when the caller wants to manage refresh explicitly.
+DisableRetryOnUnauthorized bool
 }
 
 // resolvedLimits merges Config.Limits over the Safaricom baseline and returns
@@ -80,10 +85,12 @@ func (c Config) resolvedLimits() TransactionLimits {
 	}
 	over := *c.Limits
 	return TransactionLimits{
-		STK:     overlay(base.STK, over.STK),
-		C2B:     overlay(base.C2B, over.C2B),
-		B2C:     overlay(base.B2C, over.B2C),
-		Default: overlay(base.Default, over.Default),
+		STK:      overlay(base.STK, over.STK),
+		C2B:      overlay(base.C2B, over.C2B),
+		B2C:      overlay(base.B2C, over.B2C),
+		Reversal: overlay(base.Reversal, over.Reversal),
+		QR:       overlay(base.QR, over.QR),
+		Default:  overlay(base.Default, over.Default),
 	}
 }
 

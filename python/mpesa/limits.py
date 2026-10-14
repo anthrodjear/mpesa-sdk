@@ -118,6 +118,8 @@ def _resolve_transaction_limits(
         c2b=_merge_service(chosen.c2b, _DEFAULT_C2B),
         b2c=_merge_service(chosen.b2c, _DEFAULT_B2C),
         default=_merge_service(chosen.default, _DEFAULT_DEFAULT),
+        reversal=_merge_service(chosen.reversal, _DEFAULT_DEFAULT),
+        qr=_merge_service(chosen.qr, _DEFAULT_DEFAULT),
     )
 
 
@@ -166,13 +168,16 @@ class TransactionLimits:
     """PARTIAL per-service overrides for one :class:`~mpesa.config.Config`.
 
     Service selection is per ENDPOINT (see ``MpesaClient``): ``stk`` covers
-    STK Push, ``c2b`` covers C2B simulate, ``b2c`` covers B2C payout, and
-    ``default`` covers everything else that carries an amount (Reversal,
-    Transaction Status, dynamic QR). Reversal and dynamic QR therefore
-    share ONE ``default`` daily bucket when ``Config.track_daily`` is on
-    (``MpesaClient._accrue_daily("default", ...)`` for both), and the
-    daily quota is consumed-on-attempt: accrued before dispatch, never
-    rolled back on post-accrue gateway/transport failures.
+    STK Push, ``c2b`` covers C2B simulate, ``b2c`` covers B2C payout,
+    ``reversal`` covers Reversal, ``qr`` covers dynamic QR, and
+    ``default`` covers everything else that carries an amount (Transaction
+    Status, etc.). Reversal and dynamic QR each get their OWN daily
+    bucket when ``Config.track_daily`` is on (``MpesaClient._accrue_daily``
+    is called with the service name ``"reversal"`` or ``"qr"``
+    respectively). The daily quota is consumed-on-attempt: accrued before
+    dispatch, rolled back only on transport-level failures
+    (``requests.exceptions.RequestException``) so a network blip does not
+    permanently drain the budget.
 
     Each field is merged INDEPENDENTLY against its own default pair, so
     ``TransactionLimits(b2c=ServiceLimits(500_000, 2_500_000))`` is an
@@ -202,6 +207,8 @@ class TransactionLimits:
     c2b: ServiceLimits = ServiceLimits()
     b2c: ServiceLimits = ServiceLimits()
     default: ServiceLimits = ServiceLimits()
+    reversal: ServiceLimits = ServiceLimits()
+    qr: ServiceLimits = ServiceLimits()
 
 
 #: The documented baseline, resolved and ready to enforce (see the private

@@ -78,6 +78,7 @@ export {
 } from "./limits.js";
 export type {
   LimitService,
+  PartialTransactionLimits,
   ServiceLimits,
   TransactionLimits,
 } from "./limits.js";

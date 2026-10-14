@@ -3,6 +3,7 @@ package mpesa
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode"
@@ -17,6 +18,20 @@ type MpesaError struct {
 	ErrorCode    string
 	ErrorMessage string
 }
+
+// OversizeError is returned when a Daraja response exceeds maxResponseLen
+// (1 MiB). It carries HTTP 413 semantics so callers can detect it via
+// errors.As(*OversizeError). The path identifies which endpoint was oversized.
+type OversizeError struct {
+	Path string
+}
+
+func (e *OversizeError) Error() string {
+	return fmt.Sprintf("mpesa: %s response exceeds %d bytes", e.Path, maxResponseLen)
+}
+
+// ErrClientClosed is returned by operations on a closed Client.
+var ErrClientClosed = errors.New("mpesa: client is closed")
 
 // Error is a deprecated alias for MpesaError, kept for backward compatibility.
 // Existing code using mpesa.Error continues to compile; new code should use

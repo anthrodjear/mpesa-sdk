@@ -172,7 +172,9 @@ function requirePrintableMaxLen(field: string, value: string, max: number): void
  * - short-hand: `127.1` → 127.0.0.1 (the trailing part fills the
  *   REMAINING bytes, so it may exceed 255)
  * - bare 32-bit number: `2130706433`
- * - octal (leading zero): `017700000001`
+ * - octal (leading zero REQUIRED — `0177` is 127, but `177` is decimal
+ *   177, never 0o177; this is inet_aton's rule, and omitting it would
+ *   reject public addresses like `177.1.1.1` as loopback)
  * - hex (`0x` prefix): `0x7f000001`
  *
  * Rationale: the dotted-quad blocklist regex misses every one of these
@@ -191,7 +193,7 @@ function parseNumericIPv4(host: string): number | null {
     const part = parts[i] ?? "";
     let v: number;
     if (/^0[xX][0-9a-fA-F]+$/.test(part)) v = Number.parseInt(part.slice(2), 16);
-    else if (/^[0-7]+$/.test(part) && part.length > 1) v = Number.parseInt(part, 8);
+    else if (/^0[0-7]+$/.test(part)) v = Number.parseInt(part, 8);
     else if (/^\d+$/.test(part)) v = Number.parseInt(part, 10);
     else return null;
     if (!Number.isFinite(v) || v < 0 || v > 255) return null;
@@ -200,7 +202,7 @@ function parseNumericIPv4(host: string): number | null {
   const last = parts[parts.length - 1] ?? "";
   let lastV: number;
   if (/^0[xX][0-9a-fA-F]+$/.test(last)) lastV = Number.parseInt(last.slice(2), 16);
-  else if (/^[0-7]+$/.test(last) && last.length > 1) lastV = Number.parseInt(last, 8);
+  else if (/^0[0-7]+$/.test(last)) lastV = Number.parseInt(last, 8);
   else if (/^\d+$/.test(last)) lastV = Number.parseInt(last, 10);
   else return null;
   const bytesForLast = 4 - (parts.length - 1);
@@ -226,7 +228,7 @@ function isBlockedIPv4(host: string): boolean {
   if (a === 192 && b === 168) return true; // 192.168.0.0/16 private
   if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12 private
   if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local
-  if (a === 0 && b === 0 && c === 0 && d === 0) return true; // 0.0.0.0 unspecified
+  if (a === 0) return true; // 0.0.0.0/8 this-network (whole range, not just 0.0.0.0)
   if (a >= 224 && a <= 239) return true; // 224.0.0.0/4 multicast
   return false;
 }
@@ -414,12 +416,18 @@ function sharedTokenManager(
  *   cross-origin redirects strip `Authorization` while same-origin 307/308s
  *   would replay the Bearer token to the redirect target). A wrapper that
  *   drops or overrides `redirect` re-opens credential replay on 307/308.
+ * @property retryOnUnauthorized - Retry-once on HTTP 401 carrying
+ *   `401.003.01` (force-refresh + one re-attempt). Default `true`; set
+ *   `false` to surface the 401 immediately with NO second fetch and NO
+ *   forced token refresh (callers that mint their own credentials per
+ *   request, or that must not invalidate sibling tokens, opt out).
  */
 export interface MpesaClientOptions {
   readonly config: Config;
   readonly timeoutMs?: number;
   readonly now?: () => number;
   readonly fetch?: typeof globalThis.fetch;
+  readonly retryOnUnauthorized?: boolean;
 }
 
 /**
@@ -448,6 +456,8 @@ export class MpesaClient {
   private readonly _now: () => number;
   /** Injectable fetch for proxies, tracing, or custom transports. */
   private readonly _fetch: typeof globalThis.fetch;
+  /** Whether a 401.003.01 triggers the retry-once + forced refresh. */
+  private readonly _retryOnUnauthorized: boolean;
   /** Token manager with generation-guarded caching. */
   private readonly _tokens: TokenManager;
   /**
@@ -482,6 +492,7 @@ export class MpesaClient {
       : DEFAULT_TIMEOUT_MS;
     this._now = opts.now ?? (() => Date.now());
     this._fetch = opts.fetch ?? globalThis.fetch.bind(globalThis);
+    this._retryOnUnauthorized = opts.retryOnUnauthorized ?? true;
     this._limits = opts.config.limits;
     this._trackDaily = opts.config.trackDaily;
     // Pure-default clients share one process-wide TokenManager per
@@ -635,22 +646,39 @@ export class MpesaClient {
    * exactly once.
    *
    * @param service - Service bucket the amount is spent under
-   *   (`stk`/`c2b`/`b2c`/`default`).
+   *   (`stk`/`c2b`/`b2c`/`reversal`/`qr`/`default`).
    * @param amount - Whole-KES amount about to be dispatched.
+   * @returns A rollback thunk: refunds the daily accrual when the
+   *   TRANSPORT fails (fetch throws/aborts — the request may never have
+   *   reached the gateway). Gateway rejections (`MpesaError`) keep the
+   *   reservation — a request that left the process was an attempt.
+   *   The thunk no-ops if the Nairobi day rolled over since accrual.
    * @throws {MpesaError} 400 when a configured ceiling is exceeded (the
    *   request is never sent).
    */
-  private _enforceLimits(service: LimitService, amount: number): void {
+  private _enforceLimits(service: LimitService, amount: number): () => void {
     enforcePerTransactionLimit(service, amount, this._limits);
-    if (!this._trackDaily) return;
+    if (!this._trackDaily) return () => {};
     const day = nairobiDayKey(this._now());
-    if (day !== this._dailyDay) {
+    // Forward-only day compare: a backward clock step (NTP correction,
+    // VM restore) must never WIPE accumulated budget — only crossing into
+    // a NEWER Nairobi day resets. (`""` before the first tracked call
+    // sorts below every real day key, so the first call still resets.)
+    if (day > this._dailyDay) {
       this._dailyUsed.clear();
       this._dailyDay = day;
     }
     const used = this._dailyUsed.get(service) ?? 0;
     checkDailyLimit(service, amount, this._limits, used);
     this._dailyUsed.set(service, used + amount);
+    return () => {
+      if (this._dailyDay !== day) return; // day rolled — nothing to credit back
+      const current = this._dailyUsed.get(service);
+      if (current === undefined) return;
+      const next = current - amount;
+      if (next > 0) this._dailyUsed.set(service, next);
+      else this._dailyUsed.delete(service);
+    };
   }
 
   // ── Shared POST helper ────────────────────────────────────────────────────
@@ -659,15 +687,21 @@ export class MpesaClient {
    * Perform an authenticated business call. On HTTP 401 carrying
    * errorCode `401.003.01` (invalid/expired token) it force-refreshes
    * the token once under the generation guard and retries the business
-   * call exactly once before surfacing errors.
+   * call exactly once before surfacing errors (unless
+   * `retryOnUnauthorized: false` was configured).
    *
    * Response bodies are capped at 1 MiB — oversized payloads are
    * rejected with a typed error before any parsing attempt.
+   *
+   * @param opts.onTransportError - Refund hook invoked ONLY when the
+   *   fetch itself throws (transport failure) — never for gateway
+   *   responses, including 413 oversize and non-2xx `MpesaError`.
    */
   private async _post<T>(
     path: string,
     payload: unknown,
     out: (body: string) => T,
+    opts?: { onTransportError?: () => void },
   ): Promise<T> {
     const [tok, gen] = await this._tokens.getTokenWithGen();
     const attempt = async (token: string): Promise<{ status: number; contentType: string; body: string }> => {
@@ -692,6 +726,11 @@ export class MpesaClient {
             signal: controller.signal,
           });
         } catch (err) {
+          // Transport-level failure: the request may never have reached
+          // the gateway, so the daily accrual taken at the gate is
+          // refunded (transport-only rollback — gateway responses below
+          // keep the reservation).
+          opts?.onTransportError?.();
           const msg = err instanceof Error ? err.message : String(err);
           throw new Error(`mpesa: POST ${path}: ${msg}`);
         }
@@ -728,7 +767,7 @@ export class MpesaClient {
     // leniently: `JSON.parse("null")` succeeds but a `TypeError` on the
     // property read would escape the typed error contract, so a
     // non-object body simply means "no envelope, do not retry".
-    if (result.status === 401) {
+    if (result.status === 401 && this._retryOnUnauthorized) {
       const probe = tryDecodeJsonObject(result.body);
       if (probe?.["errorCode"] === ERR_CODE_INVALID_TOKEN) {
         const freshTok = await this._tokens.refreshAfterInvalidToken(gen);
@@ -807,7 +846,7 @@ export class MpesaClient {
 
     // Configurable limits gate — fail fast before any network I/O
     // (per-transaction always; daily only when trackDaily is on).
-    this._enforceLimits("stk", r.amount);
+    const rollbackDaily = this._enforceLimits("stk", r.amount);
 
     // Build payload with injected Password/Timestamp.
     // NOTE: no Occassion here — Go/Py never send it on STK Push; the
@@ -826,8 +865,11 @@ export class MpesaClient {
       TransactionDesc: r.transactionDesc,
     };
 
-    return this._post(STK_PUSH_PATH, payload, (body) =>
-      decodeJsonObject<STKPushResponse>(body, STK_PUSH_PATH),
+    return this._post(
+      STK_PUSH_PATH,
+      payload,
+      (body) => decodeJsonObject<STKPushResponse>(body, STK_PUSH_PATH),
+      { onTransportError: rollbackDaily },
     );
   }
 
@@ -862,7 +904,19 @@ export class MpesaClient {
     requirePrintableMaxLen("CheckoutRequestID", r.checkoutRequestID, 64);
 
     // Determine effective shortcode for password derivation
-    const effectiveShortcode = r.businessShortCode || this._config.shortcode;
+    // (request value, else config). Python `_shortcode` parity
+    // (python/mpesa/requests_sync.py): the EFFECTIVE value must be 5–10
+    // ASCII digits — an empty/garbage shortcode fails HERE as a local
+    // error, never as a gateway 500. Trim first (Python strips before
+    // validating); the trimmed value is what reaches the wire.
+    const effectiveShortcode = (r.businessShortCode || this._config.shortcode).trim();
+    if (!/^\d{5,10}$/.test(effectiveShortcode)) {
+      throw effectiveShortcode === ""
+        ? new Error("mpesa: BusinessShortCode is required")
+        : new Error(
+            `mpesa: BusinessShortCode must be 5-10 ASCII digits (got ${effectiveShortcode.length} characters)`,
+          );
+    }
 
     const { password, timestamp } = generatePassword(
       effectiveShortcode,
@@ -871,17 +925,14 @@ export class MpesaClient {
     );
 
     // Hand-built flat payload — BusinessShortCode participates in
-    // password derivation alongside the injected fields. Omitted when
-    // empty (Go `omitempty` parity): sending `"BusinessShortCode": ""`
-    // against the gateway reads as a malformed shortcode.
+    // password derivation alongside the injected fields (always
+    // non-empty here: the `_shortcode` gate above already rejected "").
     const payload: Record<string, unknown> = {
       Password: password,
       Timestamp: timestamp,
       CheckoutRequestID: r.checkoutRequestID,
+      BusinessShortCode: effectiveShortcode,
     };
-    if (effectiveShortcode !== "") {
-      payload["BusinessShortCode"] = effectiveShortcode;
-    }
 
     return this._post(STK_QUERY_PATH, payload, (body) => {
       const parsed = decodeJsonObject<STKQueryResponse>(body, STK_QUERY_PATH);
@@ -952,7 +1003,7 @@ export class MpesaClient {
 
     // Configurable limits gate — fail fast before any network I/O
     // (per-transaction always; daily only when trackDaily is on).
-    this._enforceLimits("b2c", r.amount);
+    const rollbackDaily = this._enforceLimits("b2c", r.amount);
 
     // Build payload — only include Occassion when defined
     const payload: Record<string, unknown> = {
@@ -971,8 +1022,11 @@ export class MpesaClient {
       payload["Occassion"] = r.occasion;
     }
 
-    return this._post(B2C_PATH, payload, (body) =>
-      decodeJsonObject<ConversationResponse>(body, B2C_PATH),
+    return this._post(
+      B2C_PATH,
+      payload,
+      (body) => decodeJsonObject<ConversationResponse>(body, B2C_PATH),
+      { onTransportError: rollbackDaily },
     );
   }
 
@@ -1097,9 +1151,9 @@ export class MpesaClient {
     requireURL("ResultURL", r.resultURL);
     requireURL("QueueTimeOutURL", r.queueTimeOutURL);
 
-    // Configurable limits gate — `default` bucket (Reversal has no
-    // dedicated tier). Fail fast before any network I/O.
-    this._enforceLimits("default", r.amount);
+    // Configurable limits gate — dedicated `reversal` bucket (split from
+    // the shared `default` bucket). Fail fast before any network I/O.
+    const rollbackDaily = this._enforceLimits("reversal", r.amount);
 
     // Build payload — include RecieverIdentifierType (misspelled wire key)
     const payload: Record<string, unknown> = {
@@ -1115,8 +1169,11 @@ export class MpesaClient {
       Remarks: r.remarks,
     };
 
-    return this._post(REVERSAL_PATH, payload, (body) =>
-      decodeJsonObject<ConversationResponse>(body, REVERSAL_PATH),
+    return this._post(
+      REVERSAL_PATH,
+      payload,
+      (body) => decodeJsonObject<ConversationResponse>(body, REVERSAL_PATH),
+      { onTransportError: rollbackDaily },
     );
   }
 
@@ -1268,7 +1325,7 @@ export class MpesaClient {
 
     // Configurable limits gate — fail fast before any network I/O
     // (per-transaction always; daily only when trackDaily is on).
-    this._enforceLimits("c2b", r.amount);
+    const rollbackDaily = this._enforceLimits("c2b", r.amount);
 
     // Build payload
     const payload: Record<string, unknown> = {
@@ -1281,8 +1338,11 @@ export class MpesaClient {
       payload["BillRefNumber"] = r.billRefNumber;
     }
 
-    return this._post(C2B_SIMULATE_PATH, payload, (body) =>
-      decodeJsonObject<C2BAckResponse>(body, C2B_SIMULATE_PATH),
+    return this._post(
+      C2B_SIMULATE_PATH,
+      payload,
+      (body) => decodeJsonObject<C2BAckResponse>(body, C2B_SIMULATE_PATH),
+      { onTransportError: rollbackDaily },
     );
   }
 
@@ -1329,9 +1389,9 @@ export class MpesaClient {
     r.cpi = cpi;
     r.size = size;
 
-    // Configurable limits gate — `default` bucket (Dynamic QR has no
-    // dedicated tier). Fail fast before any network I/O.
-    this._enforceLimits("default", r.amount);
+    // Configurable limits gate — dedicated `qr` bucket (split from the
+    // shared `default` bucket). Fail fast before any network I/O.
+    const rollbackDaily = this._enforceLimits("qr", r.amount);
 
     // Build payload
     const payload: Record<string, unknown> = {
@@ -1343,8 +1403,11 @@ export class MpesaClient {
       Size: r.size,
     };
 
-    return this._post(QR_CODE_PATH, payload, (body) =>
-      decodeJsonObject<QRCodeResponse>(body, QR_CODE_PATH),
+    return this._post(
+      QR_CODE_PATH,
+      payload,
+      (body) => decodeJsonObject<QRCodeResponse>(body, QR_CODE_PATH),
+      { onTransportError: rollbackDaily },
     );
   }
 }
