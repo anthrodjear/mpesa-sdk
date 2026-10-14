@@ -174,12 +174,19 @@ class TokenManager:
 
     @staticmethod
     def _cadence(expires_in_seconds: int | None) -> float:
-        """Eager window: TTL minus 60s safety, clamped to [1s, 3000s];
-        unknown/zero TTL falls back to the legacy 3000s cadence."""
+        """Eager window: TTL minus 60s safety, clamped to [60s, 3000s];
+        unknown/zero TTL falls back to the legacy 3000s cadence.
+
+        Parity with TypeScript ``client.ts refreshCadence``: the floor is
+        60 seconds, not 1. A token whose TTL is barely above the 60s
+        safety margin still gets a full 60s cadence rather than being
+        re-requested on nearly every call (the old 1s floor produced
+        sub-second refresh storms on short-lived tokens).
+        """
         seconds = expires_in_seconds or 0
         if seconds <= 0:
             return 3000.0
-        return max(1.0, min(seconds - 60, 3000))
+        return max(60.0, min(seconds - 60, 3000))
 
     def _refresh_locked(self, force: bool = False) -> str:
         """Hard OAuth round-trip against
@@ -199,6 +206,13 @@ class TokenManager:
         -- a typed SDK exception (RuntimeError subclass) instead of a bare
         ``RuntimeError``, so callers can distinguish "Daraja/we are
         throttling YOU" from a programming error without string matching.
+
+        On failure the attempt clock is RE-STAMPED to the current instant
+        (Go ``recordRefreshFailure`` parity): the gate above stamps at
+        attempt start, but a long OAuth round-trip (timeout, DNS stall)
+        means the stamp taken on entry can be seconds old by the time the
+        exception arrives. Re-stamping in the ``except`` block keeps the
+        3-in-5s window honest against wall-clock drift.
         """
         if not self._consumer_key or not self._consumer_secret:
             raise ValueError(_CREDENTIALS_MSG)
@@ -252,6 +266,10 @@ class TokenManager:
             return self._token
         except Exception:
             self._failures += 1
+            # Re-stamp on failure so the 3-in-5s gate measures from the
+            # moment the failed attempt LANDED, not from when it started.
+            # Mirrors Go recordRefreshFailure.
+            self._last_attempt = self._now()
             raise
 
     @property

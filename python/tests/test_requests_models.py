@@ -381,3 +381,47 @@ def test_omission_pins():
 def test_extended_rejection_table(req):
     with pytest.raises(ValueError):
         req.validate()
+
+
+# ---- repr redaction (Fix #11) ------------------------------------------------
+
+def test_stk_push_repr_redacts_callback_url():
+    """STKPushRequest repr must never leak call_back_url (which can embed
+    signed tokens) into logs or tracebacks.
+    """
+    req = stk_good(call_back_url="https://mydomain.com/cb?token=SECRET123")
+    rendered = repr(req)
+    assert "SECRET123" not in rendered
+    assert "call_back_url" not in rendered
+    assert "credentials=REDACTED" in rendered
+    # Safe fields are still visible.
+    assert "business_short_code='174379'" in rendered
+    assert "amount=1" in rendered
+
+
+def test_c2b_register_repr_redacts_urls():
+    """C2BRegisterRequest repr must never leak confirmation_url or
+    validation_url.
+    """
+    req = C2BRegisterRequest(
+        short_code="600992", response_type=ResponseType.COMPLETED,
+        confirmation_url="https://a.com/confirm?sig=SECRET",
+        validation_url="https://a.com/validate?sig=SECRET2")
+    rendered = repr(req)
+    assert "SECRET" not in rendered
+    assert "SECRET2" not in rendered
+    assert "confirmation_url" not in rendered
+    assert "validation_url" not in rendered
+    assert "credentials=REDACTED" in rendered
+    assert "short_code='600992'" in rendered
+
+
+def test_stk_push_repr_shows_only_whitelisted_fields():
+    """Only business_short_code, amount, account_reference are shown."""
+    req = stk_good(account_reference="Order999")
+    rendered = repr(req)
+    assert "account_reference='Order999'" in rendered
+    # Other sensitive-ish fields are not shown.
+    assert "party_a" not in rendered
+    assert "phone_number" not in rendered
+    assert "transaction_desc" not in rendered

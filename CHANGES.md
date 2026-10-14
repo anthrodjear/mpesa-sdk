@@ -1,3 +1,13 @@
+# Changes — Unreleased (main)
+
+- **Reversal and Dynamic QR get their own daily buckets** (`reversal`, `qr`) instead of sharing `default`. Only affects users who had overridden `default` limits — their Reversal/QR now inherit the Safaricom defaults unless explicitly configured.
+- **`retryOnUnauthorized` (Go) / `retry_on_unauthorized` (Python) / `retryOnUnauthorized` (TypeScript) option added** — defaults to `true`; set to `false` to surface the first `401.003.01` without the automatic single retry. Go: `Config.DisableRetryOnUnauthorized`; Python: `Config(retry_on_unauthorized=False)`; TS: `Config({ retryOnUnauthorized: false })`.
+- **Daily budget refunded on transport error only** — a failed network request (timeout, connection error) no longer consumes the daily ceiling; gateway errors (4xx/5xx) still consume it. Mirrors the "attempt was made" principle. Doc: `docs/apis/limits.md:59-61`.
+- **Refresh cadence floor raised to 60 seconds** across all three engines (was ~1 s) — a hostile/buggy gateway `expires_in` can no longer drive a sub-second OAuth storm.
+- **Forward-only day rollover** — a backward clock step across Nairobi midnight can no longer silently reset the daily accumulator (fail-open → fail-closed).
+- **Oversize responses are typed errors** — Go now returns a typed error with HTTP 413 semantics (matching TypeScript's `MpesaError(413)` and Python's `MpesaError(413)`); Go consumers can use `errors.As` to detect it.
+- **STKQuery validates `BusinessShortCode` client-side** — parity with Python (was Go-only omission).
+
 # Changes — 0.4.0 (2026-10-13)
 
 All three engines ship `0.4.0` together. This is a **minor** bump, per the

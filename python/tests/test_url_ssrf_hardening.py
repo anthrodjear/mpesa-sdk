@@ -82,6 +82,9 @@ def b2c(**over):
         ("http://169.254.169.254/latest/meta-data", "link-local"),
         # unspecified
         ("http://0.0.0.0/hook", "unspecified"),
+        # 0.0.0.0/8 reserved ("this network" per RFC 1122)
+        ("http://0.0.0.1/hook", "reserved"),
+        ("http://0.1.2.3/hook", "reserved"),
         # 224.0.0.0/4 multicast
         ("http://224.0.0.1/hook", "multicast"),
         ("http://239.255.255.255/hook", "multicast"),
@@ -204,7 +207,7 @@ def test_malformed_authority_rejected(url, fragment):
         "http://126.255.255.255/hook",             # just below 127/8
         "http://223.255.255.255/hook",             # just below 224/4
         "http://240.0.0.1/hook",                   # out of 224/4 multicast
-        "http://0.0.0.1/hook",                     # not the unspecified addr
+        "http://1.2.3.4/hook",                     # public IPv4, not in 0/8
         "https://not-localhost.com/hook",          # name merely contains it
         "https://localhost.example.com/hook",
     ],

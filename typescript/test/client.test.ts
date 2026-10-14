@@ -1033,6 +1033,51 @@ describe("401 retry-once", () => {
     expect(oauthHits).toBe(2);
   });
 
+  it("retryOnUnauthorized: false surfaces the 401 without a forced refresh", async () => {
+    let pushHits = 0;
+    let oauthHits = 0;
+
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        oauthHits++;
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      if (path === "/mpesa/stkpush/v1/processrequest") {
+        pushHits++;
+        return errorResponse(401, {
+          errorCode: "401.003.01",
+          errorMessage: "Invalid access token",
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const client = new MpesaClient({
+      config: new Config({
+        consumerKey: CONSUMER_KEY,
+        consumerSecret: CONSUMER_SECRET,
+        shortcode: SHORTCODE,
+        passkey: PASSKEY,
+        environment: new Environment("sandbox", "https://sandbox.safaricom.co.ke"),
+      }),
+      timeoutMs: 5000,
+      now: () => nowMs,
+      retryOnUnauthorized: false,
+    });
+
+    try {
+      await client.stkPush(validSTKPushRequest());
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(MpesaError);
+      expect((err as MpesaError).statusCode).toBe(401);
+    }
+
+    expect(pushHits).toBe(1);
+    expect(oauthHits).toBe(1); // initial token only — no forced refresh
+  });
+
   it("handles 401 with HTML body (non-JSON)", async () => {
     let pushHits = 0;
 
@@ -2435,6 +2480,9 @@ describe("Callback URL host blocklist (SSRF table)", () => {
     "017700000001",
     "2852039166",
     "0.0.0.0",
+    "0.1.2.3", // whole 0.0.0.0/8, not just 0.0.0.0
+    "10", // bare inet_aton short form → 0.0.0.10 (0.0.0.0/8)
+    "0177.1.1.1", // octal 0177 = 127 → 127.1.1.1 loopback
     "10.0.0.1",
     "192.168.1.1",
     "172.16.0.1",
@@ -2451,6 +2499,7 @@ describe("Callback URL host blocklist (SSRF table)", () => {
   const ACCEPT_HOSTS = [
     "192.167.1.1",
     "223.255.255.255",
+    "177.1.1.1", // public — "177" is decimal, not octal 0o177=127
     "8.8.8.8",
     "hook.example.com",
     "user-facing-brand.com",
@@ -2588,7 +2637,10 @@ describe("STK Query payload shape", () => {
     });
   }
 
-  it("OMITS BusinessShortCode when the effective shortcode is empty (Go omitempty parity)", async () => {
+  it("REQUIRES BusinessShortCode — empty effective shortcode throws before any fetch (fix #13)", async () => {
+    // Python `_shortcode` raises before the network call; the TS client
+    // must do the same (previously it silently OMITTED the field — Go
+    // omitempty parity with the WRONG behaviour).
     const client = new MpesaClient({
       config: new Config({
         consumerKey: CONSUMER_KEY,
@@ -2599,19 +2651,31 @@ describe("STK Query payload shape", () => {
       }),
       now: () => nowMs,
     });
-    let captured: Record<string, unknown> = {};
-    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
-      const path = new URL(url).pathname;
-      if (path === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
-      if (init?.body) captured = JSON.parse(init.body as string);
-      return jsonResponse({
-        ResponseCode: "0", ResponseDescription: "desc", MerchantRequestID: "mr",
-        CheckoutRequestID: "ws_CO_1", ResultCode: "0", ResultDesc: "ok",
-      });
-    });
-    await client.stkQuery({ checkoutRequestID: "ws_CO_1" });
-    expect(captured).not.toHaveProperty("BusinessShortCode");
-    expect(captured["CheckoutRequestID"]).toBe("ws_CO_1");
+    await expect(client.stkQuery({ checkoutRequestID: "ws_CO_1" })).rejects.toThrow(
+      "mpesa: BusinessShortCode is required",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a garbage per-request shortcode pre-fetch (shape, length only in message)", async () => {
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await expect(
+      client.stkQuery({ checkoutRequestID: "ws_CO_1", businessShortCode: "xx" }),
+    ).rejects.toThrow("mpesa: BusinessShortCode must be 5-10 ASCII digits (got 2 characters)");
+    await expect(
+      client.stkQuery({ checkoutRequestID: "ws_CO_1", businessShortCode: "1".repeat(11) }),
+    ).rejects.toThrow("mpesa: BusinessShortCode must be 5-10 ASCII digits (got 11 characters)");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("trims a padded businessShortCode override to the trimmed wire value", async () => {
+    const body = await captureQueryBody(" 174379 ");
+    expect(body["BusinessShortCode"]).toBe("174379");
+  });
+
+  it("uses the config shortcode when the override is omitted", async () => {
+    const body = await captureQueryBody();
+    expect(body["BusinessShortCode"]).toBe(SHORTCODE);
   });
 
   it("includes BusinessShortCode when explicitly overridden", async () => {

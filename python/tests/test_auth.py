@@ -335,9 +335,80 @@ def test_credential_hygiene():
 
 def test_cadence_clamp_edges():
     # Inputs are post-coercion ints (OAuthToken.expires_in_seconds domain).
-    cases = {30: 1.0, 61: 1.0, 62: 2.0, 3060: 3000.0, None: 3000.0}
+    # Floor is 60.0s (TS parity): TTLs below 120s all clamp to the floor.
+    cases = {30: 60.0, 61: 60.0, 62: 60.0, 120: 60.0, 3060: 3000.0, None: 3000.0}
     for expires, want in cases.items():
         assert TokenManager._cadence(expires) == want
+
+
+def test_cadence_floor_is_sixty_seconds():
+    """TS parity: sub-120s TTLs all collapse to the 60s floor."""
+    # expires=30 -> min(30-60, 3000) = -30 -> max(60.0, -30) = 60.0
+    assert TokenManager._cadence(30) == 60.0
+    # expires=119 -> min(59, 3000) = 59 -> max(60.0, 59) = 60.0
+    assert TokenManager._cadence(119) == 60.0
+    # expires=120 -> min(60, 3000) = 60 -> max(60.0, 60) = 60.0
+    assert TokenManager._cadence(120) == 60.0
+    # expires=121 -> min(61, 3000) = 61 -> max(60.0, 61) = 61.0
+    assert TokenManager._cadence(121) == 61.0
+
+
+def test_refresh_failure_restamps_attempt_clock():
+    """Failure re-stamp (Go recordRefreshFailure parity): the except block
+    re-stamps _last_attempt to the CURRENT instant, so the 3-in-5s window
+    measures from when the failure LANDED, not from when it started.
+
+    Simulates a long OAuth round-trip: the session advances the clock by
+    4s while "in flight", so the attempt starts at T0 but the failure
+    arrives at T0+4. Without the re-stamp, _last_attempt would stay at T0
+    and a later non-forced refresh at T0+5 would pass the gate
+    (elapsed=5s >= 5.0s) even though the third failure just landed.
+    """
+    clock = Clock()
+
+    class SlowFailSession:
+        """Fails after advancing the clock 4s (simulated timeout)."""
+
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, **kwargs):
+            self.calls.append({"url": url, **kwargs})
+            clock.advance(4)  # round-trip takes 4s
+            return FakeResponse(status_code=500, body=b"{}")
+
+    session = SlowFailSession()
+    tm = TokenManager(session, "https://sandbox.safaricom.co.ke",
+                      "k", "s", now=clock)
+
+    # First failure: attempt starts at T0, lands at T0+4.
+    # The gate stamps _last_attempt=T0; the except re-stamps to T0+4.
+    with pytest.raises(Exception):
+        tm.get_token()
+    assert clock.now == T0 + timedelta(seconds=4)
+    # _last_attempt is T0+4 (re-stamped), NOT T0 (attempt-start).
+    assert tm._last_attempt == T0 + timedelta(seconds=4)
+
+    # Second failure: starts at T0+4, lands at T0+8.
+    # Gate stamps T0+4; except re-stamps T0+8.
+    with pytest.raises(Exception):
+        tm.get_token()
+    assert tm._last_attempt == T0 + timedelta(seconds=8)
+
+    # Third failure: starts at T0+8, lands at T0+12.
+    # Gate stamps T0+8; except re-stamps T0+12. failures=3.
+    with pytest.raises(Exception):
+        tm.get_token()
+    assert tm._last_attempt == T0 + timedelta(seconds=12)
+
+    # Fourth attempt 1s later (T0+13): gate sees failures=3 and
+    # elapsed = 13 - 12 = 1s < 5.0s -> rate-limited.
+    # WITHOUT the re-stamp, _last_attempt would be T0+8 (attempt-start
+    # of 3rd), elapsed = 13-8 = 5s >= 5.0s, and the gate would NOT fire.
+    clock.advance(1)
+    from mpesa.exceptions import RefreshRateLimitedError
+    with pytest.raises(RefreshRateLimitedError):
+        tm.get_token()
 
 
 def test_typed_mpesa_error_with_status_code():

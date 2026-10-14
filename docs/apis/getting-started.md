@@ -53,10 +53,16 @@ Before a request leaves the process, the SDK validates every URL you supply — 
 | Private | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7` |
 | Link-local | `169.254.0.0/16` (cloud metadata), `fe80::/10` |
 | Multicast | `224.0.0.0/4`, `ff00::/8` |
-| Unspecified | `0.0.0.0`, `::` |
+| Unspecified | `0.0.0.0/8`, `::` |
 
 The same blocked set is enforced in all three engines: `go/requests.go`, `python/mpesa/requests_sync.py`
 (`_BLOCKED_NETWORKS`/`_BLOCKED_EXACT`, enforced by `_url()`), and `typescript/src/client.ts`.
+
+> ⚠️ **Intentionally allowed ranges** (not blocked in any engine): IPv6 site-local `fec0::/10`,
+> documentation `2001:db8::/32`, carrier-grade NAT `100.64.0.0/10`, and broadcast `255.255.255.255`.
+> These are not internal address ranges and blocking them would break legitimate public endpoints
+> that happen to use those addresses. If your threat model requires blocking them, resolve the
+> callback hostname and check the IP yourself before registration.
 
 > ⚠️ **This guards the host *literal* only — it is not a DNS-rebinding filter.** A name like
 > `internal.corp` that resolves to `10.0.0.5` is accepted, exactly as in all three engines. If you

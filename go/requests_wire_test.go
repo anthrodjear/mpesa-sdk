@@ -167,6 +167,29 @@ func TestRequireURL(t *testing.T) {
 		{name: "private 192.168.x", input: "http://192.168.1.1/router", wantErr: true},
 		{name: "private 172.16.x", input: "http://172.16.0.1/service", wantErr: true},
 		{name: "unspecified 0.0.0.0", input: "http://0.0.0.0/", wantErr: true},
+		{name: "0.0.0.0/8 member", input: "http://0.1.2.3/", wantErr: true},
+
+		// IPv6 zone identifiers (net.ParseIP rejects "fe80::1%eth0", so the
+		// zone form must be rejected before the IP guards).
+		{name: "ipv6 zone fe80", input: "http://[fe80::1%25eth0]/", wantErr: true},
+		{name: "ipv6 zone doc", input: "http://[2001:db8::1%25eth0]/", wantErr: true},
+
+		// inet_aton aliases: leading parts are one byte; the last part owns
+		// the remaining bits (24/16/8 for n=2/3/4). Out-of-slot values must
+		// fail closed; in-slot short forms normalise and hit the blocklist.
+		{name: "inet_aton first part overflow", input: "http://256.1.1.1/", wantErr: true},
+		{name: "inet_aton second part overflow", input: "http://1.256.1.1/", wantErr: true},
+		{name: "inet_aton three-part overflow", input: "http://1.2.16777215/", wantErr: true},
+		{name: "inet_aton two-part loopback", input: "http://127.1/", wantErr: true},
+		{name: "inet_aton hex loopback", input: "http://0x7f.1/", wantErr: true},
+		{name: "inet_aton two-part public", input: "http://1.16777215/", wantErr: false},
+		{name: "inet_aton three-part public", input: "http://1.2.65535/", wantErr: false},
+
+		// Numeric-shaped no-dot hosts fail closed instead of falling to DNS.
+		{name: "signed decimal host", input: "http://-1/", wantErr: true},
+		{name: "plus-signed host", input: "http://+1/", wantErr: true},
+		{name: "invalid hex token", input: "http://0xzz/", wantErr: true},
+		{name: "hex-looking domain still DNS", input: "http://0xdeadbeef.com/", wantErr: false},
 	}
 
 	for _, tt := range tests {
@@ -174,6 +197,46 @@ func TestRequireURL(t *testing.T) {
 			err := requireURL("TestURL", tt.input)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("requireURL(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestNormalizeNumericHostWidths(t *testing.T) {
+	tests := []struct {
+		host    string
+		want    string // dotted-quad; empty means must be rejected
+		wantErr bool
+	}{
+		// Leading parts are exactly one byte: a value >= 256 cannot fit.
+		{host: "256.1.1.1", wantErr: true},
+		{host: "1.256.1.1", wantErr: true},
+		{host: "1.1.1.256", wantErr: true},
+		// The last part owns the remaining bits: 24 for n=2, 16 for n=3.
+		{host: "1.2.16777215", wantErr: true},
+		{host: "1.2.65535", want: "1.2.255.255"},
+		{host: "1.16777215", want: "1.255.255.255"},
+		{host: "127.1", want: "127.0.0.1"},
+		{host: "0x7f.1", want: "127.0.0.1"},
+		{host: "127.0.0.1", want: "127.0.0.1"},
+		{host: "4294967295", want: "255.255.255.255"},
+		{host: "0xzz", wantErr: true},
+		{host: "-1", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			ip, ok := normalizeNumericHost(tt.host)
+			if tt.wantErr {
+				if ok {
+					t.Fatalf("normalizeNumericHost(%q) = %v, want rejection", tt.host, ip)
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("normalizeNumericHost(%q) rejected, want %s", tt.host, tt.want)
+			}
+			if got := ip.String(); got != tt.want {
+				t.Errorf("normalizeNumericHost(%q) = %s, want %s", tt.host, got, tt.want)
 			}
 		})
 	}
@@ -204,5 +267,37 @@ func TestC2BWireKeys(t *testing.T) {
 		if _, ok := simM[key]; !ok {
 			t.Errorf("simulate missing wire key %q in %s", key, sim)
 		}
+	}
+}
+
+// TestSTKQueryBusinessShortCodeValidation verifies Python parity:
+// BusinessShortCode is validated as 5-10 digits WHEN PRESENT (it's
+// optional in STKQueryRequest, defaulting to client's cfg.Shortcode).
+// Empty = skip (client will inject), non-empty = must match shortcodeRe.
+func TestSTKQueryBusinessShortCodeValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		shortcode string
+		wantErr   bool
+	}{
+		{name: "empty_skips_validation", shortcode: "", wantErr: false},
+		{name: "valid_5_digits", shortcode: "12345", wantErr: false},
+		{name: "valid_10_digits", shortcode: "1234567890", wantErr: false},
+		{name: "too_short_4_digits", shortcode: "1234", wantErr: true},
+		{name: "too_long_11_digits", shortcode: "12345678901", wantErr: true},
+		{name: "non_digits", shortcode: "abcde", wantErr: true},
+		{name: "mixed", shortcode: "1234a", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := STKQueryRequest{
+				BusinessShortCode: tt.shortcode,
+				CheckoutRequestID: "ws_CO_test",
+			}
+			err := r.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() with shortcode=%q err=%v, wantErr=%v", tt.shortcode, err, tt.wantErr)
+			}
+		})
 	}
 }

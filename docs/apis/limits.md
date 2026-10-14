@@ -12,7 +12,9 @@ only moves validation earlier, closer to your code.
 | `stk` | STK Push | 250,000 KES | 500,000 KES |
 | `c2b` | C2B Register URL / C2B Simulate | 250,000 KES | 500,000 KES |
 | `b2c` | B2C payout | 250,000 KES | 500,000 KES |
-| `default` | Reversal, Transaction Status, Dynamic QR, anything unspecialized | 250,000 KES | 500,000 KES |
+| `reversal` | Reversal | 250,000 KES | 500,000 KES |
+| `qr` | Dynamic QR | 250,000 KES | 500,000 KES |
+| `default` | Transaction Status, anything unspecialized | 250,000 KES | 500,000 KES |
 
 Per-day ceilings apply **only** when daily tracking is switched on (below).
 Defaults follow the published Safaricom caps; B2C details in [b2c.md](b2c.md).

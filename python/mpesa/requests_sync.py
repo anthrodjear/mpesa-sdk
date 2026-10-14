@@ -56,6 +56,7 @@ _URL_RE = re.compile(r"https?://[^\s\x00-\x1f]+", re.IGNORECASE)
 # would close the gap by opening a reverse cross-language mismatch.
 # (network, reason) -- reason is descriptive, not wire-visible.
 _BLOCKED_NETWORKS: tuple[tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, str], ...] = (
+    (ipaddress.ip_network("0.0.0.0/8"), "reserved"),
     (ipaddress.ip_network("127.0.0.0/8"), "loopback"),
     (ipaddress.ip_network("10.0.0.0/8"), "private"),
     (ipaddress.ip_network("172.16.0.0/12"), "private"),
@@ -446,6 +447,17 @@ def _sentinel() -> Any:
     return dataclasses.field(default=False, init=False, repr=False, compare=False)
 
 
+def _safe(model: Any, *shown: str) -> str:
+    """Shared credential-safe renderer used by every sync model's repr.
+
+    Mirrors ``mpesa.requests_async._safe``: shows only the whitelisted
+    fields and marks everything else REDACTED, so a repr never leaks
+    callback URLs (which can embed signed tokens) into logs or tracebacks.
+    """
+    body = ", ".join(f"{name}={getattr(model, name)!r}" for name in shown)
+    return f"<{type(model).__name__}({body}, credentials=REDACTED)>"
+
+
 def _ensure_validated(model: Any) -> None:
     if not model._validated:
         raise RuntimeError("mpesa: call validate() before to_payload()")
@@ -475,6 +487,10 @@ class STKPushRequest:
     account_reference: str = ""
     transaction_desc: str = ""
     _validated: bool = _sentinel()
+
+    def __repr__(self) -> str:
+        return _safe(self, "business_short_code", "amount",
+                     "account_reference")
 
     def validate(self, limits: "TransactionLimits | None" = None) -> None:
         """Every documented constraint; TransactionType has NO default.
@@ -576,6 +592,9 @@ class C2BRegisterRequest:
     confirmation_url: str = ""
     validation_url: str = ""
     _validated: bool = _sentinel()
+
+    def __repr__(self) -> str:
+        return _safe(self, "short_code")
 
     def validate(self, limits: "TransactionLimits | None" = None) -> None:
         # URL registration carries no amount; ``limits`` is accepted for a

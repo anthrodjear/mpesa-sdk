@@ -40,6 +40,15 @@ def test_generate_password_rejects_naive_datetime():
         generate_password(SHORTCODE, PASSKEY, datetime(2021, 6, 28, 9, 24, 8))
 
 
+def test_generate_password_rejects_empty_passkey():
+    """Empty passkey would silently produce a credential derived from
+    shortcode+timestamp alone; Go/TS parity: reject before derivation.
+    """
+    at = datetime(2021, 6, 28, 9, 24, 8, tzinfo=timezone.utc)
+    with pytest.raises(ValueError, match="passkey must not be empty"):
+        generate_password(SHORTCODE, "", at)
+
+
 @pytest.mark.parametrize(
     "utc,want_ts",
     [

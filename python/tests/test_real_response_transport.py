@@ -152,8 +152,9 @@ def test_real_response_midstream_abort_still_releases_connection():
     doomed = RealResponse(body=oversized.encode())
     client, _ = make([RealResponse(body=OAUTH_OK), doomed])
 
-    with pytest.raises(ValueError, match="exceeds"):
+    with pytest.raises(MpesaError) as excinfo:
         client.stk_push(valid_stk())
+    assert excinfo.value.status_code == 413
 
     assert doomed.closed_calls == 1           # finally ran despite the abort
 

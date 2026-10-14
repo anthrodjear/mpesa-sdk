@@ -28,6 +28,23 @@ type STKPushRequest struct {
 	TransactionDesc   string `json:"TransactionDesc"`
 }
 
+// GoString redacts CallBackURL for %#v formatting.
+func (r STKPushRequest) GoString() string {
+	return redactCredentials(r, "CallBackURL")
+}
+
+// Format routes EVERY fmt verb through the redacted form (GoStringer only
+// covers %#v, while %+v prints raw struct fields).
+func (r STKPushRequest) Format(f fmt.State, verb rune) {
+	_, _ = fmt.Fprint(f, r.GoString())
+}
+
+// LogSafe returns the JSON wire shape as a map with CallBackURL
+// replaced by "[REDACTED]" for structured logging.
+func (r STKPushRequest) LogSafe() map[string]any {
+	return logSafeRedacted(r, "CallBackURL")
+}
+
 // STKQueryRequest checks an existing push outcome. Password and Timestamp
 // are injected by the client; BusinessShortCode defaults to cfg.Shortcode
 // when empty but may be overridden (the password then binds to it).
@@ -54,9 +71,9 @@ type B2CPayoutRequest struct {
 	Occassion          string    `json:"Occassion,omitempty"`
 }
 
-// GoString redacts SecurityCredential for %#v formatting.
+// GoString redacts SecurityCredential, ResultURL and QueueTimeOutURL for %#v formatting.
 func (r B2CPayoutRequest) GoString() string {
-	return redactCredentials(r, "SecurityCredential")
+	return redactCredentials(r, "SecurityCredential", "ResultURL", "QueueTimeOutURL")
 }
 
 // Format routes EVERY fmt verb through the redacted form (GoStringer only
@@ -65,8 +82,8 @@ func (r B2CPayoutRequest) Format(f fmt.State, verb rune) {
 	_, _ = fmt.Fprint(f, r.GoString())
 }
 
-// LogSafe returns the JSON wire shape as a map with SecurityCredential
-// replaced by "[REDACTED]" for structured logging.
+// LogSafe returns the JSON wire shape as a map with SecurityCredential,
+// ResultURL and QueueTimeOutURL replaced by "[REDACTED]" for structured logging.
 //
 // Security: never json.Marshal(req) for logging — use LogSafe().
 // json.Marshal emits SecurityCredential in cleartext and bypasses the
@@ -75,7 +92,7 @@ func (r B2CPayoutRequest) Format(f fmt.State, verb rune) {
 // aggregators. LogSafe preserves every other wire key verbatim for
 // debuggability while redacting only the secret.
 func (r B2CPayoutRequest) LogSafe() map[string]any {
-	return logSafeRedacted(r, "SecurityCredential")
+	return logSafeRedacted(r, "SecurityCredential", "ResultURL", "QueueTimeOutURL")
 }
 
 // TransactionStatusRequest queries by receipt XOR original conversation ID.
@@ -95,9 +112,9 @@ type TransactionStatusRequest struct {
 	Occasion               string    `json:"Occasion,omitempty"`
 }
 
-// GoString redacts SecurityCredential for %#v formatting.
+// GoString redacts SecurityCredential, ResultURL and QueueTimeOutURL for %#v formatting.
 func (r TransactionStatusRequest) GoString() string {
-	return redactCredentials(r, "SecurityCredential")
+	return redactCredentials(r, "SecurityCredential", "ResultURL", "QueueTimeOutURL")
 }
 
 // Format routes EVERY fmt verb through the redacted form (GoStringer only
@@ -106,8 +123,8 @@ func (r TransactionStatusRequest) Format(f fmt.State, verb rune) {
 	_, _ = fmt.Fprint(f, r.GoString())
 }
 
-// LogSafe returns the JSON wire shape as a map with SecurityCredential
-// replaced by "[REDACTED]" for structured logging.
+// LogSafe returns the JSON wire shape as a map with SecurityCredential,
+// ResultURL and QueueTimeOutURL replaced by "[REDACTED]" for structured logging.
 //
 // Security: never json.Marshal(req) for logging — use LogSafe().
 // json.Marshal emits SecurityCredential in cleartext and bypasses the
@@ -116,7 +133,7 @@ func (r TransactionStatusRequest) Format(f fmt.State, verb rune) {
 // aggregators. LogSafe preserves every other wire key verbatim for
 // debuggability while redacting only the secret.
 func (r TransactionStatusRequest) LogSafe() map[string]any {
-	return logSafeRedacted(r, "SecurityCredential")
+	return logSafeRedacted(r, "SecurityCredential", "ResultURL", "QueueTimeOutURL")
 }
 
 // ReversalRequest reverses a recent C2B transaction. The wire field stays
@@ -137,9 +154,9 @@ type ReversalRequest struct {
 	Remarks                string    `json:"Remarks"`
 }
 
-// GoString redacts SecurityCredential for %#v formatting.
+// GoString redacts SecurityCredential, ResultURL and QueueTimeOutURL for %#v formatting.
 func (r ReversalRequest) GoString() string {
-	return redactCredentials(r, "SecurityCredential")
+	return redactCredentials(r, "SecurityCredential", "ResultURL", "QueueTimeOutURL")
 }
 
 // Format routes EVERY fmt verb through the redacted form (GoStringer only
@@ -148,8 +165,8 @@ func (r ReversalRequest) Format(f fmt.State, verb rune) {
 	_, _ = fmt.Fprint(f, r.GoString())
 }
 
-// LogSafe returns the JSON wire shape as a map with SecurityCredential
-// replaced by "[REDACTED]" for structured logging.
+// LogSafe returns the JSON wire shape as a map with SecurityCredential,
+// ResultURL and QueueTimeOutURL replaced by "[REDACTED]" for structured logging.
 //
 // Security: never json.Marshal(req) for logging — use LogSafe().
 // json.Marshal emits SecurityCredential in cleartext and bypasses the
@@ -158,7 +175,7 @@ func (r ReversalRequest) Format(f fmt.State, verb rune) {
 // aggregators. LogSafe preserves every other wire key verbatim for
 // debuggability while redacting only the secret.
 func (r ReversalRequest) LogSafe() map[string]any {
-	return logSafeRedacted(r, "SecurityCredential")
+	return logSafeRedacted(r, "SecurityCredential", "ResultURL", "QueueTimeOutURL")
 }
 
 // AccountBalanceRequest queries organization shortcode balances.
@@ -175,9 +192,9 @@ type AccountBalanceRequest struct {
 	ResultURL          string    `json:"ResultURL"`
 }
 
-// GoString redacts SecurityCredential for %#v formatting.
+// GoString redacts SecurityCredential, ResultURL and QueueTimeOutURL for %#v formatting.
 func (r AccountBalanceRequest) GoString() string {
-	return redactCredentials(r, "SecurityCredential")
+	return redactCredentials(r, "SecurityCredential", "ResultURL", "QueueTimeOutURL")
 }
 
 // Format routes EVERY fmt verb through the redacted form (GoStringer only
@@ -186,8 +203,8 @@ func (r AccountBalanceRequest) Format(f fmt.State, verb rune) {
 	_, _ = fmt.Fprint(f, r.GoString())
 }
 
-// LogSafe returns the JSON wire shape as a map with SecurityCredential
-// replaced by "[REDACTED]" for structured logging.
+// LogSafe returns the JSON wire shape as a map with SecurityCredential,
+// ResultURL and QueueTimeOutURL replaced by "[REDACTED]" for structured logging.
 //
 // Security: never json.Marshal(req) for logging — use LogSafe().
 // json.Marshal emits SecurityCredential in cleartext and bypasses the
@@ -196,7 +213,7 @@ func (r AccountBalanceRequest) Format(f fmt.State, verb rune) {
 // aggregators. LogSafe preserves every other wire key verbatim for
 // debuggability while redacting only the secret.
 func (r AccountBalanceRequest) LogSafe() map[string]any {
-	return logSafeRedacted(r, "SecurityCredential")
+	return logSafeRedacted(r, "SecurityCredential", "ResultURL", "QueueTimeOutURL")
 }
 
 // logSafeRedacted renders v through its JSON tags into a map and replaces
@@ -227,6 +244,23 @@ type C2BRegisterRequest struct {
 	ResponseType    ResponseType `json:"ResponseType"`
 	ConfirmationURL string       `json:"ConfirmationURL"`
 	ValidationURL   string       `json:"ValidationURL"`
+}
+
+// GoString redacts ConfirmationURL and ValidationURL for %#v formatting.
+func (r C2BRegisterRequest) GoString() string {
+	return redactCredentials(r, "ConfirmationURL", "ValidationURL")
+}
+
+// Format routes EVERY fmt verb through the redacted form (GoStringer only
+// covers %#v, while %+v prints raw struct fields).
+func (r C2BRegisterRequest) Format(f fmt.State, verb rune) {
+	_, _ = fmt.Fprint(f, r.GoString())
+}
+
+// LogSafe returns the JSON wire shape as a map with ConfirmationURL
+// and ValidationURL replaced by "[REDACTED]" for structured logging.
+func (r C2BRegisterRequest) LogSafe() map[string]any {
+	return logSafeRedacted(r, "ConfirmationURL", "ValidationURL")
 }
 
 // C2BSimulateRequest fakes an inbound payment (sandbox only).
@@ -267,6 +301,15 @@ func requireMaxLen(field string, v string, max int) error {
 // host is a DNS name, not a numeric literal.
 var inetATonPartRe = regexp.MustCompile(`^(?:0[xX][0-9a-fA-F]+|[0-9]+)$`)
 
+// numericHostShapeRe matches a WHOLE host that is unmistakably an attempt to
+// write an IP by value rather than a DNS name: a bare decimal ("4294967295"),
+// a signed decimal ("-1", "+1") or a 0x-prefixed token without dots
+// ("0xzz"). Dotted forms are already covered part-by-part by
+// inetATonPartRe above; this catches the no-dot aliases so they fail closed
+// in normalizeNumericHost instead of falling through to the resolver as
+// (almost certainly unresolvable) DNS names.
+var numericHostShapeRe = regexp.MustCompile(`^(?:[0-9]+|0[xX][^.]*|[+-][0-9][^.]*)$`)
+
 // inetATonPartsMax is inet_aton's documented maximum of four dot-separated
 // components.
 const inetATonPartsMax = 4
@@ -280,6 +323,13 @@ const inetATonPartsMax = 4
 func looksLikeNumericHost(host string) bool {
 	if host == "" {
 		return false
+	}
+	// No-dot aliases ("4294967295", "-1", "0xzz") are numeric-shaped for the
+	// whole host even though no single inet_aton component regex matches the
+	// sign/prefix variants — route them to normalizeNumericHost so a bad
+	// value fails closed instead of being handed to the resolver.
+	if numericHostShapeRe.MatchString(host) {
+		return true
 	}
 	for _, p := range strings.Split(host, ".") {
 		if p == "" || !inetATonPartRe.MatchString(p) {
@@ -343,15 +393,16 @@ func normalizeNumericHost(host string) (net.IP, bool) {
 		}
 		// Byte slot for this part (see the doc comment for the mapping):
 		// a lone part IS the whole 32-bit value; every part before the last
-		// is top-aligned; the last part fills the lowest bytes.
+		// is a top-aligned byte; the last part fills the lowest remaining
+		// bits (24/16/8 for n=2/3/4 parts).
 		var shift, width int
 		switch {
 		case len(parts) == 1:
 			shift, width = 0, 32
 		case i == len(parts)-1:
-			shift, width = 0, 8
+			shift, width = 0, 32-8*(len(parts)-1)
 		default:
-			shift, width = 8*(inetATonPartsMax-1-i), 8*(inetATonPartsMax-i)
+			shift, width = 8*(inetATonPartsMax-1-i), 8
 		}
 		if v >= uint64(1)<<width {
 			return nil, false // does not fit the bytes this part owns
@@ -364,15 +415,20 @@ func normalizeNumericHost(host string) (net.IP, bool) {
 // nonRoutableIPReason reports why ip must not be used as a callback target,
 // or "" when it is publicly routable. Loopback, RFC1918, unspecified,
 // link-local (unicast + multicast), interface-local and other multicast
-// ranges are all SSRF sinks.
+// ranges are all SSRF sinks. Intentionally NOT blocked (documented
+// cross-language decision, Python/TS parity): fec0::/10 (legacy
+// site-local), 2001:db8::/32 (documentation), 100.64.0.0/10 (CGNAT) and
+// 198.18.0.0/15 (benchmarking) — every engine treats these as allowed.
 func nonRoutableIPReason(ip net.IP) string {
 	switch {
 	case ip.IsLoopback():
 		return "loopback"
 	case ip.IsPrivate():
 		return "private"
-	case ip.IsUnspecified():
-		return "unspecified"
+		case ip.IsUnspecified():
+			return "unspecified"
+		case ip.To4() != nil && ip.To4()[0] == 0:
+			return "0.0.0.0/8"
 	case ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast():
 		return "link-local"
 	case ip.IsInterfaceLocalMulticast():
@@ -413,6 +469,12 @@ func requireURL(field, v string) error {
 	host = strings.TrimRight(host, ".")
 	if host == "" {
 		return fmt.Errorf("mpesa: %s must have a valid host", field)
+	}
+	// net.ParseIP never accepts zone identifiers ("fe80::1%eth0"), so a
+	// scoped literal would slip past every IP guard below and reach the
+	// resolver. Reject the zone form outright — Python/TS parity.
+	if i := strings.IndexByte(host, '%'); i >= 0 {
+		return fmt.Errorf("mpesa: %s must not contain an IPv6 zone identifier (%q)", field, host[i:])
 	}
 	// Reject localhost by name (SSRF protection)
 	if strings.EqualFold(host, "localhost") {
@@ -543,10 +605,19 @@ func (r *STKPushRequest) ValidateWithLimits(limits TransactionLimits) error {
 	return requireMaxLen("TransactionDesc", r.TransactionDesc, 13)
 }
 
-// Validate requires a CheckoutRequestID — safe to call before
+// Validate requires a CheckoutRequestID and validates BusinessShortCode
+// when present (5-10 digits, Python parity) — safe to call before
 // hand-marshalling.
 func (r *STKQueryRequest) Validate() error {
-	return requireNonEmpty("CheckoutRequestID", r.CheckoutRequestID)
+	if err := requireNonEmpty("CheckoutRequestID", r.CheckoutRequestID); err != nil {
+		return err
+	}
+	if r.BusinessShortCode != "" {
+		if err := requireShortcode("BusinessShortCode", r.BusinessShortCode); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Validate checks every documented constraint (amount bounds, remarks length,
@@ -659,12 +730,12 @@ func (r *TransactionStatusRequest) ValidateWithLimits(limits TransactionLimits) 
 // "11" is applied by the client — safe to call before hand-marshalling.
 //
 // Validate delegates to ValidateWithLimits with DefaultTransactionLimits;
-// Reversal is bounded by TransactionLimits.Default.
+// Reversal is bounded by TransactionLimits.Reversal.
 func (r *ReversalRequest) Validate() error {
 	return r.ValidateWithLimits(DefaultTransactionLimits())
 }
 
-// ValidateWithLimits is Validate with the Default ceiling applied to Amount.
+// ValidateWithLimits is Validate with the Reversal ceiling applied to Amount.
 func (r *ReversalRequest) ValidateWithLimits(limits TransactionLimits) error {
 	if r.CommandID != "" && r.CommandID != CommandTransactionReversal {
 		return fmt.Errorf("mpesa: Reversal CommandID must be TransactionReversal")
@@ -681,7 +752,7 @@ func (r *ReversalRequest) ValidateWithLimits(limits TransactionLimits) error {
 	if r.Amount <= 0 {
 		return fmt.Errorf("mpesa: Reversal Amount must be positive, got %d", r.Amount)
 	}
-	if err := checkPerTransaction(ServiceDefault, r.Amount, limits.limitsFor(ServiceDefault)); err != nil {
+	if err := checkPerTransaction(ServiceReversal, r.Amount, limits.limitsFor(ServiceReversal)); err != nil {
 		return err
 	}
 	if err := requireNonEmpty("ReceiverParty", r.ReceiverParty); err != nil {
@@ -773,12 +844,12 @@ var qrTrxCodes = map[TrxCode]bool{QRTrxBuyGoods: true, QRTrxWithdrawAtAgentTill:
 // whitelist, CPI digit-shape and Size — safe to call before hand-marshalling.
 //
 // Validate delegates to ValidateWithLimits with DefaultTransactionLimits; the
-// QR flow is bounded by TransactionLimits.Default.
+// QR flow is bounded by TransactionLimits.QR.
 func (r *QRCodeRequest) Validate() error {
 	return r.ValidateWithLimits(DefaultTransactionLimits())
 }
 
-// ValidateWithLimits is Validate with the Default ceiling applied to Amount.
+// ValidateWithLimits is Validate with the QR ceiling applied to Amount.
 func (r *QRCodeRequest) ValidateWithLimits(limits TransactionLimits) error {
 	if err := requireNonEmpty("MerchantName", r.MerchantName); err != nil {
 		return err
@@ -789,7 +860,7 @@ func (r *QRCodeRequest) ValidateWithLimits(limits TransactionLimits) error {
 	if r.Amount <= 0 {
 		return fmt.Errorf("mpesa: QR Amount must be positive, got %d", r.Amount)
 	}
-	if err := checkPerTransaction(ServiceDefault, r.Amount, limits.limitsFor(ServiceDefault)); err != nil {
+	if err := checkPerTransaction(ServiceQR, r.Amount, limits.limitsFor(ServiceQR)); err != nil {
 		return err
 	}
 	if !qrTrxCodes[r.TrxCode] {

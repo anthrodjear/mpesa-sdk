@@ -315,15 +315,19 @@ describe("TokenManager expiry", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("clamps short TTL cadence to minimum 1 second", async () => {
-    // TTL=30 → cadence = max(1s, 30-60) = 1s
+  it("clamps short TTL cadence to minimum 60 seconds", async () => {
+    // TTL=30 → cadence = max(60s, 30-60) = 60s floor (Go/Python parity).
     fetchMock.mockImplementation(
       jsonResponseFactory({ ...VALID_TOKEN_RESPONSE, expires_in: "30" }),
     );
     const tm = makeManager();
 
     await tm.getToken();
-    nowMs += 2_000; // 2 seconds > 1s cadence
+    nowMs += 2_000; // 2s < 60s floor → still cached
+    await tm.getToken();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    nowMs += 60_000; // past the floor
     await tm.getToken();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -533,6 +537,33 @@ describe("TokenManager peer adoption", () => {
     // the clock, so the guard fires — and does so before any fetch.
     await expect(tm.getToken()).rejects.toThrow("refresh rate limited");
     expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("a slow attempt arms the 3-failure gate from its FAILURE instant (not its start)", async () => {
+    // Each attempt spans 6s: the failure lands 6s after the attempt START.
+    // The window must re-stamp at the failure instant (Go
+    // recordRefreshFailure) — with an attempt-start-only stamp, attempt 3's
+    // stamp is already 6s stale when it fails, the guard sees
+    // now - last >= 5s, and the next refresh escapes the gate entirely
+    // (crash loop against a dead OAuth endpoint).
+    let calls = 0;
+    fetchMock.mockImplementation(() => {
+      calls++;
+      // Attempt starts now; the clock advances 6s mid-flight (slow
+      // timeout) before the network error lands.
+      nowMs += 6_000;
+      return Promise.reject(new Error("boom"));
+    });
+    const tm = makeManager();
+
+    await expect(tm.getToken()).rejects.toThrow("boom");
+    await expect(tm.getToken()).rejects.toThrow("boom");
+    await expect(tm.getToken()).rejects.toThrow("boom");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    // 3 consecutive failures, the last one 0s ago → gated before any fetch.
+    await expect(tm.getToken()).rejects.toThrow("refresh rate limited");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("forced refresh during a successful in-flight non-forced refresh adopts its token", async () => {

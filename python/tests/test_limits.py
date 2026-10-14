@@ -32,6 +32,7 @@ import requests  # after the sys.path insert, as in the suite
 from mpesa import MpesaClient
 from mpesa.config import Config
 from mpesa.enums import CommandID, QRTrxCode, TransactionType
+from mpesa.exceptions import MpesaError
 from mpesa.limits import (
     DEFAULT_TRANSACTION_LIMITS,
     ServiceLimits,
@@ -39,6 +40,7 @@ from mpesa.limits import (
 )
 from mpesa.limits import (
     _resolve_transaction_limits as _resolve,
+    _resolved_max,
 )
 from mpesa.requests_async import (
     B2CPayoutRequest,
@@ -209,6 +211,8 @@ def test_defaults_match_the_documented_baseline():
         c2b=ServiceLimits(250_000, 500_000),
         b2c=ServiceLimits(250_000, 500_000),
         default=ServiceLimits(250_000, 500_000),
+        reversal=ServiceLimits(250_000, 500_000),
+        qr=ServiceLimits(250_000, 500_000),
     )
     # Fields start UNSET on a fresh ServiceLimits; "unlimited" is written as
     # an explicit 0 (see test_explicit_zero_disables_only_that_ceiling).
@@ -515,9 +519,9 @@ def test_daily_boundary_is_not_utc_midnight():
 
     # 2026-01-01 20:59 UTC == 23:59 EAT: the SAME Nairobi day as 12:00 UTC,
     # so a 5k QR on top of 9k trips the 10k ceiling. QR is served by the
-    # ``default`` entry (no dedicated field), so this also pins that rule.
+    # dedicated ``qr`` entry (not ``default``), so this also pins that rule.
     clock2 = Clock(datetime(2026, 1, 1, 20, 59, tzinfo=timezone.utc))
-    same_day = TransactionLimits(default=ServiceLimits(1_000_000, 10_000))
+    same_day = TransactionLimits(qr=ServiceLimits(1_000_000, 10_000))
     client2, _ = make_client(QR_OK, limits=same_day,
                              track_daily=True, clock=clock2)
     client2.generate_qr_code(qr(amount=9_000))
@@ -590,6 +594,125 @@ def test_daily_rejection_does_not_consume_quota():
     with pytest.raises(ValueError, match="per-day ceiling"):
         client.b2c_payout(b2c(amount=10))             # would total 10_005
     assert client.daily_spend == {"b2c": 9_995}
+
+
+def test_transport_error_rolls_back_daily_budget():
+    """Transport-level failure (requests.exceptions.RequestException)
+    rolls the reservation back so a network blip does not permanently
+    drain the budget. Gateway rejections keep their reservation.
+    """
+    limits = TransactionLimits(b2c=ServiceLimits(1_000_000, 10_000))
+
+    class TransportFailSession(FakeSession):
+        """Raises ConnectionError on the first business POST."""
+
+        def request(self, method, url, json=None, params=None, timeout=None,
+                    allow_redirects=True, headers=None, stream=False):
+            self.calls.append({"kind": method, "url": url, "json": json})
+            if method == "POST":
+                raise requests.exceptions.ConnectionError("simulated blip")
+            return self.queue.pop(0)
+
+    session = TransportFailSession([OAUTH_OK])
+    cfg = Config(consumer_key="k", consumer_secret="s", shortcode="174379",
+                 passkey=PASSKEY, now=lambda: T0, http_client=session,
+                 limits=limits, track_daily=True)
+    client = MpesaClient(cfg)
+
+    with pytest.raises(requests.exceptions.ConnectionError):
+        client.b2c_payout(b2c(amount=5_000))
+    # The reservation was rolled back: budget is fully available again.
+    assert client.daily_spend == {"b2c": 0}
+
+
+def test_gateway_error_keeps_daily_reservation():
+    """A gateway rejection (MpesaError) is NOT rolled back -- the request
+    WAS sent and the gateway's verdict is authoritative.
+    """
+    limits = TransactionLimits(b2c=ServiceLimits(1_000_000, 10_000))
+    rejected = FakeResponse(status_code=500, text="{}")
+    client, _ = make_client(rejected, limits=limits, track_daily=True)
+    with pytest.raises(MpesaError):
+        client.b2c_payout(b2c(amount=5_000))
+    assert client.daily_spend == {"b2c": 5_000}       # reservation kept
+
+
+def test_backward_clock_jump_keeps_daily_budget():
+    """A backward clock jump (NTP correction) reuses today's budget
+    instead of resetting early. Forward-only day compare: only a day key
+    STRICTLY GREATER than the stored key resets the accumulator.
+    """
+    limits = TransactionLimits(b2c=ServiceLimits(1_000_000, 10_000))
+    clock = Clock(datetime(2026, 1, 2, 10, 0, tzinfo=timezone.utc))
+    client, _ = make_client(B2C_OK, B2C_OK, B2C_OK,
+                            limits=limits, track_daily=True, clock=clock)
+    # 2026-01-02 10:00 UTC == 13:00 EAT: Nairobi day 2026-01-02.
+    client.b2c_payout(b2c(amount=8_000))
+    assert client.daily_spend == {"b2c": 8_000}
+
+    # Backward jump to 2026-01-01 22:00 UTC == 2026-01-02 01:00 EAT:
+    # still Nairobi day 2026-01-02, so budget is KEPT.
+    clock.set(datetime(2026, 1, 1, 22, 0, tzinfo=timezone.utc))
+    with pytest.raises(ValueError, match="per-day ceiling"):
+        client.b2c_payout(b2c(amount=3_000))           # 8k + 3k > 10k
+    assert client.daily_spend == {"b2c": 8_000}        # unchanged
+
+    # Backward jump even further to 2026-01-01 10:00 UTC == 13:00 EAT:
+    # Nairobi day 2026-01-01, which is EARLIER than the stored
+    # 2026-01-02 -- forward-only compare means NO reset.
+    clock.set(datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc))
+    with pytest.raises(ValueError, match="per-day ceiling"):
+        client.b2c_payout(b2c(amount=3_000))
+    assert client.daily_spend == {"b2c": 8_000}        # still unchanged
+
+
+def test_reversal_and_qr_have_separate_daily_buckets():
+    """Reversal accrues to "reversal", QR accrues to "qr"; neither shares
+    the "default" bucket. Each bucket tracks independently.
+    """
+    limits = TransactionLimits(
+        reversal=ServiceLimits(1_000_000, 10_000),
+        qr=ServiceLimits(1_000_000, 10_000),
+    )
+    # Queue: OAuth, reversal-reply, qr-reply, [qr rejected pre-network],
+    # reversal-reply. The second QR never reaches the network (ceiling).
+    client, _ = make_client(B2C_OK, QR_OK, B2C_OK, limits=limits,
+                            track_daily=True)
+    # Reversal goes to "reversal" bucket.
+    client.reversal(reversal(amount=9_000))
+    assert client.daily_spend == {"reversal": 9_000}
+
+    # QR goes to "qr" bucket -- independent of reversal's budget.
+    client.generate_qr_code(qr(amount=5_000))
+    assert client.daily_spend == {"reversal": 9_000, "qr": 5_000}
+
+    # One more QR trips the qr bucket but not the reversal bucket.
+    with pytest.raises(ValueError, match="per-day ceiling"):
+        client.generate_qr_code(qr(amount=6_000))     # 5k + 6k > 10k
+    assert client.daily_spend == {"reversal": 9_000, "qr": 5_000}
+
+    # Reversal still has 1k left; 500 fits.
+    client.reversal(reversal(amount=500))
+    assert client.daily_spend == {"reversal": 9_500, "qr": 5_000}
+
+
+def test_reversal_qr_buckets_resolve_from_their_own_fields():
+    """TransactionLimits(reversal=...) and (qr=...) are merged independently
+    from _DEFAULT_DEFAULT, so an override on one does not leak to the other.
+    """
+    resolved = _resolve(TransactionLimits(
+        reversal=ServiceLimits(max_per_day=1_000)))
+    assert resolved.reversal.max_per_day == 1_000      # overridden
+    assert resolved.qr.max_per_day == 500_000          # default
+    assert resolved.default.max_per_day == 500_000     # default
+
+    resolved2 = _resolve(TransactionLimits(
+        qr=ServiceLimits(max_per_transaction=0)))
+    # Explicit 0 is kept as-is by the merge (unlimited); _resolved_max
+    # converts it to None downstream.
+    assert resolved2.qr.max_per_transaction == 0      # explicit unlimited
+    assert _resolved_max(resolved2.qr.max_per_transaction) is None
+    assert resolved2.reversal.max_per_transaction == 250_000  # default
 
 
 # ---------------------------------------------------------------------------

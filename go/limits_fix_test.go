@@ -144,7 +144,8 @@ func sameServiceLimits(a, b ServiceLimits) bool {
 
 func sameTransactionLimits(a, b TransactionLimits) bool {
 	return sameServiceLimits(a.STK, b.STK) && sameServiceLimits(a.C2B, b.C2B) &&
-		sameServiceLimits(a.B2C, b.B2C) && sameServiceLimits(a.Default, b.Default)
+		sameServiceLimits(a.B2C, b.B2C) && sameServiceLimits(a.Reversal, b.Reversal) &&
+		sameServiceLimits(a.QR, b.QR) && sameServiceLimits(a.Default, b.Default)
 }
 
 func ceilingOf(s ServiceLimits, m *int64) string {
@@ -167,7 +168,7 @@ func everyFieldSet(s ServiceLimits) bool {
 // allFieldsMaterialized checks a whole TransactionLimits.
 func allFieldsMaterialized(l TransactionLimits) error {
 	for name, svc := range map[string]ServiceLimits{
-		"STK": l.STK, "C2B": l.C2B, "B2C": l.B2C, "Default": l.Default,
+		"STK": l.STK, "C2B": l.C2B, "B2C": l.B2C, "Reversal": l.Reversal, "QR": l.QR, "Default": l.Default,
 	} {
 		if !everyFieldSet(svc) {
 			return errors.New(name + " still carries a nil (unset) field: " +
@@ -193,6 +194,8 @@ func TestDefaultTransactionLimitsArePerService(t *testing.T) {
 		// B2C defaults to the standard Safaricom cap (same ceilings as STK
 		// here); Safaricom-approved higher tiers are raised via Config.Limits.
 		{"B2C", d.B2C, 250_000, 500_000},
+		{"Reversal", d.Reversal, 250_000, 500_000},
+		{"QR", d.QR, 250_000, 500_000},
 		{"Default", d.Default, 250_000, 500_000},
 	}
 	for _, tc := range want {
@@ -209,12 +212,18 @@ func TestDefaultTransactionLimitsArePerService(t *testing.T) {
 		t.Errorf("DefaultTransactionLimits is not fully materialized: %v", err)
 	}
 	// limitsFor must route each enumerated service to its own entry and
-	// everything else (Reversal, TransactionStatus, QR) to Default.
+	// everything else (TransactionStatus, anything unspecialized) to Default.
 	if got := d.limitsFor(ServiceSTK); !sameServiceLimits(got, d.STK) {
 		t.Errorf("STK entry not routed: %+v", got)
 	}
 	if got := d.limitsFor(ServiceB2C); !sameServiceLimits(got, d.B2C) {
 		t.Errorf("B2C entry not routed: %+v", got)
+	}
+	if got := d.limitsFor(ServiceReversal); !sameServiceLimits(got, d.Reversal) {
+		t.Errorf("Reversal entry not routed: %+v", got)
+	}
+	if got := d.limitsFor(ServiceQR); !sameServiceLimits(got, d.QR) {
+		t.Errorf("QR entry not routed: %+v", got)
 	}
 	if got := d.limitsFor(ServiceDefault); !sameServiceLimits(got, d.Default) {
 		t.Errorf("Default entry not used for un-enumerated services: %+v", got)
@@ -282,13 +291,14 @@ func TestPartialServiceOverrideKeepsOtherCeilings(t *testing.T) {
 		t.Error("raising B2C silently disabled the C2B ceiling, want 250000 enforcement")
 	}
 	if _, err := c.Reversal(ctx, reversalAmount(300_000)); err == nil {
-		t.Error("raising B2C silently disabled the Default ceiling, want 250000 enforcement")
+		t.Error("raising B2C silently disabled the Reversal ceiling, want 250000 enforcement")
 	}
 }
 
-// STK/C2B keep their own ceilings while Reversal/QR fall back to Default;
-// B2C defaults to the standard Safaricom cap (250000 KES), so 300000 is
-// rejected unless the merchant's approved tier is configured via Config.Limits.
+// STK/C2B/B2C/Reversal/QR each keep their own ceiling; TransactionStatus and
+// anything unspecialized falls back to Default. B2C defaults to the standard
+// Safaricom cap (250000 KES), so 300000 is rejected unless the merchant's
+// approved tier is configured via Config.Limits.
 func TestPerServiceCeilingsEnforcedAgainstRealRequests(t *testing.T) {
 	c, _ := limitsClient(t, Config{})
 	ctx := context.Background()
@@ -303,10 +313,10 @@ func TestPerServiceCeilingsEnforcedAgainstRealRequests(t *testing.T) {
 		t.Error("C2B 300000 accepted, want rejection at the 250000 ceiling")
 	}
 	if _, err := c.Reversal(ctx, reversalAmount(300_000)); err == nil {
-		t.Error("Reversal 300000 accepted, want rejection at the Default ceiling")
+		t.Error("Reversal 300000 accepted, want rejection at the Reversal ceiling")
 	}
 	if _, err := c.GenerateQRCode(ctx, qrAmount(300_000)); err == nil {
-		t.Error("QR 300000 accepted, want rejection at the Default ceiling")
+		t.Error("QR 300000 accepted, want rejection at the QR ceiling")
 	}
 	// Override escape hatch: an explicitly configured higher B2C tier accepts
 	// the same 300000 payout the default rejects.
@@ -400,9 +410,9 @@ func TestExplicitZeroDisablesOnlyThatCeiling(t *testing.T) {
 			if _, err := c.C2BSimulate(ctx, c2bAmount(300_000)); err == nil {
 				t.Error("disabling the STK ceiling also disabled the C2B ceiling")
 			}
-			if _, err := c.Reversal(ctx, reversalAmount(300_000)); err == nil {
-				t.Error("disabling the STK ceiling also disabled the Default ceiling")
-			}
+		if _, err := c.Reversal(ctx, reversalAmount(300_000)); err == nil {
+			t.Error("disabling the STK ceiling also disabled the Reversal ceiling")
+		}
 		})
 	}
 }
@@ -635,7 +645,8 @@ func TestDailyLedgersAreIndependentPerService(t *testing.T) {
 	if _, err := c.STKPush(ctx, stkAmount(30_000)); err == nil {
 		t.Fatal("STK daily ceiling not enforced, want rejection")
 	}
-	// The Default-capped service must be untouched.
+	// The Reversal bucket (its own entry since the split from Default) is
+	// untouched.
 	if _, err := c.Reversal(ctx, reversalAmount(30_000)); err != nil {
 		t.Fatalf("Reversal blocked by another service's ledger: %v", err)
 	}
@@ -826,5 +837,270 @@ func TestResolvedLimitsFrozenAfterConstruction(t *testing.T) {
 	c2, _ := limitsClient(t, Config{Limits: user})
 	if got := c2.limits.STK; got.MaxPerTransaction == nil || *got.MaxPerTransaction != 123 {
 		t.Errorf("second Client picked up the wrong STK override: %s", ceilingOf(got, got.MaxPerTransaction))
+	}
+}
+
+// --- (g) Reversal and QR carry their own daily buckets -----------------------
+
+// Exhausting Reversal's daily ceiling must not touch QR (and vice versa):
+// the two services share no bucket, and neither shares Default's.
+func TestReversalAndQRHaveOwnDailyBuckets(t *testing.T) {
+	now := time.Date(2024, 5, 1, 6, 0, 0, 0, time.UTC)
+	c, _ := limitsClient(t, Config{
+		Now: func() time.Time { return now },
+		Limits: &TransactionLimits{
+			Reversal: ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(100_000)},
+			QR:       ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(100_000)},
+		},
+		TrackDaily: true,
+	})
+	ctx := context.Background()
+	// Exhaust Reversal: 3 x 30000 = 90000, the 4th crosses 100000.
+	for i := 0; i < 3; i++ {
+		if _, err := c.Reversal(ctx, reversalAmount(30_000)); err != nil {
+			t.Fatalf("Reversal call %d rejected: %v", i, err)
+		}
+	}
+	if _, err := c.Reversal(ctx, reversalAmount(30_000)); err == nil {
+		t.Fatal("Reversal daily ceiling not enforced, want rejection")
+	}
+	// QR's ledger is untouched.
+	if _, err := c.GenerateQRCode(ctx, qrAmount(30_000)); err != nil {
+		t.Fatalf("QR blocked by Reversal's ledger: %v", err)
+	}
+	// And so is the Default bucket (TransactionStatus and friends).
+	if _, err := c.TransactionStatus(ctx, TransactionStatusRequest{
+		Initiator: "i", SecurityCredential: "c", TransactionID: "NLJ7RT61SV",
+		PartyA: testShortcode, ResultURL: "https://a.com/r", QueueTimeOutURL: "https://a.com/t",
+		Remarks: "query",
+	}); err != nil {
+		t.Fatalf("TransactionStatus blocked by Reversal's ledger: %v", err)
+	}
+}
+
+// --- (h) Daily ledger rolls FORWARD only ------------------------------------
+
+// A day strictly after the current bucket resets it; a backward clock
+// (today < d.day) must keep accumulating the existing bucket instead of
+// zeroing the day's real volume.
+func TestDailyLedgerRollsForwardOnly(t *testing.T) {
+	var d dailyLedger
+	limits := TransactionLimits{
+		STK: ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(100_000)},
+	}
+	if err := d.consume(ServiceSTK, 60_000, limits, "2024-05-02"); err != nil {
+		t.Fatalf("consume on first day: %v", err)
+	}
+	// Backward clock: the 2024-05-01 reading must NOT zero the bucket, so
+	// the next 60000 crosses the 100000 ceiling (120000 > 100000).
+	err := d.consume(ServiceSTK, 60_000, limits, "2024-05-01")
+	var le *LimitError
+	if !errors.As(err, &le) || le.Kind != "MaxPerDay" {
+		t.Fatalf("backward-day consume = %v, want MaxPerDay rejection proving no reset", err)
+	}
+	// Forward roll: a later day resets and the ceiling applies fresh.
+	if err := d.consume(ServiceSTK, 40_000, limits, "2024-05-03"); err != nil {
+		t.Fatalf("forward-day consume: %v", err)
+	}
+	if got := d.used[ServiceSTK]; got != 40_000 {
+		t.Fatalf("used after forward roll = %d, want 40000", got)
+	}
+}
+
+// --- (i) Transport failures roll the daily budget back -----------------------
+
+// A transport-class failure (no gateway answer at all) must return the
+// consumed amount to the daily bucket; a gateway *MpesaError keeps the spend
+// — the gateway saw the transaction and counts it regardless.
+func TestTransportFailureRollsBackDailyBudget(t *testing.T) {
+	var failNext atomic.Bool
+	mux := http.NewServeMux()
+	mux.Handle("/oauth/v1/generate", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{"access_token": "tok-rollback", "expires_in": "3599"})
+	}))
+	mux.HandleFunc(b2cPath, func(w http.ResponseWriter, r *http.Request) {
+		if failNext.CompareAndSwap(true, false) {
+			// Simulate the connection dying mid-request: abort before any
+			// response is written so post() surfaces a transport error, not
+			// a *MpesaError.
+			panic(http.ErrAbortHandler)
+		}
+		writeJSON(t, w, http.StatusOK, ConversationResponse{ResponseCode: "0"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	now := time.Date(2024, 5, 1, 6, 0, 0, 0, time.UTC)
+	c, err := NewClient(Config{
+		ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox,
+		Shortcode: testShortcode, Passkey: testPasskey,
+		Now:        func() time.Time { return now },
+		Limits: &TransactionLimits{
+			B2C: ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(100_000)},
+		},
+		TrackDaily: true,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	c.baseURL = srv.URL
+	ctx := context.Background()
+
+	// First payout: transport dies → rolled back, bucket is 0 again.
+	failNext.Store(true)
+	_, err = c.B2CPayout(ctx, b2cAmount(60_000))
+	if err == nil {
+		t.Fatal("transport-aborted payout succeeded, want an error")
+	}
+	var me *MpesaError
+	if errors.As(err, &me) {
+		t.Fatalf("transport failure surfaced as *MpesaError (%v), want a plain transport error", err)
+	}
+	if got := c.daily.used[ServiceB2C]; got != 0 {
+		t.Fatalf("used after transport rollback = %d, want 0", got)
+	}
+	// Second payout now fits (60000 ≤ 100000): proves the rollback freed
+	// the budget the aborted attempt had consumed.
+	if _, err := c.B2CPayout(ctx, b2cAmount(60_000)); err != nil {
+		t.Fatalf("payout after rollback rejected: %v", err)
+	}
+	// Control: a gateway *MpesaError keeps the spend (no rollback).
+	mux2 := http.NewServeMux()
+	mux2.Handle("/oauth/v1/generate", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{"access_token": "tok-gw", "expires_in": "3599"})
+	}))
+	mux2.HandleFunc(b2cPath, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"requestId":"req-1","errorCode":"500.001.11","errorMessage":"Service unavailable"}`))
+	})
+	srv2 := httptest.NewServer(mux2)
+	t.Cleanup(srv2.Close)
+	c2, err := NewClient(Config{
+		ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox,
+		Shortcode: testShortcode, Passkey: testPasskey,
+		Now:        func() time.Time { return now },
+		Limits: &TransactionLimits{
+			B2C: ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(100_000)},
+		},
+		TrackDaily: true,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	c2.baseURL = srv2.URL
+	_, err = c2.B2CPayout(ctx, b2cAmount(60_000))
+	if err == nil {
+		t.Fatal("gateway-500 payout succeeded, want an error")
+	}
+	if !errors.As(err, &me) {
+		t.Fatalf("gateway failure = %T (%v), want *MpesaError", err, err)
+	}
+	if got := c2.daily.used[ServiceB2C]; got != 60_000 {
+		t.Fatalf("used after gateway error = %d, want 60000 (gateway errors keep the spend)", got)
+	}
+}
+
+// TestPerTransactionRejectionConsumesNoDailyBudget verifies that a request
+// rejected for exceeding the per-transaction ceiling does NOT consume any
+// daily budget (F14d). The daily check runs AFTER per-transaction validation
+// so a rejected request never touches the accumulator.
+func TestPerTransactionRejectionConsumesNoDailyBudget(t *testing.T) {
+	now := time.Date(2024, 5, 1, 6, 0, 0, 0, time.UTC)
+	c, err := NewClient(Config{
+		ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox,
+		Shortcode: testShortcode, Passkey: testPasskey,
+		Now: func() time.Time { return now },
+		Limits: &TransactionLimits{
+			STK: ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(1_000_000)},
+		},
+		TrackDaily: true,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	ctx := context.Background()
+
+	// 250001 exceeds per-transaction ceiling (250000) but is well within
+	// the daily ceiling (1,000,000). Must be rejected WITHOUT consuming daily.
+	_, err = c.STKPush(ctx, STKPushRequest{
+		BusinessShortCode: "174379", TransactionType: TransactionTypePayBillOnline, Amount: 250_001,
+		PartyA: "254722000000", PartyB: "174379", PhoneNumber: "254722111111",
+		CallBackURL: "https://mydomain.com/path", AccountReference: "accountref", TransactionDesc: "txndesc",
+	})
+	if err == nil {
+		t.Fatal("STKPush 250001 accepted, want per-transaction ceiling rejection")
+	}
+	var le *LimitError
+	if !errors.As(err, &le) || le.Kind != "MaxPerTransaction" {
+		t.Fatalf("err = %v, want MaxPerTransaction LimitError", err)
+	}
+	if got := c.daily.used[ServiceSTK]; got != 0 {
+		t.Fatalf("daily used = %d, want 0 (per-transaction rejection must not consume)", got)
+	}
+}
+
+// TestAtCeilingPerTransaction verifies the exact ceiling boundaries for
+// STK, C2B, Reversal, and QR: 250000 is accepted, 250001 is rejected
+// (F14e). These are the documented Safaricom defaults. We test the
+// ValidateWithLimits method directly to avoid network calls.
+func TestAtCeilingPerTransaction(t *testing.T) {
+	limits := TransactionLimits{
+		STK:      ServiceLimits{MaxPerTransaction: Limit(250_000)},
+		C2B:      ServiceLimits{MaxPerTransaction: Limit(250_000)},
+		Reversal: ServiceLimits{MaxPerTransaction: Limit(250_000)},
+		QR:       ServiceLimits{MaxPerTransaction: Limit(250_000)},
+	}
+
+	// STK Push: default ceiling 250000
+	{
+		r := STKPushRequest{
+			BusinessShortCode: "174379", TransactionType: TransactionTypePayBillOnline, Amount: 250_000,
+			PartyA: "254722000000", PartyB: "174379", PhoneNumber: "254722111111",
+			CallBackURL: "https://mydomain.com/path", AccountReference: "accountref", TransactionDesc: "txndesc",
+		}
+		if err := r.ValidateWithLimits(limits); err != nil {
+			t.Errorf("STKPush 250000 rejected: %v, want accept at ceiling", err)
+		}
+		r.Amount = 250_001
+		if err := r.ValidateWithLimits(limits); err == nil {
+			t.Error("STKPush 250001 accepted, want rejection one past ceiling")
+		}
+	}
+
+	// C2B Simulate: default ceiling 250000
+	{
+		r := C2BSimulateRequest{CommandID: TransactionTypePayBillOnline, Amount: 250_000, Msisdn: "254722111111", BillRefNumber: "acct-1"}
+		if err := r.ValidateWithLimits(limits); err != nil {
+			t.Errorf("C2BSimulate 250000 rejected: %v, want accept at ceiling", err)
+		}
+		r.Amount = 250_001
+		if err := r.ValidateWithLimits(limits); err == nil {
+			t.Error("C2BSimulate 250001 accepted, want rejection one past ceiling")
+		}
+	}
+
+	// Reversal: default ceiling 250000
+	{
+		r := ReversalRequest{Initiator: "i", SecurityCredential: "c", TransactionID: "R1", Amount: 250_000, ReceiverParty: "600992", ResultURL: "https://a.com/r", QueueTimeOutURL: "https://a.com/t", Remarks: "ok"}
+		if err := r.ValidateWithLimits(limits); err != nil {
+			t.Errorf("Reversal 250000 rejected: %v, want accept at ceiling", err)
+		}
+		r.Amount = 250_001
+		if err := r.ValidateWithLimits(limits); err == nil {
+			t.Error("Reversal 250001 accepted, want rejection one past ceiling")
+		}
+	}
+
+	// QR: default ceiling 250000
+	{
+		r := QRCodeRequest{MerchantName: "m", RefNo: "ref", Amount: 250_000, TrxCode: QRTrxBuyGoods, CPI: "174379", Size: "300"}
+		if err := r.ValidateWithLimits(limits); err != nil {
+			t.Errorf("QR 250000 rejected: %v, want accept at ceiling", err)
+		}
+		r.Amount = 250_001
+		if err := r.ValidateWithLimits(limits); err == nil {
+			t.Error("QR 250001 accepted, want rejection one past ceiling")
+		}
 	}
 }

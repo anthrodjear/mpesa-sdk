@@ -15,7 +15,7 @@
  * no explicit lock needed like Python's threading.Lock).
  *
  * **Wall-clock freshness**: Tokens are refreshed when the wall clock
- * passes `fetchedAt + (expiresIn - 60s)`, clamped to [1s, 50min].
+ * passes `fetchedAt + (expiresIn - 60s)`, clamped to [60s, 50min].
  * This avoids both the late-refresh stampede and the early-refresh waste.
  *
  * @example
@@ -65,7 +65,7 @@ const REFRESH_RATE_LIMIT_MS = 5_000;
 // ─── Refresh cadence ──────────────────────────────────────────────────────────
 
 /**
- * Eager refresh window: TTL minus 60s safety, clamped to [1s, 50min].
+ * Eager refresh window: TTL minus 60s safety, clamped to [60s, 50min].
  * Unknown/zero TTLs fall back to the legacy 50-minute cadence.
  *
  * NaN-safe by construction: a non-finite `expiresInSec` (garbage string,
@@ -81,7 +81,9 @@ const REFRESH_RATE_LIMIT_MS = 5_000;
  * @returns Cadence in milliseconds.
  */
 function refreshCadence(expiresInSec: number): number {
-  const MIN = 1_000;
+  // 60s floor (cross-SDK decision): a sub-minute cadence re-mints far
+  // more often than Daraja's token invalidation semantics justify.
+  const MIN = 60_000;
   const MAX = 50 * 60_000;
   const SAFETY = 60_000;
   if (!Number.isFinite(expiresInSec) || expiresInSec <= 0) return MAX;
@@ -404,6 +406,13 @@ export class TokenManager {
       return token;
     } catch (err) {
       this._failures++;
+      // Re-stamp the window at the FAILURE instant (Go
+      // `recordRefreshFailure` parity, go/client.go): a slow failing
+      // attempt must not age the attempt-start stamp past the 5s
+      // window, or the 3-failure gate would never trip against a slow
+      // endpoint. A refused/gated attempt throws above and never
+      // reaches this line ("refused is not an attempt").
+      this._lastAttemptMs = this._now();
       throw err;
     }
   }

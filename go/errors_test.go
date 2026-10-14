@@ -157,3 +157,23 @@ func TestParseErrorEnvelopeNoLoggerCall(t *testing.T) {
 		t.Error("ErrorLogger.LogError must not be called for standard envelope responses")
 	}
 }
+
+// TestParseErrorBareNumericErrorCodePreserved verifies that a bare numeric
+// errorCode (e.g. 401 instead of "401") is coerced by FlexString and still
+// reaches the caller via MpesaError.ErrorCode — it must NOT fall back to
+// the generic message. Python/TS parity.
+func TestParseErrorBareNumericErrorCodePreserved(t *testing.T) {
+	body := []byte(`{"requestId":"req-1","errorCode":401,"errorMessage":"Unauthorized"}`)
+	err := parseError(401, "application/json", body, nil)
+
+	e, ok := err.(*Error)
+	if !ok {
+		t.Fatalf("parseError returned %T, want *Error", err)
+	}
+	if e.ErrorCode != "401" {
+		t.Fatalf("ErrorCode = %q, want %q (bare numeric must be coerced)", e.ErrorCode, "401")
+	}
+	if e.ErrorMessage != "Unauthorized" {
+		t.Errorf("ErrorMessage = %q, want %q", e.ErrorMessage, "Unauthorized")
+	}
+}

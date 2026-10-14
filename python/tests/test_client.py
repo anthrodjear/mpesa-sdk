@@ -271,8 +271,9 @@ def test_oversize_response_rejected():
                  '"ResponseCode":"0","ResponseDescription":"d",'
                  f'"CustomerMessage":"{huge_desc}"}}')
     client, session = make(oauth_then(FakeResponse(text=oversized)))
-    with pytest.raises(ValueError, match="exceeds"):
+    with pytest.raises(MpesaError) as excinfo:
         client.stk_push(valid_stk())
+    assert excinfo.value.status_code == 413
 
 
 def test_redirect_attempt_not_followed():
@@ -338,8 +339,9 @@ def test_401_probe_is_size_capped():
         FakeResponse(text=OAUTH_OK),
         StreamOnlyResponse(status_code=401, text=huge_body),
     ])
-    with pytest.raises(ValueError, match="exceeds"):
+    with pytest.raises(MpesaError) as excinfo:
         client.stk_push(valid_stk())
+    assert excinfo.value.status_code == 413
 
 
 def test_send_streams_and_accumulates_without_dot_content():

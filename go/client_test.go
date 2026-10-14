@@ -579,6 +579,95 @@ func TestValidationBeforeAnyNetworkCall(t *testing.T) {
 	}
 }
 
+// TestEmptyPasskeyRejectedClientSide verifies that STK Push and STK Query
+// reject an empty Passkey before any network call (F14a). The client-side
+// check prevents a 500.001.1001 gateway rejection that would otherwise
+// look like a credential/timestamp problem.
+func TestEmptyPasskeyRejectedClientSide(t *testing.T) {
+	networkTouched := false
+	mux := http.NewServeMux()
+	guard := func(pattern string) {
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			networkTouched = true
+			http.Error(w, "must not reach here", http.StatusInternalServerError)
+		})
+	}
+	for _, p := range []string{"/oauth/v1/generate", stkPushPath, stkQueryPath} {
+		guard(p)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c, err := NewClient(Config{
+		ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox,
+		Shortcode: testShortcode, Passkey: "", // empty Passkey
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	c.baseURL = srv.URL
+	ctx := context.Background()
+
+	// STKPush should reject empty Passkey
+	_, err = c.STKPush(ctx, validSTKPushRequest())
+	if err == nil {
+		t.Fatal("STKPush with empty Passkey succeeded, want client-side error")
+	}
+	if !strings.Contains(err.Error(), "Passkey is required") {
+		t.Fatalf("STKPush err = %v, want Passkey is required message", err)
+	}
+
+	// STKQuery should also reject empty Passkey
+	_, err = c.STKQuery(ctx, STKQueryRequest{CheckoutRequestID: "ws_CO_test"})
+	if err == nil {
+		t.Fatal("STKQuery with empty Passkey succeeded, want client-side error")
+	}
+	if !strings.Contains(err.Error(), "Passkey is required") {
+		t.Fatalf("STKQuery err = %v, want Passkey is required message", err)
+	}
+
+	if networkTouched {
+		t.Fatal("network was touched during Passkey validation failures")
+	}
+}
+
+// TestOAuthOversizedBodyReturnsTypedError verifies that an OAuth response
+// exceeding maxResponseLen returns an *OversizeError (HTTP 413 semantics,
+// F12/F17) usable via errors.As (F14c).
+func TestOAuthOversizedBodyReturnsTypedError(t *testing.T) {
+	largeBody := strings.Repeat("x", maxResponseLen+1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/v1/generate", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(largeBody))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c, err := NewClient(Config{
+		ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox,
+		Shortcode: testShortcode, Passkey: testPasskey,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	c.baseURL = srv.URL
+	ctx := context.Background()
+
+	_, err = c.Token(ctx)
+	if err == nil {
+		t.Fatal("Token() with oversized OAuth body succeeded, want error")
+	}
+	var oe *OversizeError
+	if !errors.As(err, &oe) {
+		t.Fatalf("err = %T (%v), want *OversizeError", err, err)
+	}
+	if oe.Path != "/oauth/v1/generate?grant_type=client_credentials" {
+		t.Errorf("OversizeError.Path = %q, want oauthPath", oe.Path)
+	}
+}
+
 // --- Consolidated review round: client hardening (K1..S9) ---
 
 // K2 + test gap: STKQuery honors a BusinessShortCode override end-to-end and
@@ -1220,9 +1309,12 @@ func TestRefreshRateLimit(t *testing.T) {
 		t.Fatalf("oauthHits = %d, want 3 (no rate limit without failures)", oauthHits)
 	}
 
-	// 3. After 3+ consecutive failures, rate limiting kicks in
+	// 3. After 3+ consecutive failures, rate limiting kicks in. The clock
+	// is failure-driven (lastRefreshAttempt is stamped only by
+	// recordRefreshFailure), so arm it the way three real failures would.
 	c.mu.Lock()
 	c.refreshFailures = 3
+	c.lastRefreshAttempt = now
 	c.mu.Unlock()
 	c.mu.Lock()
 	c.tokenExpiry = now.Add(-1 * time.Second)
@@ -1328,6 +1420,97 @@ func TestForcedRefreshFailuresAdvanceRateLimitClock(t *testing.T) {
 	if oauthHits != 3 {
 		t.Fatalf("oauthHits = %d, want still 3 (a rate-limited refresh must not dispatch)", oauthHits)
 	}
+}
+
+// TestThreeTimeoutsSpreadOutStillGateFourth verifies the failure-instant rate
+// limit clock: lastRefreshAttempt is stamped only when an attempt FAILS, so
+// a hung in-flight refresh must not extend the 5s gate. Sequence: three
+// transport failures spread out, then a fourth attempt that hangs past the
+// window — a fifth call inside the hang must pass the gate (the old
+// attempt-start stamp would have gated it on the hung attempt's start time).
+// refresh is called directly (not via Token/tokenWithGen) to bypass the
+// single-flight leader election, which would otherwise make the fifth caller
+// wait on the hung leader instead of reaching the gate check.
+func TestThreeTimeoutsSpreadOutStillGateFourth(t *testing.T) {
+	var mu sync.Mutex
+	now := fixedClock
+	currentNow := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	advance := func(d time.Duration) {
+		mu.Lock()
+		now = now.Add(d)
+		mu.Unlock()
+	}
+	oauthHits := 0
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/v1/generate", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		oauthHits++
+		n := oauthHits
+		mu.Unlock()
+		if n == 4 {
+			// Hang until the test releases us: the client-side gate check
+			// for this attempt has already run (and stamped the old clock).
+			once.Do(func() { close(entered) })
+			<-release
+		}
+		// Every attempt (including the hung one, after release) dies as a
+		// transport failure: no response ever reaches the client.
+		panic(http.ErrAbortHandler)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c, err := NewClient(Config{
+		ConsumerKey: "test-key", ConsumerSecret: "test-secret",
+		Shortcode: testShortcode, Passkey: testPasskey,
+		Environment: Sandbox, Now: currentNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.baseURL = srv.URL
+	ctx := context.Background()
+
+	// Three consecutive transport failures, 1s and 2s apart: each stamps
+	// lastRefreshAttempt at its failure instant (t0, t0+1s, t0+2s).
+	for i := 0; i < 3; i++ {
+		if _, err := c.refresh(ctx, false); err == nil {
+			t.Fatalf("refresh %d succeeded against an aborting endpoint, want failure", i+1)
+		}
+		advance(time.Second)
+	}
+	// At t0+7s the window (last failure t0+2s) has fully elapsed: the fourth
+	// attempt passes the gate and hangs in the network leg.
+	advance(4 * time.Second)
+	hangDone := make(chan struct{})
+	go func() {
+		_, _ = c.refresh(ctx, false)
+		close(hangDone)
+	}()
+	<-entered // the gate check for attempt 4 has run
+
+	// While attempt 4 is still in flight, advance to t0+9s. The last
+	// FAILURE is still t0+2s (7s ago) — attempt 4 has not failed yet — so
+	// the fifth call must pass the gate. The old attempt-start stamp (t0+7s)
+	// would have made this look 2s inside the window and gated it.
+	advance(2 * time.Second)
+	_, err = c.refresh(ctx, false)
+	if err == nil {
+		t.Fatal("fifth refresh succeeded against an aborting endpoint, want a transport error")
+	}
+	if strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("fifth refresh gated on the hung attempt's start time: %v", err)
+	}
+
+	close(release)
+	<-hangDone // the hung attempt finishes as a transport failure before teardown
 }
 
 // TestRefreshWaitersHonorContextCancellation verifies the uncancellable-waiter
@@ -1437,7 +1620,7 @@ func TestRefreshWaitersHonorContextCancellation(t *testing.T) {
 func TestRefreshCadenceOverflowGuard(t *testing.T) {
 	const (
 		maxCadence = 50 * time.Minute
-		minCadence = time.Second
+		minCadence = time.Minute // 60s parity floor (Python/TS both floor at 60.0s)
 		safety     = time.Minute
 	)
 
@@ -1446,12 +1629,13 @@ func TestRefreshCadenceOverflowGuard(t *testing.T) {
 		expiresIn FlexInt64
 		want      time.Duration
 	}{
-		// Normal values: TTL - 60s safety margin, clamped to [1s, 50min]
+		// Normal values: TTL - 60s safety margin, clamped to [60s, 50min]
 		{"normal_3599s", FlexInt64(3599), maxCadence}, // 3539s > 50min, clamped
 		{"normal_3600s", FlexInt64(3600), maxCadence}, // 3540s > 50min, clamped
 		{"normal_120s", FlexInt64(120), 60 * time.Second},
-		{"normal_61s", FlexInt64(61), minCadence}, // 61-60=1s, clamped to minCadence
-		{"normal_60s", FlexInt64(60), minCadence}, // 60-60=0s, clamped to minCadence
+		{"normal_90s", FlexInt64(90), minCadence},   // 90-60=30s, clamped to the 60s parity floor
+		{"normal_61s", FlexInt64(61), minCadence},   // 61-60=1s, clamped to minCadence
+		{"normal_60s", FlexInt64(60), minCadence},   // 60-60=0s, clamped to minCadence
 
 		// Edge: zero and negative fall back to maxCadence
 		{"zero", FlexInt64(0), maxCadence},
