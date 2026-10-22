@@ -283,6 +283,11 @@ func nairobiDay(t time.Time) string {
 // records it atomically. A nil or non-positive MaxPerDay means unlimited, so
 // no state is accumulated for it.
 //
+// It returns the Africa/Nairobi day the amount was charged on, or "" when
+// nothing was charged (an unlimited ceiling). The caller hands that day back
+// to rollback: a refund may only credit the bucket the amount was actually
+// charged against (Python _accrue_daily parity).
+//
 // The check and the increment happen under one mutex acquisition: releasing
 // the lock between them would let two concurrent goroutines both observe a
 // total just under the ceiling and both succeed, so N concurrent calls of
@@ -292,11 +297,11 @@ func nairobiDay(t time.Time) string {
 // The limits argument is read-only: Config.resolvedLimits materializes the
 // merge once at NewClient, so this path never resolves a config and never
 // needs extra locking to read the ceilings.
-func (d *dailyLedger) consume(service Service, amount int64, limits TransactionLimits, today string) error {
+func (d *dailyLedger) consume(service Service, amount int64, limits TransactionLimits, today string) (string, error) {
 	svc := limits.limitsFor(service)
 	max, capped := svc.ceiling(svc.MaxPerDay)
 	if !capped {
-		return nil // unlimited: nothing to accumulate, nothing to reject
+		return "", nil // unlimited: nothing to accumulate, nothing to reject
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -310,7 +315,7 @@ func (d *dailyLedger) consume(service Service, amount int64, limits TransactionL
 	}
 	used := d.used[service] + amount
 	if used > max {
-		return &LimitError{
+		return "", &LimitError{
 			Service:    string(service),
 			Kind:       "MaxPerDay",
 			Amount:     used,
@@ -319,19 +324,35 @@ func (d *dailyLedger) consume(service Service, amount int64, limits TransactionL
 		}
 	}
 	d.used[service] = used
-	return nil
+	return today, nil
 }
 
-// rollback removes amount from today's bucket after a transport-class
-// failure — the mirror of consume for requests that never received a gateway
-// answer. It is a no-op when TrackDaily recorded nothing for the service or
-// the day has rolled (the amount was never counted against the new day), and
-// it floors at zero so a double-rollback can never drive the accumulator
+// rollback removes amount from the bucket it was charged against after a
+// transport-class failure — the mirror of consume for requests that never
+// received a gateway answer.
+//
+// accrualDay is the Africa/Nairobi day the amount was charged on ("" when
+// nothing was charged). A refund whose day differs from the CURRENT day is
+// REFUSED: the amount was never counted against the current day's bucket, so
+// crediting it there would hand back quota the payment never consumed — and
+// would wipe a day's real volume (Python _rollback_daily parity: the
+// same rule, the same "no refund across a day change" outcome).
+//
+// It is also a no-op when the ledger recorded nothing for the service, and it
+// floors at zero so a double-rollback can never drive the accumulator
 // negative.
-func (d *dailyLedger) rollback(service Service, amount int64, today string) {
+func (d *dailyLedger) rollback(service Service, amount int64, accrualDay string, today string) {
+	if accrualDay == "" {
+		return // nothing was charged: there is nothing to give back
+	}
+	if today != accrualDay {
+		// The Nairobi day rolled while the request was in flight: the
+		// reservation belongs to a bucket that is no longer the current one.
+		return
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.used == nil || d.day != today {
+	if d.used == nil {
 		return
 	}
 	if v := d.used[service] - amount; v > 0 {

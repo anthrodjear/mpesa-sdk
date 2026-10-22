@@ -487,9 +487,13 @@ func NewClient(cfg Config) (*Client, error) {
 // whether it fits. It is a no-op unless Config.TrackDaily is set, so the
 // opt-in semantics of the accumulator are enforced at the single point every
 // dispatched amount flows through.
-func (c *Client) checkDaily(service Service, amount int64) error {
+//
+// It returns the Africa/Nairobi day the amount was charged on ("" when
+// nothing was charged), which the caller hands back to rollbackDaily: a
+// refund may only credit the bucket the amount was actually charged against.
+func (c *Client) checkDaily(service Service, amount int64) (string, error) {
 	if !c.cfg.TrackDaily {
-		return nil
+		return "", nil
 	}
 	return c.daily.consume(service, amount, c.limits, nairobiDay(c.cfg.Now()))
 }
@@ -499,11 +503,16 @@ func (c *Client) checkDaily(service Service, amount int64) error {
 // no-op unless TrackDaily is on. Gateway responses — success or *MpesaError
 // — keep the spend: only errors that mean "never reached Daraja" roll back,
 // matching the Python client's transport-error semantics.
-func (c *Client) rollbackDaily(service Service, amount int64) {
+//
+// accrualDay is the Nairobi day the amount was charged on: a refund that
+// lands on a DIFFERENT day is skipped, because the amount was never counted
+// against the current day's bucket, so crediting it there would hand back
+// quota the payment never consumed (Python _rollback_daily parity).
+func (c *Client) rollbackDaily(service Service, amount int64, accrualDay string) {
 	if !c.cfg.TrackDaily {
 		return
 	}
-	c.daily.rollback(service, amount, nairobiDay(c.cfg.Now()))
+	c.daily.rollback(service, amount, accrualDay, nairobiDay(c.cfg.Now()))
 }
 
 // Token returns the cached Bearer token, refreshing it single-flight before
@@ -998,7 +1007,8 @@ func (c *Client) STKPush(ctx context.Context, r STKPushRequest) (*STKPushRespons
 	// Daily ceiling is checked LAST, immediately before dispatch: it must run
 	// after every other validation (and after the defaults injection above)
 	// so a rejected request never consumes accumulator budget.
-	if err := c.checkDaily(ServiceSTK, r.Amount); err != nil {
+	accrualDay, err := c.checkDaily(ServiceSTK, r.Amount)
+	if err != nil {
 		return nil, err
 	}
 	// Password binds to the shortcode actually sent — divergent values cause
@@ -1017,7 +1027,7 @@ func (c *Client) STKPush(ctx context.Context, r STKPushRequest) (*STKPushRespons
 	if err := c.post(ctx, stkPushPath, payload, &out); err != nil {
 		var me *MpesaError
 		if !errors.As(err, &me) {
-			c.rollbackDaily(ServiceSTK, r.Amount)
+			c.rollbackDaily(ServiceSTK, r.Amount, accrualDay)
 		}
 		return nil, err
 	}
@@ -1088,14 +1098,15 @@ func (c *Client) B2CPayout(ctx context.Context, r B2CPayoutRequest) (*B2CRespons
 	if err := r.ValidateWithLimits(c.limits); err != nil {
 		return nil, err
 	}
-	if err := c.checkDaily(ServiceB2C, r.Amount); err != nil {
+	accrualDay, err := c.checkDaily(ServiceB2C, r.Amount)
+	if err != nil {
 		return nil, err
 	}
 	var out B2CResponse
 	if err := c.post(ctx, b2cPath, r, &out); err != nil {
 		var me *MpesaError
 		if !errors.As(err, &me) {
-			c.rollbackDaily(ServiceB2C, r.Amount)
+			c.rollbackDaily(ServiceB2C, r.Amount, accrualDay)
 		}
 		return nil, err
 	}
@@ -1137,14 +1148,15 @@ func (c *Client) Reversal(ctx context.Context, r ReversalRequest) (*Conversation
 	if err := r.ValidateWithLimits(c.limits); err != nil {
 		return nil, err
 	}
-	if err := c.checkDaily(ServiceReversal, r.Amount); err != nil {
+	accrualDay, err := c.checkDaily(ServiceReversal, r.Amount)
+	if err != nil {
 		return nil, err
 	}
 	var out ConversationResponse
 	if err := c.post(ctx, reversalPath, r, &out); err != nil {
 		var me *MpesaError
 		if !errors.As(err, &me) {
-			c.rollbackDaily(ServiceReversal, r.Amount)
+			c.rollbackDaily(ServiceReversal, r.Amount, accrualDay)
 		}
 		return nil, err
 	}
@@ -1197,14 +1209,15 @@ func (c *Client) C2BSimulate(ctx context.Context, r C2BSimulateRequest) (*C2BAck
 	if err := r.ValidateWithLimits(c.limits); err != nil {
 		return nil, err
 	}
-	if err := c.checkDaily(ServiceC2B, r.Amount); err != nil {
+	accrualDay, err := c.checkDaily(ServiceC2B, r.Amount)
+	if err != nil {
 		return nil, err
 	}
 	var out C2BAckResponse
 	if err := c.post(ctx, c2bSimulatePath, r, &out); err != nil {
 		var me *MpesaError
 		if !errors.As(err, &me) {
-			c.rollbackDaily(ServiceC2B, r.Amount)
+			c.rollbackDaily(ServiceC2B, r.Amount, accrualDay)
 		}
 		return nil, err
 	}
@@ -1217,14 +1230,15 @@ func (c *Client) GenerateQRCode(ctx context.Context, r QRCodeRequest) (*QRCodeRe
 	if err := r.ValidateWithLimits(c.limits); err != nil {
 		return nil, err
 	}
-	if err := c.checkDaily(ServiceQR, r.Amount); err != nil {
+	accrualDay, err := c.checkDaily(ServiceQR, r.Amount)
+	if err != nil {
 		return nil, err
 	}
 	var out QRCodeResponse
 	if err := c.post(ctx, qrCodePath, r, &out); err != nil {
 		var me *MpesaError
 		if !errors.As(err, &me) {
-			c.rollbackDaily(ServiceQR, r.Amount)
+			c.rollbackDaily(ServiceQR, r.Amount, accrualDay)
 		}
 		return nil, err
 	}
