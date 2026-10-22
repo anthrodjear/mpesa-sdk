@@ -168,6 +168,58 @@ def test_security_credential_wraps_oversize_password_error():
         security_credential(CERT.read_bytes(), "x" * 246)  # >245B PKCS#1 limit
 
 
+def _self_signed_cert_der(bits: int) -> bytes:
+    """Build a self-signed certificate carrying an RSA key of *bits* size.
+
+    Self-signed is enough: ``security_credential`` never checks the chain
+    or the validity dates (the official certs ship long-expired by design),
+    so only the public key size matters here.
+    """
+    from datetime import datetime as dt
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=bits)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,
+                                         "mpesa-key-size-test")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(1)
+        .not_valid_before(dt(2020, 1, 1, tzinfo=timezone.utc))
+        .not_valid_after(dt(2030, 1, 1, tzinfo=timezone.utc))
+        .sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.DER)
+
+
+def test_security_credential_rejects_weak_rsa_key():
+    """A 1024-bit certificate is REFUSED, and the size is named.
+
+    That key encrypts the initiator password on the wire, so a key this
+    weak is exactly what the 2048-bit floor exists to keep out. The weak
+    certificate is generated HERE, so no weak key material is ever
+    committed to the repo.
+    """
+    with pytest.raises(ValueError, match="1024"):
+        security_credential(_self_signed_cert_der(1024), "pw")
+
+
+def test_security_credential_accepts_2048_bit_rsa_key():
+    """The floor must not refuse a legitimate key.
+
+    A 2048-bit certificate — the size the official M-Pesa certs ship —
+    still encrypts.
+    """
+    cred = security_credential(_self_signed_cert_der(2048), "pw")
+    assert len(cred) == 344  # 2048-bit RSA -> 256B ct -> 344 b64 chars
+
+
 def test_security_credential_rejects_ec_key_cert():
     from datetime import datetime as dt
 

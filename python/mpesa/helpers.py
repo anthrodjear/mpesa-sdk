@@ -25,6 +25,16 @@ __all__ = ["EAT", "generate_password", "normalize_phone", "security_credential",
 
 EAT = timezone(timedelta(hours=3))  # UTC+3 fixed offset -- no tzdata dep
 
+#: Minimum RSA key size (bits) for the M-Pesa certificate.
+#:
+#: That public key encrypts the initiator password on the wire, so a key
+#: below 2048 bits protects the credential less than the gateway
+#: credential is meant to be protected. The official M-Pesa certificates
+#: ship 2048-bit keys (``assets/certs/*``), so the floor refuses only a
+#: misconfigured or tampered certificate -- never a legitimate one. Go
+#: and TypeScript enforce the same floor.
+_MIN_RSA_KEY_BITS = 2048
+
 _PHONE_RE = re.compile(r"^254[17]\d{8}$", re.ASCII)  # ASCII: \d must not
 # match Unicode Nd digits ("٣") -- Go RE2 rejects them; so must we.
 _MAX_MSISDN_INPUT = 32
@@ -120,7 +130,8 @@ def security_credential(cert_pem_or_der: bytes, initiator_password: str) -> str:
     Raises:
         TypeError: cert_pem_or_der not bytes/bytearray.
         ValueError: empty password (checked before parsing), unparseable
-            cert, non-RSA key, or >245-byte password (PKCS#1 block limit).
+            cert, non-RSA key, an RSA key below 2048 bits, or a
+            >245-byte password (PKCS#1 block limit).
     """
     if not isinstance(cert_pem_or_der, (bytes, bytearray)):
         raise TypeError("mpesa: cert_pem_or_der must be bytes (PEM or DER)")
@@ -136,6 +147,14 @@ def security_credential(cert_pem_or_der: bytes, initiator_password: str) -> str:
     public_key = cert.public_key()
     if not isinstance(public_key, rsa.RSAPublicKey):
         raise ValueError("mpesa: M-Pesa certificate carries non-RSA public key")
+    # The key-size floor is checked BEFORE any encryption runs: a 1024-bit
+    # key would happily encrypt the password, and the weak ciphertext
+    # would only be discovered to be weak later.
+    if public_key.key_size < _MIN_RSA_KEY_BITS:
+        raise ValueError(
+            f"mpesa: M-Pesa certificate RSA key is {public_key.key_size} bits, "
+            f"want at least {_MIN_RSA_KEY_BITS}"
+        )
     try:
         ciphertext = public_key.encrypt(initiator_password.encode(), padding.PKCS1v15())
     except ValueError as exc:

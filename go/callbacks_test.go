@@ -141,6 +141,33 @@ func TestParseSTKCallbackEnvelopeAndBare(t *testing.T) {
 	}
 }
 
+// Go TOLERATES a callback whose ResultDesc is absent, while the Python and
+// TypeScript parsers REJECT the very same body: Go's ResultDesc is a plain
+// string field with no presence check (go/callbacks.go), while Python and
+// TypeScript require all four wire scalars.
+//
+// A shared fixture cannot express "these engines legitimately differ" --
+// one body, three outcomes -- so the divergence is pinned HERE, engine by
+// engine, and tracked in contract/known-divergences.md.
+func TestParseSTKCallbackToleratesMissingResultDesc(t *testing.T) {
+	payload := []byte(`{"Body":{"stkCallback":{"MerchantRequestID":"m","CheckoutRequestID":"ws_CO_1","ResultCode":"0"}}}`)
+	res, err := ParseSTKCallback(payload)
+	if err != nil {
+		t.Fatalf("ParseSTKCallback must tolerate an absent ResultDesc: %v", err)
+	}
+	if res.ResultDesc != "" {
+		t.Fatalf("ResultDesc = %q, want empty", res.ResultDesc)
+	}
+	// The tolerance is scoped to that ONE scalar: the rest of the body
+	// still parses, so a caller sees a usable callback, not a zero value.
+	if res.ResultCode.String() != "0" || res.CheckoutRequestID != "ws_CO_1" {
+		t.Fatalf("result = %+v", res)
+	}
+	if got := res.Classify(); got != ResultClassSuccess {
+		t.Fatalf("code 0 classified %q", got)
+	}
+}
+
 func TestParseSTKCallbackRejectsOversizedBody(t *testing.T) {
 	big := strings.Repeat("x", maxCallbackBodyBytes+1)
 	res, err := ParseSTKCallback([]byte(big))

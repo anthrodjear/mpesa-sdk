@@ -7,6 +7,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   generatePassword,
@@ -312,6 +313,123 @@ describe("securityCredential hardening", () => {
     const pw = "a".repeat(245);
     const cred = securityCredential(SANDBOX_CERT_PEM, pw);
     expect(Buffer.from(cred, "base64").byteLength).toBe(256);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// securityCredential hardening — RSA key-size floor
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal ASN.1 DER writer.
+ *
+ * Node's `crypto` generates an RSA key pair but exposes NO API for building
+ * an X.509 certificate — `X509Certificate` parses, it cannot create — so a
+ * weak-key fixture cannot be assembled from the public API alone. This
+ * writes just enough DER to wrap a generated public key in a self-signed
+ * certificate, which is all the SDK ever reads: it never checks the chain
+ * or the validity dates.
+ */
+function der(tag: number, content: Buffer): Buffer {
+  const len = content.length;
+  let header: Buffer;
+  if (len < 0x80) {
+    header = Buffer.from([tag, len]);
+  } else {
+    const size: number[] = [];
+    for (let n = len; n > 0; n = Math.floor(n / 256)) size.unshift(n & 0xff);
+    header = Buffer.from([tag, 0x80 | size.length, ...size]);
+  }
+  return Buffer.concat([header, content]);
+}
+
+const derSeq = (...parts: Buffer[]): Buffer => der(0x30, Buffer.concat(parts));
+const derSet = (...parts: Buffer[]): Buffer => der(0x31, Buffer.concat(parts));
+
+function derInt(value: number): Buffer {
+  const bytes: number[] = [];
+  for (let n = value; n > 0; n = Math.floor(n / 256)) bytes.unshift(n & 0xff);
+  if ((bytes[0] ?? 0) & 0x80) bytes.unshift(0); // keep it positive
+  return der(0x02, Buffer.from(bytes));
+}
+
+function derOID(oid: string): Buffer {
+  const parts = oid.split(".").map(Number);
+  const bytes: number[] = [(parts[0] ?? 0) * 40 + (parts[1] ?? 0)];
+  for (const part of parts.slice(2)) {
+    const chunk: number[] = [];
+    for (let n = part; n > 0; n = Math.floor(n / 7)) chunk.unshift(n & 0x7f);
+    // Every byte but the last carries the "more bytes follow" bit.
+    for (let i = 0; i < chunk.length - 1; i++) chunk[i] = (chunk[i] ?? 0) | 0x80;
+    bytes.push(...chunk);
+  }
+  return der(0x06, Buffer.from(bytes));
+}
+
+const derNull = (): Buffer => der(0x05, Buffer.alloc(0));
+const derPrintableString = (s: string): Buffer => der(0x13, Buffer.from(s, "ascii"));
+const derUTCTime = (s: string): Buffer => der(0x17, Buffer.from(s, "ascii"));
+const derBitString = (content: Buffer): Buffer =>
+  der(0x03, Buffer.concat([Buffer.from([0x00]), content]));
+
+/**
+ * Build a self-signed X.509 certificate around a freshly generated RSA key
+ * of `bits` size.
+ *
+ * The weak key is generated HERE, in the test, so no weak key material is
+ * ever committed to the repository.
+ */
+function selfSignedRSACert(bits: number): Buffer {
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", {
+    modulusLength: bits,
+  });
+  const sha256WithRSA = derSeq(derOID("1.2.840.113549.1.1.11"), derNull());
+  const name = derSeq(
+    derSet(derSeq(derOID("2.5.4.3"), derPrintableString("mpesa-key-size-test"))),
+  );
+  const validity = derSeq(
+    derUTCTime("200101000000Z"),
+    derUTCTime("300101000000Z"),
+  );
+  const tbs = derSeq(
+    der(0xa0, derInt(2)), // version v3
+    derInt(1), // serial number
+    sha256WithRSA, // signature algorithm
+    name, // issuer
+    validity,
+    name, // subject
+    publicKey.export({ type: "spki", format: "der" }),
+  );
+  const signature = sign("sha256", tbs, privateKey);
+  return derSeq(tbs, sha256WithRSA, derBitString(signature));
+}
+
+describe("securityCredential RSA key-size floor", () => {
+  it("rejects a 1024-bit RSA key and names the actual size", () => {
+    // That key encrypts the initiator password on the wire, so a key this
+    // weak is exactly what the 2048-bit floor exists to keep out.
+    expect(() =>
+      securityCredential(selfSignedRSACert(1024), "password"),
+    ).toThrow("mpesa: M-Pesa certificate RSA key is 1024 bits, want at least 2048");
+  });
+
+  it("accepts a 2048-bit RSA key (the size the official certs ship)", () => {
+    const cred = securityCredential(selfSignedRSACert(2048), "password");
+    expect(Buffer.from(cred, "base64").byteLength).toBe(256);
+  });
+
+  it("reports the PASSWORD error first, not the weak-key error (go/py parity)", () => {
+    // Go (go/helpers.go) and Python (python/mpesa/helpers.py) validate the
+    // initiator password BEFORE the RSA key-size floor, so for the SAME bad
+    // input — an empty password AND a weak certificate — all three engines
+    // report the password error first. TypeScript used to apply the floor
+    // first and named the key size instead.
+    expect(() => securityCredential(selfSignedRSACert(1024), "")).toThrow(
+      "mpesa: initiator_password is required",
+    );
+    expect(() => securityCredential(selfSignedRSACert(1024), "   ")).toThrow(
+      "mpesa: initiator_password is required",
+    );
   });
 });
 

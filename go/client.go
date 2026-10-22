@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -39,6 +40,29 @@ const (
 	defaultTimeout   = 30 * time.Second
 	maxResponseLen   = 1 << 20
 	refreshRateLimit = 5 * time.Second // minimum time between OAuth refresh attempts
+
+	// oversizeDrainLimit bounds how many leftover bytes are drained from an
+	// oversize response body before the connection is abandoned.
+	oversizeDrainLimit = 64 << 10
+
+	// Idle-connection budget of the transport the SDK owns (#14).
+	//
+	// http.DefaultTransport keeps only DefaultMaxIdleConnsPerHost (2) idle
+	// connections PER HOST -- a browser-ish default that starves a
+	// server-side client: at a few hundred requests/second the pool
+	// cannot retain idle connections, so every burst re-dials TLS (an
+	// extra round-trip plus certificate verification) and can exhaust
+	// the ephemeral port range. The SDK therefore owns its transport
+	// instead of inheriting that cap.
+	//
+	// Only the PER-HOST cap is raised (2 -> 32). The total (MaxIdleConns)
+	// and the idle timeout are set to the values http.DefaultTransport
+	// already uses (100 / 90s) and are pinned explicitly, so the SDK's
+	// budget cannot drift if a program mutates the package-level
+	// DefaultTransport before the SDK clones it.
+	idleConnsTotal   = 100
+	idleConnsPerHost = 32
+	idleConnTimeout  = 90 * time.Second
 )
 
 // pinnedSPKIHashes maps hostnames to their expected SPKI SHA-256 hashes.
@@ -223,6 +247,49 @@ type Client struct {
 	closed bool
 }
 
+// GoString renders a credential-free summary of the client.
+//
+// Why this method exists at all: every field of Client is UNEXPORTED, so
+// fmt cannot Interface() the nested Config value and therefore NEVER
+// reaches Config.Format for it — "%+v" on a *Client printed the raw
+// struct fields, i.e. the consumer key, the consumer secret, the passkey
+// AND the cached bearer token (as raw decimal bytes). A live Daraja bearer
+// grants full API access and a leaked consumer secret authenticates every
+// OAuth request, so a plain fmt.Sprintf("%+v", client) on a log line was
+// a credential disclosure.
+//
+// The rendering therefore carries NO credential: not the consumer key,
+// not the consumer secret, not the passkey, not the token bytes, not the
+// resolved limits and not the injected *http.Client (whose transport can
+// carry proxy/TLS internals). It keeps only the operational facts a log
+// line actually needs — which host, whether the client is closed, and
+// whether a token is cached.
+//
+// The mutable fields are read under c.mu.RLock(). The mutex is never
+// copied: the receiver is a pointer, so the lock is shared, not
+// duplicated (copying it by value would be a data race, and vet would
+// flag it).
+func (c *Client) GoString() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return fmt.Sprintf("mpesa.Client{baseURL:%q closed:%t cached:%t}",
+		c.baseURL, c.closed, len(c.tokenBytes) > 0)
+}
+
+// Format routes EVERY fmt verb (%v, %+v, %s, %q, ...) through the
+// credential-free form.
+//
+// GoStringer alone is NOT enough: it only covers %#v, while %v and %+v
+// print the raw struct fields. This mirrors Config.Format (go/config.go)
+// for the same reason — an unexported field is never passed to
+// fmt.Formatter, so the nested Config.Format never runs for it.
+//
+// The receiver is a POINTER so that fmt.Sprintf("%+v", client) on a
+// *Client is intercepted at all.
+func (c *Client) Format(f fmt.State, verb rune) {
+	_, _ = fmt.Fprint(f, c.GoString())
+}
+
 // transportDisablesVerification walks the RoundTripper chain looking for any
 // *http.Transport with TLSClientConfig.InsecureSkipVerify=true.
 //
@@ -255,11 +322,70 @@ func transportDisablesVerification(rt http.RoundTripper) bool {
 	return false
 }
 
+// tunedTransport returns the transport the SDK owns: a clone of the
+// process default transport (so the system proxy, the dialer and the
+// root-CA configuration survive) carrying a real idle-connection budget.
+//
+// CLONING rather than building from scratch matters: http.DefaultTransport
+// is where the machine's proxy configuration, its dialer and its root CA
+// set live, and a hand-built transport would silently drop all three.
+// Only the idle-connection fields are set: the PER-HOST cap is raised
+// (2 -> 32); the total and the idle timeout are pinned to the default
+// transport's own values.
+//
+// The fallback covers a program that replaced the package-level
+// http.DefaultTransport with something that is not an *http.Transport:
+// rather than inherit an unknown connection budget, the SDK builds an
+// equivalent explicit transport.
+func tunedTransport() *http.Transport {
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		tr := dt.Clone()
+		tr.MaxIdleConns = idleConnsTotal
+		tr.MaxIdleConnsPerHost = idleConnsPerHost
+		tr.IdleConnTimeout = idleConnTimeout
+		return tr
+	}
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          idleConnsTotal,
+		MaxIdleConnsPerHost:   idleConnsPerHost,
+		IdleConnTimeout:       idleConnTimeout,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}
+
+// drainOversize consumes the leftover bytes of an oversize response so
+// net/http can REUSE the connection.
+//
+// WHY: the capped read stops with bytes still unread on the socket, and a
+// connection with unread bytes can never go back to the idle pool -- so
+// every oversize response cost a fresh TLS handshake (two extra
+// round-trips plus certificate verification) and could exhaust the
+// ephemeral port range.
+//
+// The drain is BOUNDED: a server that keeps streaming must not be able to
+// pin the connection (and the goroutine reading it) indefinitely. The bytes
+// are discarded as they arrive, never buffered, so the memory bound of the
+// size cap still holds.
+func drainOversize(r io.Reader) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(r, oversizeDrainLimit))
+}
+
 // NewClient returns a Client for cfg. Timeout defaults to 30s and Now to
 // time.Now when unset. An injected Config.HTTPClient is cloned (never
 // mutated) and always gets the never-follow-redirects policy: Daraja never
 // legitimately redirects, and following 307/308 would replay request bodies
 // against an arbitrary Location host.
+//
+// The SDK-owned transport is NOT http.DefaultTransport: it is a clone of it
+// with a real idle-connection budget (see tunedTransport), because the
+// default's 2-idle-connections-per-host cap re-dials TLS under load.
 //
 // Security: an injected Transport with InsecureSkipVerify=true is refused
 // outright (fail-closed, Python verify=True parity), including when hidden
@@ -274,8 +400,8 @@ func transportDisablesVerification(rt http.RoundTripper) bool {
 // TLS pinning (cfg.TLSPinningEnabled) is enforced, never simulated: the pin
 // set for the configured host is snapshotted once here, and NewClient fails
 // closed when no pin is registered. Pinning is installed by cloning the
-// concrete *http.Transport (nil Transport ⇒ a pinned clone of
-// http.DefaultTransport), which preserves Proxy/DialContext/RootCAs and any
+// concrete *http.Transport (nil Transport ⇒ a pinned clone of the SDK's
+// tuned transport), which preserves Proxy/DialContext/RootCAs and any
 // pre-existing VerifyPeerCertificate. A wrapper chain or an opaque custom
 // RoundTripper CANNOT be pinned — replacing it would silently discard the
 // caller's tracing/retry/logging behaviour, and leaving it in place would
@@ -291,7 +417,11 @@ func NewClient(cfg Config) (*Client, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	hc := &http.Client{Timeout: cfg.Timeout}
+	// The SDK-owned transport is built ONLY on the path that uses it: an
+	// injected HTTPClient replaces it wholesale, so cloning
+	// http.DefaultTransport first was pure waste (a clone allocates a
+	// transport, its TLS config and its connection pools).
+	var hc *http.Client
 	if cfg.HTTPClient != nil {
 		if transportDisablesVerification(cfg.HTTPClient.Transport) {
 			return nil, fmt.Errorf("mpesa: refusing HTTPClient with InsecureSkipVerify (would disable TLS verification)")
@@ -301,6 +431,8 @@ func NewClient(cfg Config) (*Client, error) {
 			cloned.Timeout = cfg.Timeout
 		}
 		hc = &cloned
+	} else {
+		hc = &http.Client{Timeout: cfg.Timeout, Transport: tunedTransport()}
 	}
 	if cfg.TLSPinningEnabled {
 		hostname := hostnameFromURL(cfg.Environment.BaseURL())
@@ -335,13 +467,12 @@ func NewClient(cfg Config) (*Client, error) {
 		}
 		switch concrete, _ := hc.Transport.(*http.Transport); {
 		case hc.Transport == nil:
-			// No transport injected: pin a clone of the process default so
-			// system Proxy/DialContext/RootCAs tuning survives.
-			if dt, ok := http.DefaultTransport.(*http.Transport); ok {
-				hc.Transport = applyPinning(dt)
-			} else {
-				hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{VerifyPeerCertificate: verify}}
-			}
+			// No transport injected: pin the SDK's OWN tuned transport so
+			// the pinned client inherits the same idle-connection budget
+			// (a clone of http.DefaultTransport would re-introduce the
+			// 2-per-host cap on the pinned client) while keeping the
+			// system Proxy/DialContext/RootCAs tuning.
+			hc.Transport = applyPinning(tunedTransport())
 		case concrete != nil:
 			// Exactly an *http.Transport: pin its clone, keeping every tuned
 			// field (Proxy, DialContext, MaxIdleConns, RootCAs...).
@@ -370,9 +501,13 @@ func NewClient(cfg Config) (*Client, error) {
 // whether it fits. It is a no-op unless Config.TrackDaily is set, so the
 // opt-in semantics of the accumulator are enforced at the single point every
 // dispatched amount flows through.
-func (c *Client) checkDaily(service Service, amount int64) error {
+//
+// It returns the Africa/Nairobi day the amount was charged on ("" when
+// nothing was charged), which the caller hands back to rollbackDaily: a
+// refund may only credit the bucket the amount was actually charged against.
+func (c *Client) checkDaily(service Service, amount int64) (string, error) {
 	if !c.cfg.TrackDaily {
-		return nil
+		return "", nil
 	}
 	return c.daily.consume(service, amount, c.limits, nairobiDay(c.cfg.Now()))
 }
@@ -382,11 +517,16 @@ func (c *Client) checkDaily(service Service, amount int64) error {
 // no-op unless TrackDaily is on. Gateway responses — success or *MpesaError
 // — keep the spend: only errors that mean "never reached Daraja" roll back,
 // matching the Python client's transport-error semantics.
-func (c *Client) rollbackDaily(service Service, amount int64) {
+//
+// accrualDay is the Nairobi day the amount was charged on: a refund that
+// lands on a DIFFERENT day is skipped, because the amount was never counted
+// against the current day's bucket, so crediting it there would hand back
+// quota the payment never consumed (Python _rollback_daily parity).
+func (c *Client) rollbackDaily(service Service, amount int64, accrualDay string) {
 	if !c.cfg.TrackDaily {
 		return
 	}
-	c.daily.rollback(service, amount, nairobiDay(c.cfg.Now()))
+	c.daily.rollback(service, amount, accrualDay, nairobiDay(c.cfg.Now()))
 }
 
 // Token returns the cached Bearer token, refreshing it single-flight before
@@ -417,6 +557,15 @@ func (c *Client) zeroTokenLocked() {
 
 // Close zeros the cached token and marks the client as closed. After Close
 // the client must not be reused.
+//
+// Close WINS over a refresh that was already in flight: the OAuth round-trip
+// runs lock-free, so it can start before Close() and land after it. The
+// commit phase refuses to write into a closed client, so a closed client
+// holds no bearer at all.
+//
+// Close also REFUSES any refresh that starts after it: a refresh attempt on
+// a closed client returns ErrClientClosed and issues NO OAuth request at
+// all — the Basic-auth credential is never put on the wire again.
 func (c *Client) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -457,6 +606,21 @@ func (c *Client) tokenWithGen(ctx context.Context) (string, uint64, error) {
 func (c *Client) leadRefresh(ctx context.Context) (string, uint64, error) {
 	for {
 		c.mu.Lock()
+		// A closed client must not issue another OAuth round-trip.
+		//
+		// The waiter path makes this necessary: a caller that was already
+		// inside this loop when Close() ran wakes up, finds `refreshing`
+		// cleared by the leader it was waiting on, and would become the NEXT
+		// leader — putting the Basic-auth credential (consumer key +
+		// consumer secret) on the wire one more time after the client was
+		// closed. Nothing would be committed or served (the commit phase
+		// refuses), but Close() advertises that the client must not be
+		// reused, and a closed client has no business talking to the
+		// gateway at all.
+		if c.closed {
+			c.mu.Unlock()
+			return "", 0, ErrClientClosed
+		}
 		if c.tokenFresh() {
 			tok, gen := string(c.tokenBytes), c.gen
 			c.mu.Unlock()
@@ -490,6 +654,15 @@ func (c *Client) leadRefresh(ctx context.Context) (string, uint64, error) {
 func (c *Client) leadForcedRefresh(ctx context.Context) (string, error) {
 	for {
 		c.mu.Lock()
+		// Same refusal as leadRefresh: a closed client issues no further
+		// OAuth request, forced or not. A forced refresh (401.003.01) would
+		// otherwise re-put the Basic-auth credential on the wire after
+		// Close() — the credential is long-lived and authenticates every
+		// token request, so it must not outlive the client.
+		if c.closed {
+			c.mu.Unlock()
+			return "", ErrClientClosed
+		}
 		if c.refreshing {
 			done := c.refreshDone
 			c.mu.Unlock()
@@ -575,7 +748,8 @@ func refreshCadence(expiresIn FlexInt64) time.Duration {
 // refresh performs one OAuth round-trip in three phases so the network leg
 // runs without c.mu held:
 //
-//  1. pre-flight under the write lock (credential + rate-limit gate)
+//  1. pre-flight under the write lock (closed-client refusal + credential
+//     and rate-limit gates)
 //  2. the OAuth HTTP round-trip, lock-free
 //  3. commit under the write lock (zero the old token, set the new one,
 //     bump the generation LAST so a reader never sees a bumped generation
@@ -603,9 +777,18 @@ func (c *Client) refresh(ctx context.Context, force bool) (string, error) {
 	// failures gates the next non-forced refresh as before.
 	now := c.cfg.Now()
 	c.mu.Lock()
+	closed := c.closed
 	limited := !force && c.refreshFailures >= 3 && !c.lastRefreshAttempt.IsZero() && now.Sub(c.lastRefreshAttempt) < refreshRateLimit
 	failures, since := c.refreshFailures, now.Sub(c.lastRefreshAttempt)
 	c.mu.Unlock()
+	// A closed client must not reach the OAuth endpoint. This is the LAST
+	// gate before the Basic-auth credential would be put on the wire: the
+	// leader may have been elected before Close() ran, and the credential
+	// is long-lived (it authenticates every token request), so a closed
+	// client stops here rather than making one more round-trip.
+	if closed {
+		return "", ErrClientClosed
+	}
 	if limited {
 		return "", fmt.Errorf("mpesa: refresh rate limited after %d consecutive failures (last attempt %v ago, need %v)",
 			failures, since.Round(time.Millisecond), refreshRateLimit)
@@ -643,6 +826,10 @@ func (c *Client) refresh(ctx context.Context, force bool) (string, error) {
 		return fail(fmt.Errorf("mpesa: read oauth response: %w", err))
 	}
 	if len(body) > maxResponseLen {
+		// Drain the leftover bytes so the connection can go back to the
+		// idle pool instead of being dropped (#13). The size cap and the
+		// error the caller sees are unchanged.
+		drainOversize(resp.Body)
 		err := &OversizeError{Path: oauthPath}
 		c.recordRefreshFailure()
 		return fail(err)
@@ -667,6 +854,18 @@ func (c *Client) refresh(ctx context.Context, force bool) (string, error) {
 	// also observe the token and expiry written before it.
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Close() wins over a refresh that was already in flight. The round-trip
+	// runs lock-free, so a refresh can START before Close() and land after
+	// it; committing here would resurrect a bearer inside a closed client
+	// and break the absolute zeroing guarantee Close() advertises. No token
+	// would be SERVED (every entry point re-checks c.closed), so this is
+	// memory hygiene, not credential use — but a closed client must hold no
+	// credential at all, so the commit is refused and the cache re-zeroed.
+	if c.closed {
+		c.zeroTokenLocked()
+		c.tokenExpiry = time.Time{}
+		return "", ErrClientClosed
+	}
 	now = c.cfg.Now()
 	c.setTokenLocked(tok.AccessToken)
 	c.tokenExpiry = now.Add(refreshCadence(tok.ExpiresIn))
@@ -746,6 +945,10 @@ func (c *Client) attempt(ctx context.Context, token, path string, payload any) (
 		return 0, ct, nil, fmt.Errorf("mpesa: read %s response: %w", path, err)
 	}
 	if len(body) > maxResponseLen {
+		// Drain the leftover bytes so the connection can go back to the
+		// idle pool instead of being dropped (#13). The size cap and the
+		// error the caller sees are unchanged.
+		drainOversize(resp.Body)
 		return 0, ct, nil, &OversizeError{Path: path}
 	}
 	return resp.StatusCode, ct, body, nil
@@ -818,7 +1021,8 @@ func (c *Client) STKPush(ctx context.Context, r STKPushRequest) (*STKPushRespons
 	// Daily ceiling is checked LAST, immediately before dispatch: it must run
 	// after every other validation (and after the defaults injection above)
 	// so a rejected request never consumes accumulator budget.
-	if err := c.checkDaily(ServiceSTK, r.Amount); err != nil {
+	accrualDay, err := c.checkDaily(ServiceSTK, r.Amount)
+	if err != nil {
 		return nil, err
 	}
 	// Password binds to the shortcode actually sent — divergent values cause
@@ -837,7 +1041,7 @@ func (c *Client) STKPush(ctx context.Context, r STKPushRequest) (*STKPushRespons
 	if err := c.post(ctx, stkPushPath, payload, &out); err != nil {
 		var me *MpesaError
 		if !errors.As(err, &me) {
-			c.rollbackDaily(ServiceSTK, r.Amount)
+			c.rollbackDaily(ServiceSTK, r.Amount, accrualDay)
 		}
 		return nil, err
 	}
@@ -908,14 +1112,15 @@ func (c *Client) B2CPayout(ctx context.Context, r B2CPayoutRequest) (*B2CRespons
 	if err := r.ValidateWithLimits(c.limits); err != nil {
 		return nil, err
 	}
-	if err := c.checkDaily(ServiceB2C, r.Amount); err != nil {
+	accrualDay, err := c.checkDaily(ServiceB2C, r.Amount)
+	if err != nil {
 		return nil, err
 	}
 	var out B2CResponse
 	if err := c.post(ctx, b2cPath, r, &out); err != nil {
 		var me *MpesaError
 		if !errors.As(err, &me) {
-			c.rollbackDaily(ServiceB2C, r.Amount)
+			c.rollbackDaily(ServiceB2C, r.Amount, accrualDay)
 		}
 		return nil, err
 	}
@@ -957,14 +1162,15 @@ func (c *Client) Reversal(ctx context.Context, r ReversalRequest) (*Conversation
 	if err := r.ValidateWithLimits(c.limits); err != nil {
 		return nil, err
 	}
-	if err := c.checkDaily(ServiceReversal, r.Amount); err != nil {
+	accrualDay, err := c.checkDaily(ServiceReversal, r.Amount)
+	if err != nil {
 		return nil, err
 	}
 	var out ConversationResponse
 	if err := c.post(ctx, reversalPath, r, &out); err != nil {
 		var me *MpesaError
 		if !errors.As(err, &me) {
-			c.rollbackDaily(ServiceReversal, r.Amount)
+			c.rollbackDaily(ServiceReversal, r.Amount, accrualDay)
 		}
 		return nil, err
 	}
@@ -1017,14 +1223,15 @@ func (c *Client) C2BSimulate(ctx context.Context, r C2BSimulateRequest) (*C2BAck
 	if err := r.ValidateWithLimits(c.limits); err != nil {
 		return nil, err
 	}
-	if err := c.checkDaily(ServiceC2B, r.Amount); err != nil {
+	accrualDay, err := c.checkDaily(ServiceC2B, r.Amount)
+	if err != nil {
 		return nil, err
 	}
 	var out C2BAckResponse
 	if err := c.post(ctx, c2bSimulatePath, r, &out); err != nil {
 		var me *MpesaError
 		if !errors.As(err, &me) {
-			c.rollbackDaily(ServiceC2B, r.Amount)
+			c.rollbackDaily(ServiceC2B, r.Amount, accrualDay)
 		}
 		return nil, err
 	}
@@ -1037,14 +1244,15 @@ func (c *Client) GenerateQRCode(ctx context.Context, r QRCodeRequest) (*QRCodeRe
 	if err := r.ValidateWithLimits(c.limits); err != nil {
 		return nil, err
 	}
-	if err := c.checkDaily(ServiceQR, r.Amount); err != nil {
+	accrualDay, err := c.checkDaily(ServiceQR, r.Amount)
+	if err != nil {
 		return nil, err
 	}
 	var out QRCodeResponse
 	if err := c.post(ctx, qrCodePath, r, &out); err != nil {
 		var me *MpesaError
 		if !errors.As(err, &me) {
-			c.rollbackDaily(ServiceQR, r.Amount)
+			c.rollbackDaily(ServiceQR, r.Amount, accrualDay)
 		}
 		return nil, err
 	}

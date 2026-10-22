@@ -1,0 +1,6 @@
+{
+  "id": "balance-over-2p53",
+  "kind": "balance_segment",
+  "body": { "text": "AcctOne|KES|9007199254740993|0|0|0" },
+  "expect": { "segments": 0, "skipped": 1 }
+}

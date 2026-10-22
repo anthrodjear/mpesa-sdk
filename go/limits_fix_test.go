@@ -410,9 +410,9 @@ func TestExplicitZeroDisablesOnlyThatCeiling(t *testing.T) {
 			if _, err := c.C2BSimulate(ctx, c2bAmount(300_000)); err == nil {
 				t.Error("disabling the STK ceiling also disabled the C2B ceiling")
 			}
-		if _, err := c.Reversal(ctx, reversalAmount(300_000)); err == nil {
-			t.Error("disabling the STK ceiling also disabled the Reversal ceiling")
-		}
+			if _, err := c.Reversal(ctx, reversalAmount(300_000)); err == nil {
+				t.Error("disabling the STK ceiling also disabled the Reversal ceiling")
+			}
 		})
 	}
 }
@@ -888,22 +888,89 @@ func TestDailyLedgerRollsForwardOnly(t *testing.T) {
 	limits := TransactionLimits{
 		STK: ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(100_000)},
 	}
-	if err := d.consume(ServiceSTK, 60_000, limits, "2024-05-02"); err != nil {
+	if _, err := d.consume(ServiceSTK, 60_000, limits, "2024-05-02"); err != nil {
 		t.Fatalf("consume on first day: %v", err)
 	}
 	// Backward clock: the 2024-05-01 reading must NOT zero the bucket, so
 	// the next 60000 crosses the 100000 ceiling (120000 > 100000).
-	err := d.consume(ServiceSTK, 60_000, limits, "2024-05-01")
+	_, err := d.consume(ServiceSTK, 60_000, limits, "2024-05-01")
 	var le *LimitError
 	if !errors.As(err, &le) || le.Kind != "MaxPerDay" {
 		t.Fatalf("backward-day consume = %v, want MaxPerDay rejection proving no reset", err)
 	}
 	// Forward roll: a later day resets and the ceiling applies fresh.
-	if err := d.consume(ServiceSTK, 40_000, limits, "2024-05-03"); err != nil {
+	if _, err := d.consume(ServiceSTK, 40_000, limits, "2024-05-03"); err != nil {
 		t.Fatalf("forward-day consume: %v", err)
 	}
 	if got := d.used[ServiceSTK]; got != 40_000 {
 		t.Fatalf("used after forward roll = %d, want 40000", got)
+	}
+}
+
+// --- (i) A refund may only credit the bucket it was charged against --------
+
+// The ledger-level rule behind the client-level cross-midnight test: consume
+// records the day the amount was charged on, and a rollback refuses to
+// refund when that day differs from the current one. A SAME-day rollback
+// still refunds.
+func TestDailyRollbackRefusesAcrossADayChangeButRefundsOnTheSameDay(t *testing.T) {
+	var d dailyLedger
+	limits := TransactionLimits{
+		STK: ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(1_000_000)},
+	}
+
+	day1, err := d.consume(ServiceSTK, 1_000, limits, "2024-05-01")
+	if err != nil {
+		t.Fatalf("day-1 consume: %v", err)
+	}
+	if day1 != "2024-05-01" {
+		t.Fatalf("accrual day = %q, want 2024-05-01", day1)
+	}
+	// The clock moves past Nairobi midnight and the next amount is charged
+	// on the day-2 bucket.
+	day2, err := d.consume(ServiceSTK, 1_000, limits, "2024-05-02")
+	if err != nil {
+		t.Fatalf("day-2 consume: %v", err)
+	}
+	if day2 != "2024-05-02" {
+		t.Fatalf("accrual day = %q, want 2024-05-02", day2)
+	}
+	if got := d.used[ServiceSTK]; got != 1_000 {
+		t.Fatalf("used after the day-2 accrual = %d, want 1000", got)
+	}
+
+	// The day-1 reservation is rolled back on day 2: the refund must NOT
+	// touch the day-2 bucket (the day-2 spend has to survive).
+	d.rollback(ServiceSTK, 1_000, day1, "2024-05-02")
+	if got := d.used[ServiceSTK]; got != 1_000 {
+		t.Fatalf("used after the cross-midnight rollback = %d, want 1000 (the day-2 spend must survive)", got)
+	}
+
+	// A SAME-day rollback still refunds.
+	d.rollback(ServiceSTK, 1_000, day2, "2024-05-02")
+	if got := d.used[ServiceSTK]; got != 0 {
+		t.Fatalf("used after the same-day rollback = %d, want 0", got)
+	}
+}
+
+// A refund for an amount that was never charged is a no-op: the accrual day
+// is empty when the service's daily ceiling is unlimited (nothing was
+// accumulated, so there is nothing to give back).
+func TestDailyRollbackOfAnUnchargedAmountIsANoOp(t *testing.T) {
+	var d dailyLedger
+	unlimited := TransactionLimits{
+		STK: ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(0)},
+	}
+	day, err := d.consume(ServiceSTK, 1_000, unlimited, "2024-05-01")
+	if err != nil {
+		t.Fatalf("consume under an unlimited ceiling: %v", err)
+	}
+	if day != "" {
+		t.Fatalf("accrual day = %q, want \"\" (nothing was charged)", day)
+	}
+	d.rollback(ServiceSTK, 1_000, day, "2024-05-01")
+	if got := d.used[ServiceSTK]; got != 0 {
+		t.Fatalf("used after the rollback of an uncharged amount = %d, want 0", got)
 	}
 }
 
@@ -934,7 +1001,7 @@ func TestTransportFailureRollsBackDailyBudget(t *testing.T) {
 	c, err := NewClient(Config{
 		ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox,
 		Shortcode: testShortcode, Passkey: testPasskey,
-		Now:        func() time.Time { return now },
+		Now: func() time.Time { return now },
 		Limits: &TransactionLimits{
 			B2C: ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(100_000)},
 		},
@@ -979,7 +1046,7 @@ func TestTransportFailureRollsBackDailyBudget(t *testing.T) {
 	c2, err := NewClient(Config{
 		ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox,
 		Shortcode: testShortcode, Passkey: testPasskey,
-		Now:        func() time.Time { return now },
+		Now: func() time.Time { return now },
 		Limits: &TransactionLimits{
 			B2C: ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(100_000)},
 		},
@@ -998,6 +1065,116 @@ func TestTransportFailureRollsBackDailyBudget(t *testing.T) {
 	}
 	if got := c2.daily.used[ServiceB2C]; got != 60_000 {
 		t.Fatalf("used after gateway error = %d, want 60000 (gateway errors keep the spend)", got)
+	}
+}
+
+// dailyUsed reads the ledger's running total for service under the ledger's
+// own mutex: the test goroutine and the client's request goroutines touch
+// the same map, and go test -race (CI) must not see an unsynchronised read.
+func dailyUsed(d *dailyLedger, s Service) int64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.used[s]
+}
+
+// TestDailyRollbackDoesNotRefundAcrossANairobiDayChange is the Go half of the
+// Python D9 fix (python/mpesa/client.py _accrue_daily/_rollback_daily).
+//
+// The ledger used to compare the LEDGER's day with the CURRENT day, so a
+// day-1 reservation whose transport failed AFTER a day-2 payment had been
+// charged was refunded from the DAY-2 bucket: the merchant's real day-2
+// volume was wiped and the day-1 spend was silently forgiven. The ACCRUAL
+// day must travel with the reservation, so a refund can only credit the
+// bucket the amount was actually charged against.
+//
+// The interleaving is deterministic: the day-1 payment is held inside the
+// gateway handler while the clock is moved past Nairobi midnight and the
+// day-2 payment is charged.
+func TestDailyRollbackDoesNotRefundAcrossANairobiDayChange(t *testing.T) {
+	day1 := time.Date(2024, 5, 1, 12, 0, 0, 0, time.UTC) // 15:00 Nairobi, day 1
+	day2 := time.Date(2024, 5, 2, 12, 0, 0, 0, time.UTC) // 15:00 Nairobi, day 2
+
+	// The clock is injected through an atomic so the request goroutines and
+	// the test goroutine never race on it (go test -race).
+	var nowUnix atomic.Int64
+	nowUnix.Store(day1.UnixNano())
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var abortNext atomic.Bool
+	abortNext.Store(true)
+
+	mux := http.NewServeMux()
+	mux.Handle("/oauth/v1/generate", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{"access_token": "tok-day", "expires_in": "3599"})
+	}))
+	mux.HandleFunc(b2cPath, func(w http.ResponseWriter, r *http.Request) {
+		if abortNext.CompareAndSwap(true, false) {
+			// The first payment is in flight: hold it until the test has
+			// moved the clock past Nairobi midnight and charged a day-2
+			// payment. Only this request takes the branch, so `entered` is
+			// closed exactly once.
+			close(entered)
+			<-release
+			// Abort before any response is written: post() surfaces a
+			// transport error, not a *MpesaError.
+			panic(http.ErrAbortHandler)
+		}
+		writeJSON(t, w, http.StatusOK, ConversationResponse{ResponseCode: "0"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c, err := NewClient(Config{
+		ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox,
+		Shortcode: testShortcode, Passkey: testPasskey,
+		Now: func() time.Time { return time.Unix(0, nowUnix.Load()).UTC() },
+		Limits: &TransactionLimits{
+			B2C: ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(1_000_000)},
+		},
+		TrackDaily: true,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	c.baseURL = srv.URL
+	ctx := context.Background()
+
+	// The day-1 payment: it accrues 60000 on the May 1 bucket and then
+	// hangs inside the gateway handler.
+	paymentErr := make(chan error, 1)
+	go func() {
+		_, err := c.B2CPayout(ctx, b2cAmount(60_000))
+		paymentErr <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the day-1 payment never reached the gateway")
+	}
+	if got := dailyUsed(&c.daily, ServiceB2C); got != 60_000 {
+		t.Fatalf("day-1 spend = %d, want 60000", got)
+	}
+
+	// The clock moves past Nairobi midnight and the NEXT payment is charged
+	// on the day-2 bucket.
+	nowUnix.Store(day2.UnixNano())
+	if _, err := c.B2CPayout(ctx, b2cAmount(60_000)); err != nil {
+		t.Fatalf("the day-2 payment: %v", err)
+	}
+	if got := dailyUsed(&c.daily, ServiceB2C); got != 60_000 {
+		t.Fatalf("day-2 spend = %d, want 60000", got)
+	}
+
+	// Now the day-1 payment's transport fails. Its day-1 reservation must
+	// NOT be refunded from the day-2 bucket: the day-2 volume the merchant
+	// really moved has to survive.
+	close(release)
+	if err := <-paymentErr; err == nil {
+		t.Fatal("the aborted day-1 payment succeeded, want a transport error")
+	}
+	if got := dailyUsed(&c.daily, ServiceB2C); got != 60_000 {
+		t.Fatalf("day-2 spend after the cross-midnight rollback = %d, want 60000 (the day-2 volume must survive)", got)
 	}
 }
 

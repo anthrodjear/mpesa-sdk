@@ -33,13 +33,20 @@ Raise/catch::
 from __future__ import annotations
 
 import json
+import math
 import unicodedata
-from typing import Callable
+from typing import Any, Callable
 
 __all__ = ["MpesaError", "InvalidTokenError", "RefreshRateLimitedError"]
 
 _MAX_FIELD_CHARS = 512
 _MAX_SNIPPET_CHARS = 200
+#: Magnitude bound for the integral-float branch, mirroring
+#: ``mpesa.coercion._MONEY_MAGNITUDE`` -- the SAME +/-2**53 rule
+#: ``coerce_str``/``coerce_int`` apply (see the coercion module's
+#: docstring). Kept as a local constant because ``mpesa.coercion`` imports
+#: this module: importing it back would be an import cycle.
+_MONEY_MAGNITUDE = 2 ** 53
 #: Caller-facing text for a non-envelope body (go/errors.go verbatim).
 _UNPARSEABLE_MESSAGE = "unexpected error response from gateway"
 #: Opt-in diagnostic sink: (status_code, content_type, raw body).
@@ -65,6 +72,52 @@ def _ascii_snippet(text: str, limit: int = _MAX_SNIPPET_CHARS) -> str:
         if len(out) < limit and " " <= ch <= "~":
             out.append(ch)
     return "".join(out)
+
+
+def _envelope_value(raw: Any) -> str:
+    """Coerce one error-envelope member to its wire string form.
+
+    Go ``FlexString`` (go/coercion.go:23-47) accepts strings, numbers,
+    booleans and null; arrays and objects are a hard error there, which
+    drops the whole envelope onto the generic-message path. This mirrors
+    the member-level half of that: strings pass through, numbers and
+    booleans are rendered as their JSON text, and null/arrays/objects
+    count as absent.
+
+    Floats follow ``coercion.coerce_str``'s policy EXACTLY: an integral
+    float within +/-2**53 is de-junked to its integer text, and one
+    beyond that bound is rendered with ``repr`` instead -- ``str(int(1e30))``
+    would print ~19 spurious binary digits. A NON-FINITE float counts as
+    ABSENT: Python's ``json`` decoder accepts the bare ``NaN``/``Infinity``
+    literals, so the member must be refused here rather than reach the
+    caller as the text "nan"/"inf" (the same defence in depth
+    ``mpesa.results`` applies to balance floats).
+
+    Kept local rather than reusing ``coercion.coerce_str`` because
+    ``mpesa.coercion`` imports from this module -- a shared helper here
+    would be an import cycle.
+    """
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, bool):
+        # bool BEFORE int: in Python a bool IS an int subclass, so the
+        # int branch would render True as "1".
+        return "true" if raw else "false"
+    if isinstance(raw, int):
+        return str(raw)
+    if isinstance(raw, float):
+        # Defence in depth: a non-finite member is ABSENCE, never text.
+        if not math.isfinite(raw):
+            return ""
+        # Mirrors coerce_str's integral-float branch: str(int(1e30)) prints
+        # ~19 spurious binary digits ("1000000000000000019884624838656"),
+        # so an integral float beyond the magnitude cap falls back to
+        # repr() -- the honest "this magnitude is not an exact integer"
+        # rendering.
+        if raw.is_integer() and abs(raw) <= _MONEY_MAGNITUDE:
+            return str(int(raw))
+        return repr(raw)
+    return ""
 
 
 class MpesaError(Exception):
@@ -124,8 +177,9 @@ class MpesaError(Exception):
         length, printable-ASCII snippet) go to the OPT-IN *error_logger*
         only -- ``(status_code, content_type, body)`` -- and are discarded
         when it is omitted, so a hostile upstream body can never travel off-box
-        inside the exception text. Non-string envelope members are treated as
-        absent.
+        inside the exception text. A member that arrives as a STRING or a
+        SCALAR (number, boolean) is coerced to its wire string form; a
+        member that arrives as null, an array or an object counts as absent.
 
         Args:
             status_code: HTTP status of the failed response.
@@ -141,8 +195,7 @@ class MpesaError(Exception):
             parsed = None
         if isinstance(parsed, dict):
             for key in raw:
-                if isinstance(parsed.get(key), str):
-                    raw[key] = parsed[key]
+                raw[key] = _envelope_value(parsed.get(key))
         err = cls(
             status_code=status_code,
             request_id=_sanitize(raw["requestId"]) or None,

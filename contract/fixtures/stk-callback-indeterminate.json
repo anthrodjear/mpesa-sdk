@@ -1,0 +1,15 @@
+{
+  "id": "stk-callback-indeterminate",
+  "kind": "stk_callback",
+  "body": {
+    "Body": {
+      "stkCallback": {
+        "MerchantRequestID": "1e1f6c30-2222-4a1b-9c6d-0123456789ab",
+        "CheckoutRequestID": "ws_CO_22072024-222222-112233-445566",
+        "ResultCode": "1037",
+        "ResultDesc": "Timeout while processing"
+      }
+    }
+  },
+  "expect": { "class": "indeterminate", "resultCode": "1037", "metadata": {} }
+}

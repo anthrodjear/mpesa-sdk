@@ -160,6 +160,27 @@ describe("StkCallback hostile shapes", () => {
     expect(() => parseSTKCallback('{"Body":{"stkCallback":{}}}')).toThrow(/missing .*ResultCode/);
   });
 
+  it("rejects a body missing ResultDesc (Python test_missing_result_desc_is_rejected)", () => {
+    // TypeScript REQUIRES all four wire scalars (REQUIRED_SCALAR_KEYS), so
+    // a callback without ResultDesc throws -- while Go TOLERATES the very
+    // same body (its ResultDesc is a plain string field with no presence
+    // check) and Python rejects it as well.
+    //
+    // A shared fixture cannot express "these engines legitimately differ" --
+    // one body, three outcomes -- so the divergence is pinned here, engine
+    // by engine, and tracked in contract/known-divergences.md.
+    const raw =
+      '{"Body":{"stkCallback":{"MerchantRequestID":"m","CheckoutRequestID":"ws_CO_1","ResultCode":"0"}}}';
+    let caught: unknown;
+    try {
+      parseSTKCallback(raw);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MpesaDecodeError);
+    expect((caught as Error).message).toMatch(/ResultDesc/);
+  });
+
   it("non-object Body keeps the malformed phrasing (Python test_non_object_body_malformed_phrasing)", () => {
     expect(() => parseSTKCallback('{"Body":[]}')).toThrow(/missing or malformed Body/);
   });

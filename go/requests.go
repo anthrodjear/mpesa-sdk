@@ -16,6 +16,7 @@ import (
 // STKPushRequest is the Lipa na M-Pesa Online prompt request. The client
 // injects Password/Timestamp from ONE shared EAT timestamp at call time —
 // callers must never manage clocks themselves (two-clock bug ⇒ 500.001.1001).
+// Contains credentials — never log directly; GoString/Format redact.
 type STKPushRequest struct {
 	BusinessShortCode string `json:"BusinessShortCode"`
 	TransactionType   string `json:"TransactionType,omitempty"`
@@ -41,6 +42,15 @@ func (r STKPushRequest) Format(f fmt.State, verb rune) {
 
 // LogSafe returns the JSON wire shape as a map with CallBackURL
 // replaced by "[REDACTED]" for structured logging.
+//
+// Security: never json.Marshal(req) for logging — use LogSafe().
+// json.Marshal emits CallBackURL in cleartext and bypasses the
+// GoString/Format redaction hooks (which only cover fmt verbs), so logging
+// the raw struct or its JSON bytes leaks the callback URL to log
+// aggregators. That URL may embed the 128-bit capability token Daraja
+// hands out for callback authentication, so a leaked callback URL is a
+// leaked callback credential. LogSafe preserves every other wire key
+// verbatim for debuggability while redacting only the URL.
 func (r STKPushRequest) LogSafe() map[string]any {
 	return logSafeRedacted(r, "CallBackURL")
 }
@@ -239,6 +249,7 @@ func logSafeRedacted(v any, secretFields ...string) map[string]any {
 }
 
 // C2BRegisterRequest registers validation/confirmation callback URLs (v2).
+// Contains credentials — never log directly; GoString/Format redact.
 type C2BRegisterRequest struct {
 	ShortCode       string       `json:"ShortCode,omitempty"`
 	ResponseType    ResponseType `json:"ResponseType"`
@@ -259,6 +270,15 @@ func (r C2BRegisterRequest) Format(f fmt.State, verb rune) {
 
 // LogSafe returns the JSON wire shape as a map with ConfirmationURL
 // and ValidationURL replaced by "[REDACTED]" for structured logging.
+//
+// Security: never json.Marshal(req) for logging — use LogSafe().
+// json.Marshal emits ConfirmationURL and ValidationURL in cleartext and
+// bypasses the GoString/Format redaction hooks (which only cover fmt
+// verbs), so logging the raw struct or its JSON bytes leaks the callback
+// URLs to log aggregators. Those URLs may embed the 128-bit capability
+// token Daraja hands out for callback authentication, so a leaked callback
+// URL is a leaked callback credential. LogSafe preserves every other wire
+// key verbatim for debuggability while redacting only the URLs.
 func (r C2BRegisterRequest) LogSafe() map[string]any {
 	return logSafeRedacted(r, "ConfirmationURL", "ValidationURL")
 }
@@ -425,10 +445,10 @@ func nonRoutableIPReason(ip net.IP) string {
 		return "loopback"
 	case ip.IsPrivate():
 		return "private"
-		case ip.IsUnspecified():
-			return "unspecified"
-		case ip.To4() != nil && ip.To4()[0] == 0:
-			return "0.0.0.0/8"
+	case ip.IsUnspecified():
+		return "unspecified"
+	case ip.To4() != nil && ip.To4()[0] == 0:
+		return "0.0.0.0/8"
 	case ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast():
 		return "link-local"
 	case ip.IsInterfaceLocalMulticast():

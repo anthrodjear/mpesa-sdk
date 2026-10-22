@@ -145,6 +145,32 @@ def test_c2b_register_and_simulate_keys():
     assert sim_payload["Msisdn"] == "254712345678"     # normalized
 
 
+def test_bill_ref_number_is_required_for_paybill_simulations_only():
+    """Buy Goods simulates carry NO BillRefNumber; PayBill demands one.
+
+    The field is mandatory IFF the paybill command is chosen
+    (docs/apis/c2b.md), and Go (``go/requests.go:835``) and TypeScript
+    (``typescript/src/client.ts:1322``) enforce exactly that. Python made
+    it mandatory for BOTH commands, because the free-text LENGTH rule
+    fired before the command check could.
+    """
+    buy_goods = C2BSimulateRequest(
+        short_code="174379",
+        command_id=TransactionType.CUSTOMER_BUY_GOODS_ONLINE,
+        amount=5, msisdn="0712345678")
+    buy_goods.validate()
+    # An absent BillRefNumber is OMITTED from the payload (Go omitempty
+    # parity), never sent as an empty string.
+    assert "BillRefNumber" not in buy_goods.to_payload()
+
+    paybill = C2BSimulateRequest(
+        short_code="174379",
+        command_id=TransactionType.CUSTOMER_PAY_BILL_ONLINE,
+        amount=5, msisdn="0712345678")
+    with pytest.raises(ValueError, match="BillRefNumber"):
+        paybill.validate()
+
+
 @pytest.mark.parametrize(
     "mutate,fragment",
     [

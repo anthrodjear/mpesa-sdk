@@ -96,16 +96,22 @@ func (c Config) resolvedLimits() TransactionLimits {
 
 // maskCredential renders a value with only its first and last four runes
 // visible ("9f3d…c1a2") so logs stay correlatable without exposing the whole
-// secret. Values shorter than 8 runes carry no useful anchor, so they collapse
-// to a same-length run of asterisks (an empty value renders empty — an empty
-// consumer key is itself the diagnostic).
+// secret.
+//
+// A value of 8 runes or fewer collapses to the fixed "****" rather than
+// keeping the first-4/last-4 anchors: for an EXACTLY 8-rune value that split
+// IS the whole credential (4 + 4 == 8), so the anchor would hand back the
+// secret it exists to hide, and a shorter value carries no useful anchor to
+// keep in the first place. An empty value renders empty — an empty consumer
+// key is itself the diagnostic. TypeScript renders the same fixed "****" for
+// 8 characters or fewer.
 func maskCredential(s string) string {
 	r := []rune(s)
 	switch {
 	case len(r) == 0:
 		return ""
-	case len(r) < 8:
-		return strings.Repeat("*", len(r))
+	case len(r) <= 8:
+		return "****"
 	default:
 		return string(r[:4]) + "\u2026" + string(r[len(r)-4:])
 	}

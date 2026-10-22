@@ -48,6 +48,32 @@ func TestSecretRedaction(t *testing.T) {
 	}
 }
 
+// An 8-rune consumer key must NEVER render in full. first-4/last-4 of an
+// 8-rune value IS the whole credential, so the anchor the mask exists to
+// keep would hand back the secret it is meant to hide (SECURITY.md:
+// "Consumer Keys are secrets, not identifiers"). TypeScript collapses
+// anything of 8 characters or fewer to a fixed "****"; Go must match.
+func TestMaskCredentialNeverRendersShortKeyInFull(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty stays empty", "", ""},
+		{"single rune collapses", "a", "****"},
+		{"seven runes collapse", "abcdefg", "****"},
+		{"eight runes collapse", "abcdefgh", "****"},
+		{"nine runes keep the anchors", "abcdefghi", "abcd…fghi"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := maskCredential(tc.in); got != tc.want {
+				t.Errorf("maskCredential(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTrustedURL(t *testing.T) {
 	tests := []struct {
 		name    string

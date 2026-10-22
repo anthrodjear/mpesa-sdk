@@ -51,6 +51,7 @@ from mpesa.requests_sync import (
     C2BSimulateRequest,
     QRCodeRequest,
     STKPushRequest,
+    _service_limits,
 )
 
 PASSKEY = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919"
@@ -246,8 +247,8 @@ def test_config_validates_limits_and_track_daily_types():
     (lambda a: stk(amount=a), "stk", 250_000),
     (lambda a: c2b_simulate(amount=a), "c2b", 250_000),
     (lambda a: b2c(amount=a), "b2c", 250_000),
-    (lambda a: reversal(amount=a), "default", 250_000),
-    (lambda a: qr(amount=a), "default", 250_000),
+    (lambda a: reversal(amount=a), "reversal", 250_000),
+    (lambda a: qr(amount=a), "qr", 250_000),
 ])
 def test_default_ceiling_boundary_is_exact(build, service, ceiling):
     build(ceiling).validate()                          # boundary: accepted
@@ -300,13 +301,17 @@ def test_limits_raise_and_lower_a_ceiling():
 def test_service_falls_back_to_default_for_unknown_service_names():
     """A spelled service that does not exist inherits ``default``."""
     odd = TransactionLimits(default=ServiceLimits(1_000, 2_000))
-    # Reversal and QR are served by ``default``.
+    # Reversal and QR have their OWN buckets, so ``default`` no longer
+    # serves them: they stay on their inherited 250k baseline.
     reversal(amount=1_000).validate(odd)
-    with pytest.raises(ValueError, match="default service"):
-        reversal(amount=1_001).validate(odd)
+    with pytest.raises(ValueError, match="reversal service"):
+        reversal(amount=250_001).validate(odd)
     qr(amount=1_000).validate(odd)
-    with pytest.raises(ValueError):
-        qr(amount=1_001).validate(odd)
+    with pytest.raises(ValueError, match="qr service"):
+        qr(amount=250_001).validate(odd)
+    # An unknown service name still inherits ``default``.
+    assert _service_limits("nonesuch", odd) == odd.default
+    assert _service_limits("nonesuch", odd).max_per_transaction == 1_000
 
 
 def test_each_service_field_is_resolved_independently():
@@ -317,10 +322,36 @@ def test_each_service_field_is_resolved_independently():
     stk(amount=249_999).validate(only_default)
     with pytest.raises(ValueError, match="stk service"):
         stk(amount=250_001).validate(only_default)
-    # QR has no dedicated field: it reads ``default`` and is capped at 1k.
+    # QR has its own field: ``default``'s 1k never reaches it, so QR
+    # stays on its inherited 250k baseline.
     qr(amount=1_000).validate(only_default)
-    with pytest.raises(ValueError, match="per-transaction ceiling"):
-        qr(amount=1_001).validate(only_default)
+    with pytest.raises(ValueError, match="qr service"):
+        qr(amount=250_001).validate(only_default)
+
+
+def test_reversal_and_qr_spend_their_own_per_transaction_bucket():
+    """A raised ``reversal``/``qr`` tier must reach the PER-TRANSACTION check.
+
+    The DAILY path already spent the dedicated buckets (``"reversal"`` and
+    ``"qr"``), so a service resolving to TWO different ceilings inside one
+    engine meant a merchant who raised that tier to an approved Safaricom
+    level was silently ignored on the per-transaction check.
+    """
+    dedicated = TransactionLimits(
+        reversal=ServiceLimits(max_per_transaction=700_000),
+        qr=ServiceLimits(max_per_transaction=700_000),
+    )
+    reversal(amount=300_000).validate(dedicated)
+    qr(amount=300_000).validate(dedicated)
+
+    # A ``default``-only override must NOT reach these two services: they
+    # stay on their own (250k) baseline and the amount is still rejected.
+    only_default = TransactionLimits(
+        default=ServiceLimits(max_per_transaction=700_000))
+    with pytest.raises(ValueError, match="reversal service"):
+        reversal(amount=300_000).validate(only_default)
+    with pytest.raises(ValueError, match="qr service"):
+        qr(amount=300_000).validate(only_default)
 
 
 def test_explicit_zero_disables_only_that_ceiling():
@@ -328,6 +359,7 @@ def test_explicit_zero_disables_only_that_ceiling():
     unlimited = TransactionLimits(
         stk=ServiceLimits(max_per_transaction=0),        # explicit unlimited
         default=ServiceLimits(max_per_transaction=-5),   # non-positive too
+        reversal=ServiceLimits(max_per_transaction=-5),  # own bucket, same
     )
     # Past the old hardcoded ceiling, but under the magnitude guard.
     stk(amount=500_000_000).validate(unlimited)
@@ -724,7 +756,7 @@ AMOUNT_CASES = [1, 10, 250_000, 250_001, 300_000, 500_000, 500_001,
 
 
 def test_sync_and_async_agree_on_amount_bounds():
-    """STK (sync, ``stk`` tier) and Reversal (async, ``default`` tier)."""
+    """STK (sync, ``stk`` tier) and Reversal (async, ``reversal`` tier)."""
     for amount in AMOUNT_CASES:
         sync_ok = True
         try:
@@ -742,7 +774,8 @@ def test_sync_and_async_agree_on_amount_bounds():
 def test_sync_and_async_agree_under_a_shared_override():
     """Both files resolve the same tier through the same helper."""
     shared = TransactionLimits(stk=ServiceLimits(700_000),
-                              default=ServiceLimits(700_000))
+                               reversal=ServiceLimits(700_000))
+
     for amount in (700_000, 700_001):
         sync_ok = async_ok = True
         try:
@@ -782,3 +815,95 @@ def test_client_daily_guard_is_bypassed_when_tracking_is_off():
     client.stk_push(stk(amount=900))
     client.stk_push(stk(amount=900))
     assert client.daily_spend == {}
+
+
+# ---------------------------------------------------------------------------
+# D9: the daily refund must respect the Africa/Nairobi day boundary
+# ---------------------------------------------------------------------------
+
+
+def test_d9_rollback_does_not_refund_the_new_nairobi_day():
+    """A refund that lands after Nairobi midnight must be SKIPPED.
+
+    Go (limits.go rollback) and TypeScript (client.ts rollback thunk)
+    both no-op the refund once the day key has moved on: the amount was
+    charged against the OLD day's bucket, so crediting the NEW day's
+    bucket hands back quota the payment never consumed.
+    """
+    limits = TransactionLimits(b2c=ServiceLimits(1_000_000, 10_000))
+    clock = Clock()          # 2026-01-01 12:00 UTC == 15:00 EAT
+    client, _ = make_client(B2C_OK, limits=limits, track_daily=True,
+                             clock=clock)
+
+    accrual_day = client._accrue_daily("b2c", 5_000)
+    assert accrual_day == "2026-01-01"
+    assert client.daily_spend == {"b2c": 5_000}
+
+    # 2026-01-01 21:00 UTC == 2026-01-02 00:00 EAT: a NEW Nairobi day.
+    clock.set(datetime(2026, 1, 1, 21, 0, tzinfo=timezone.utc))
+    client._rollback_daily("b2c", 5_000, accrual_day)
+    # The refund is a no-op: the new day's bucket is untouched.
+    assert client.daily_spend == {"b2c": 5_000}
+
+    # The SAME-day rollback still refunds.
+    same_day = client._accrue_daily("b2c", 1_000)
+    assert same_day == "2026-01-02"
+    client._rollback_daily("b2c", 1_000, same_day)
+    assert client.daily_spend == {"b2c": 0}
+
+
+def test_d9_rollback_never_credits_another_days_bucket():
+    """The extra-quota scenario: a refund must not wipe the new day's spend.
+
+    Old day D1 spends 5k; the clock crosses midnight; a payment lands on
+    the new day D2 and spends 1k; THEN the D1 transport failure arrives.
+    The refund belongs to D1, so D2's 1k must survive it -- otherwise the
+    merchant silently regains a day's worth of quota.
+    """
+    limits = TransactionLimits(b2c=ServiceLimits(1_000_000, 10_000))
+    clock = Clock()
+    client, _ = make_client(B2C_OK, limits=limits, track_daily=True,
+                             clock=clock)
+
+    day_one = client._accrue_daily("b2c", 5_000)
+    assert client.daily_spend == {"b2c": 5_000}
+
+    clock.set(datetime(2026, 1, 1, 21, 0, tzinfo=timezone.utc))
+    day_two = client._accrue_daily("b2c", 1_000)
+    assert day_two == "2026-01-02"
+    assert client.daily_spend == {"b2c": 1_000}     # the new day starts fresh
+
+    # The old day's transport failure lands now.
+    client._rollback_daily("b2c", 5_000, day_one)
+    assert client.daily_spend == {"b2c": 1_000}     # D2's spend survived
+
+
+def test_d9_transport_error_across_nairobi_midnight_keeps_the_reservation():
+    """End-to-end: the endpoint's transport-error branch must thread the
+    accrual day through to the rollback."""
+    limits = TransactionLimits(b2c=ServiceLimits(1_000_000, 10_000))
+    clock = Clock()          # 2026-01-01 12:00 UTC == 15:00 EAT
+
+    class MidnightBlipSession(FakeSession):
+        """Raises ConnectionError AFTER crossing Nairobi midnight."""
+
+        def request(self, method, url, json=None, params=None, timeout=None,
+                    allow_redirects=True, headers=None, stream=False):
+            self.calls.append({"kind": method, "url": url, "json": json})
+            if method == "POST":
+                # 2026-01-02 00:00 UTC == 03:00 EAT -> a NEW Nairobi day.
+                clock.set(datetime(2026, 1, 2, 0, 0, tzinfo=timezone.utc))
+                raise requests.exceptions.ConnectionError("simulated blip")
+            return self.queue.pop(0)
+
+    session = MidnightBlipSession([OAUTH_OK])
+    cfg = Config(consumer_key="k", consumer_secret="s", shortcode="174379",
+                 passkey=PASSKEY, now=clock, http_client=session,
+                 limits=limits, track_daily=True)
+    client = MpesaClient(cfg)
+
+    with pytest.raises(requests.exceptions.ConnectionError):
+        client.b2c_payout(b2c(amount=5_000))
+    # The reservation was charged on 2026-01-01 and the failure landed on
+    # 2026-01-02, so the refund must NOT have run.
+    assert client.daily_spend.get("b2c", 0) == 5_000

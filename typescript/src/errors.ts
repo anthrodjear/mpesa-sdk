@@ -2,18 +2,65 @@
  * Typed errors for Daraja's standard error envelope — mirror of go/errors.go
  * and python/mpesa/exceptions.py. Every non-2xx response becomes one
  * {@link MpesaError}: the `{requestId, errorCode, errorMessage}` envelope when
- * present (docs/apis/getting-started.md, "Standard Error Envelope"), else a
- * safe diagnostic; members are always sanitized (Unicode Cc/Cf control code
- * points stripped, each field capped at 512 code points) so hostile gateway
- * output can never inject newlines or ANSI escapes into logs.
+ * present (docs/apis/getting-started.md, "Standard Error Envelope"), else the
+ * generic "unexpected error response from gateway"; members are always
+ * sanitized (Unicode Cc/Cf control code points stripped, each field capped at
+ * 512 code points) so hostile gateway output can never inject newlines or
+ * ANSI escapes into logs.
+ *
+ * **ERROR-BODY ISOLATION** (go/errors.go `parseError` parity): a body that
+ * is not the envelope at all yields a GENERIC `errorMessage`. The upstream
+ * bytes — the raw body, with its status and content type — are handed to
+ * the OPT-IN {@link ErrorLogger} and DISCARDED otherwise. Rationale: an
+ * exception object is logged by every logger on the call path, so embedding
+ * upstream body text here would ship raw gateway payloads off-box (customer
+ * MSISDNs, WAF internals) to whatever log sink happens to be configured.
+ * Diagnostics are opt-in, never ambient.
  *
  * @packageDocumentation
  */
 
 /** Per-field cap, in code points (parity: `_MAX_FIELD_CHARS`). */
 const MAX_FIELD_CHARS = 512;
-/** Printable-ASCII cap for unparseable-body snippets (parity: `_MAX_SNIPPET_CHARS`). */
-const MAX_SNIPPET_CHARS = 200;
+
+/**
+ * Caller-facing text for a non-envelope body — verbatim the go/py wording
+ * (go/errors.go `parseError`, python/mpesa/exceptions.py
+ * `_UNPARSEABLE_MESSAGE`), because the corpus asserts this exact string.
+ */
+const UNPARSEABLE_MESSAGE = "unexpected error response from gateway";
+
+/**
+ * Opt-in diagnostic sink for a NON-ENVELOPE error body — the TypeScript
+ * mirror of Go's `ErrorLogger` interface (go/errors.go) and Python's
+ * `error_logger` callable (python/mpesa/exceptions.py).
+ *
+ * Receives the RAW upstream body as `(statusCode, contentType, body)`. It is
+ * invoked ONLY when the body was not a Daraja error envelope, so this sink is
+ * the single place upstream bytes can surface.
+ *
+ * A sink that THROWS (synchronously) or whose returned PROMISE REJECTS is
+ * swallowed: it must never mask the gateway error the caller has to handle.
+ * The promise case matters as much as the throw case — an `async` sink is
+ * assignable to this type, and an unhandled rejection TERMINATES the Node
+ * process (Node >= 15), so a rejected sink promise is caught and discarded
+ * rather than left to the runtime.
+ *
+ * @example
+ * ```ts
+ * const client = new MpesaClient({
+ *   config,
+ *   errorLogger: (status, contentType, body) => {
+ *     metrics.increment("mpesa.gateway_error", { status, contentType });
+ *   },
+ * });
+ * ```
+ */
+export type ErrorLogger = (
+  statusCode: number,
+  contentType: string,
+  body: string | Uint8Array,
+) => void | Promise<void>;
 
 /**
  * Control/format detector: Unicode General_Category `Cc` (control) or `Cf`
@@ -43,21 +90,19 @@ function sanitizeWireString(value: string, limit: number = MAX_FIELD_CHARS): str
   return out;
 }
 
-/** Up to `limit` printable-ASCII characters of `text`, for safe diagnostics. */
-function asciiSnippet(text: string, limit: number = MAX_SNIPPET_CHARS): string {
-  let out = "";
-  for (const ch of text) {
-    if (out.length >= limit) break;
-    const cp = ch.codePointAt(0)!;
-    if (cp >= 0x20 && cp <= 0x7e) out += ch;
-  }
-  return out;
-}
-
-/** Lenient envelope-field coercion: strings pass through, numbers become decimal strings,
- *  everything else counts as absent. Documented TS divergence: python accepts strings only. */
+/**
+ * Lenient envelope-field coercion: strings pass through, numbers become
+ * decimal strings, booleans become their JSON text ("true"/"false"), and
+ * everything else (null, arrays, objects) counts as absent.
+ *
+ * The boolean branch is Go `FlexString` / Python `_envelope_value` parity:
+ * go/coercion.go falls through to the raw JSON text, so `true` is the wire
+ * text "true". A boolean is a value the gateway SENT — dropping it as if it
+ * were absent would lose, say, the requestId the 401 retry probe keys on.
+ */
 function coerceEnvelopeField(value: unknown): string {
   if (typeof value === "string") return value;
+  if (typeof value === "boolean") return value ? "true" : "false";
   return typeof value === "number" ? String(value) : "";
 }
 
@@ -159,7 +204,12 @@ export class MpesaError extends Error {
   /** HTTP status of the failed response (always set). */ readonly statusCode: number;
   /** Daraja `requestId` trace handle, or null when absent/hostile. */ requestId: string | null;
   /** Dotted gateway code such as "500.001.1001", or null. */ errorCode: string | null;
-  /** Gateway text, an unparseable-body diagnostic, or null. */ errorMessage: string | null;
+  /**
+   * Gateway text, the generic non-envelope message
+   * ("unexpected error response from gateway"), or null. NEVER a fragment of
+   * the upstream body — see the module docstring on error-body isolation.
+   */
+  errorMessage: string | null;
 
   /**
    * Build from known, pre-sanitized values — hand-raised callers pass literals;
@@ -180,20 +230,38 @@ export class MpesaError extends Error {
 
 /**
  * Build an {@link MpesaError} from a raw non-2xx body. Never throws: malformed
-   * JSON, wrong shapes and binary garbage fall through to an instance whose
-   * `errorMessage` carries a diagnostic with byte length, content type (when
-   * known) and a printable-ASCII snippet. Envelope fields accept strings and
-   * numbers only (other JSON types count as absent); decoding is lossy UTF-8
-   * with BOM preserved (py `errors="replace"` parity).
-   *
-   * @example Hostile gateway body → diagnostic, never a throw:
-   * ```ts
-   * const err = MpesaError.fromResponse(502, rawBytes, "text/html");
-   * log.warn(err.message); // mpesa: HTTP 502 unparseable error body (...)
-   * ```
-   */
-  static fromResponse(statusCode: number, body: string | Uint8Array, contentType = ""): MpesaError {
-    const bytes = typeof body === "string" ? new TextEncoder().encode(body).length : body.byteLength;
+ * JSON, wrong shapes and binary garbage fall through to an instance whose
+ * `errorMessage` is the generic "unexpected error response from gateway" — the
+ * upstream bytes are DISCARDED, because an exception object is logged by
+ * every logger on the call path and must never carry a raw gateway payload
+ * (customer MSISDNs, WAF internals) off-box.
+ *
+ * Envelope fields accept strings, numbers and booleans (go `FlexString` /
+ * py `_envelope_value` parity: a boolean renders as its JSON text); null,
+ * arrays and objects count as absent. Decoding is lossy UTF-8 with BOM
+ * preserved (py `errors="replace"` parity).
+ *
+ * @param statusCode - HTTP status of the failed response.
+ * @param body - Raw response body; NEVER interpolated into the error.
+ * @param contentType - Response `Content-Type` (diagnostics only).
+ * @param errorLogger - OPT-IN sink for the raw upstream body, invoked ONLY
+ *   when the body was not a Daraja error envelope. A sink that THROWS
+ *   (synchronously) or whose returned PROMISE REJECTS is swallowed — it
+ *   must never mask the gateway error.
+ * @returns The typed error; never throws.
+ *
+ * @example Hostile gateway body → generic message, body only via the sink:
+ * ```ts
+ * const err = MpesaError.fromResponse(502, rawBytes, "text/html", sink);
+ * log.warn(err.message); // mpesa: HTTP 502 unexpected error response from gateway
+ * ```
+ */
+  static fromResponse(
+    statusCode: number,
+    body: string | Uint8Array,
+    contentType = "",
+    errorLogger?: ErrorLogger,
+  ): MpesaError {
     const text = typeof body === "string"
       ? body : new TextDecoder("utf-8", { ignoreBOM: true }).decode(body);
     let parsed: unknown = null;
@@ -204,10 +272,33 @@ export class MpesaError extends Error {
     const codeRaw = coerceEnvelopeField(env["errorCode"]);
     const msgRaw = coerceEnvelopeField(env["errorMessage"]);
     const gotAny = ridRaw !== "" || codeRaw !== "" || msgRaw !== "";
-    const errorMessage = gotAny ? sanitizeWireString(msgRaw) || null
-      : `unparseable error body (${bytes} bytes${contentType ? `, ${contentType}` : ""}): ${asciiSnippet(text)}`;
-    return new MpesaError(statusCode, sanitizeWireString(ridRaw) || null,
-      sanitizeWireString(codeRaw) || null, errorMessage);
+    if (gotAny) {
+      return new MpesaError(statusCode, sanitizeWireString(ridRaw) || null,
+        sanitizeWireString(codeRaw) || null, sanitizeWireString(msgRaw) || null);
+    }
+    // Not an envelope: the upstream bytes leave ONLY through the opt-in sink.
+    if (errorLogger !== undefined) {
+      try {
+        const outcome: unknown = errorLogger(statusCode, contentType, body);
+        // An ASYNC sink returns a promise. The try/catch above only catches
+        // a SYNCHRONOUS throw, so a rejected sink promise would otherwise
+        // become an unhandled rejection -- which TERMINATES the Node
+        // process (Node >= 15). Attach a rejection handler so the promise
+        // is swallowed exactly like a synchronous throw is.
+        if (
+          outcome !== null && outcome !== undefined &&
+          typeof (outcome as { then?: unknown }).then === "function"
+        ) {
+          Promise.resolve(outcome).catch(() => {
+            // A rejected sink promise must never mask the gateway error the
+            // caller has to handle.
+          });
+        }
+      } catch {
+        // A broken sink must never mask the error the caller has to handle.
+      }
+    }
+    return new MpesaError(statusCode, null, null, UNPARSEABLE_MESSAGE);
   }
 }
 

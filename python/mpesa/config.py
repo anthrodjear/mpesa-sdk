@@ -41,13 +41,15 @@ def _mask_credential(value: str) -> str:
     """Mask a credential to first-4/last-4 (Go/TS ``maskCredential`` parity).
 
     Go (``go/config.go``) renders ``first4…last4`` with U+2026 for values
-    of 9+ runes, a same-length ``"*"`` run for 1-7 runes, and ``""`` for
-    empty (empty itself is the diagnostic). TypeScript
+    of 9+ runes, a fixed ``"****"`` for 1-8 runes, and ``""`` for empty
+    (empty itself is the diagnostic). The fixed ``"****"`` matters: the
+    first-4/last-4 split of an EXACTLY 8-rune value IS the whole credential
+    (4 + 4 == 8), so keeping the anchors there would hand back the secret
+    the mask exists to hide. TypeScript
     (``typescript/src/config.ts``) collapses 1-8 chars to fixed ``"****"``
     and uses ASCII ``"..."`` for long values. This follows Go exactly
-    except for length 8, where first-4/last-4 would reveal the whole key
-    (4+4 == 8): that case collapses to ``"****"`` (TS parity, intentional
-    hardening over Go) so no rendering ever carries the full key.
+    except for 1-7 runes, where it keeps a same-length ``"*"`` run (a
+    deliberate Python-only shape) instead of the fixed ``"****"``.
     """
     if not value:
         return ""

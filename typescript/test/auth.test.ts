@@ -6,6 +6,7 @@
  * with exact parity on concurrency and generation-guard semantics.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { inspect } from "node:util";
 import { TokenManager, getAccessToken } from "../src/auth.js";
 import { ConfigError } from "../src/config.js";
 import { MpesaError } from "../src/errors.js";
@@ -764,6 +765,25 @@ describe("TokenManager redaction", () => {
     expect(logged["generation"]).toBe(1);
     expect(logged["cached"]).toBe(true);
     expect(logged["token"]).toBeUndefined();
+  });
+
+  it("util.inspect prints neither the consumer key nor the consumer secret", () => {
+    // util.inspect does NOT consult toString()/toJSON(): without the
+    // inspect hook it walks the own enumerable properties and prints
+    // _consumerKey and _consumerSecret in cleartext -- which is exactly
+    // what `console.log(tm)` does.
+    const tm = new TokenManager({
+      baseUrl: BASE_URL,
+      consumerKey: "0123456789abcdef",
+      consumerSecret: "SUPERSECRET",
+      timeoutMs: 5000,
+      now: () => nowMs,
+    });
+    const out = inspect(tm);
+    expect(out).not.toContain("SUPERSECRET");
+    expect(out).not.toContain("0123456789abcdef");
+    // The rendering is still the credential-safe toString() form.
+    expect(out).toContain(tm.toString());
   });
 });
 

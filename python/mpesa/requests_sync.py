@@ -648,8 +648,12 @@ class C2BSimulateRequest:
         _amount_int("simulate Amount", self.amount)
         _check_transaction_limit("simulate Amount", "c2b", self.amount, limits)
         self.msisdn = _phone("Msisdn", self.msisdn)
+        # minimum=0: BillRefNumber is mandatory IFF the paybill command is
+        # chosen (docs/apis/c2b.md), so the free-text LENGTH rule must not
+        # make it mandatory for Buy Goods as well. The explicit _require
+        # below carries the command-dependent part.
         self.bill_ref_number = _free_text(
-            "BillRefNumber", self.bill_ref_number, 32)
+            "BillRefNumber", self.bill_ref_number, 32, minimum=0)
         if cmd == TransactionType.CUSTOMER_PAY_BILL_ONLINE.value:
             _require("BillRefNumber", self.bill_ref_number)
         self._validated = True
@@ -687,9 +691,12 @@ class QRCodeRequest:
         _require("MerchantName", self.merchant_name)
         _require("RefNo", self.ref_no)
         _amount_int("QR Amount", self.amount)
-        # QR has no dedicated tier entry: it inherits ``default`` (same as
-        # Reversal and TransactionStatus) per mpesa.limits.
-        _check_transaction_limit("QR Amount", "default", self.amount, limits)
+        # QR spends its OWN tier bucket (mpesa.limits) for BOTH bounds --
+        # the per-transaction check and the daily accrual -- so one
+        # service never resolves to two different ceilings inside one
+        # engine. Resolving it to ``default`` instead made a raised QR
+        # tier honoured on one bound and ignored on the other.
+        _check_transaction_limit("QR Amount", "qr", self.amount, limits)
         try:
             self.trx_code = QRTrxCode(_enum_value(self.trx_code))
         except ValueError:

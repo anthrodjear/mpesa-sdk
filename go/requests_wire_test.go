@@ -2,9 +2,107 @@ package mpesa
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
+
+// Every request type that carries a callback/result URL must redact it in
+// BOTH fmt verbs and LogSafe().
+//
+// Why this matters: the callback URLs Daraja hands out may embed the 128-bit
+// capability token used to authenticate callbacks, so a leaked callback URL
+// is a leaked callback credential.
+//
+// CAVEAT (documented, not asserted here): json.Marshal(req) STILL emits the
+// URL in cleartext — it bypasses the GoString/Format hooks, which only
+// cover fmt verbs. That is exactly why LogSafe() exists, and why every
+// LogSafe() docstring in requests.go warns "never json.Marshal(req) for
+// logging". This test deliberately does NOT assert the leak, so a future
+// redacting MarshalJSON can be added without breaking it.
+func TestCallbackURLRedactedInFmtAndLogSafe(t *testing.T) {
+	const (
+		callbackURL = "https://mydomain.com/callback?capability_token=TOPSECRETTOKEN"
+		resultURL   = "https://mydomain.com/result?capability_token=TOPSECRETTOKEN"
+		confirmURL  = "https://mydomain.com/confirm?capability_token=TOPSECRETTOKEN"
+		validURL    = "https://mydomain.com/validate?capability_token=TOPSECRETTOKEN"
+	)
+
+	stk := STKPushRequest{
+		BusinessShortCode: "174379", TransactionType: TransactionTypePayBillOnline, Amount: 1,
+		PartyA: "254722000000", PartyB: "174379", PhoneNumber: "254722111111",
+		CallBackURL: callbackURL, AccountReference: "accountref", TransactionDesc: "txndesc",
+	}
+	b2c := B2CPayoutRequest{
+		OriginatorConversationID: "abc123", InitiatorName: "testapi",
+		SecurityCredential: "cred", CommandID: CommandBusinessPayment, Amount: 100,
+		PartyA: "600992", PartyB: "254705912645", Remarks: "refund order 42",
+		QueueTimeOutURL: resultURL, ResultURL: resultURL,
+	}
+	tx := TransactionStatusRequest{
+		Initiator: "testapi", SecurityCredential: "cred", TransactionID: "NLJ7RT61SV",
+		PartyA: "600992", Remarks: "reconcile", ResultURL: resultURL, QueueTimeOutURL: resultURL,
+	}
+	rev := ReversalRequest{
+		Initiator: "testapi", SecurityCredential: "cred", TransactionID: "NLJ7RT61SV",
+		Amount: 100, ReceiverParty: "600992", Remarks: "wrong deposit",
+		ResultURL: resultURL, QueueTimeOutURL: resultURL,
+	}
+	bal := AccountBalanceRequest{
+		Initiator: "testapi", SecurityCredential: "cred", PartyA: "600992",
+		Remarks: "eod balance", ResultURL: resultURL, QueueTimeOutURL: resultURL,
+	}
+	reg := C2BRegisterRequest{
+		ShortCode: "174379", ResponseType: ResponseTypeCompleted,
+		ConfirmationURL: confirmURL, ValidationURL: validURL,
+	}
+
+	cases := []struct {
+		name     string
+		urls     []string
+		render   string
+		logSafe  map[string]any
+		redacted []string
+	}{
+		{"STKPush", []string{callbackURL}, fmt.Sprintf("%v", stk), stk.LogSafe(), []string{"CallBackURL"}},
+		{"B2C", []string{resultURL}, fmt.Sprintf("%v", b2c), b2c.LogSafe(), []string{"ResultURL", "QueueTimeOutURL"}},
+		{"TxStatus", []string{resultURL}, fmt.Sprintf("%v", tx), tx.LogSafe(), []string{"ResultURL", "QueueTimeOutURL"}},
+		{"Reversal", []string{resultURL}, fmt.Sprintf("%v", rev), rev.LogSafe(), []string{"ResultURL", "QueueTimeOutURL"}},
+		{"Balance", []string{resultURL}, fmt.Sprintf("%v", bal), bal.LogSafe(), []string{"ResultURL", "QueueTimeOutURL"}},
+		{"C2BRegister", []string{confirmURL, validURL}, fmt.Sprintf("%v", reg), reg.LogSafe(), []string{"ConfirmationURL", "ValidationURL"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 1. Every fmt verb must render redacted.
+			for _, url := range tc.urls {
+				if strings.Contains(tc.render, url) {
+					t.Errorf("%%v rendering leaks the callback URL %q: %s", url, tc.render)
+				}
+			}
+			// 2. LogSafe() must carry the marker for every URL-bearing key,
+			//    and its serialized form must not contain the URL.
+			for _, key := range tc.redacted {
+				got, ok := tc.logSafe[key]
+				if !ok {
+					t.Fatalf("LogSafe missing %q key: %v", key, tc.logSafe)
+				}
+				if got != "[REDACTED]" {
+					t.Errorf("LogSafe[%q] = %v, want [REDACTED]", key, got)
+				}
+			}
+			b, err := json.Marshal(tc.logSafe)
+			if err != nil {
+				t.Fatalf("marshal LogSafe: %v", err)
+			}
+			for _, url := range tc.urls {
+				if strings.Contains(string(b), url) {
+					t.Errorf("LogSafe JSON leaks the callback URL %q: %s", url, b)
+				}
+			}
+		})
+	}
+}
 
 func TestB2CRequestUsesOfficialOccassionSpelling(t *testing.T) {
 	b, err := json.Marshal(B2CPayoutRequest{
