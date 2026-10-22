@@ -77,10 +77,11 @@ array `errorCode` costs the caller the whole envelope. The Python side is
 pinned by `python/tests/test_exceptions.py`
 (`test_non_scalar_envelope_member_counts_as_absent_while_others_survive`),
 which asserts that an array or object member counts as absent while the
-other members survive. The TypeScript side of the same body has NO pin
-yet — `typescript/test/errors.test.ts` does not cover it, and that file is
-outside the scope of the contract harness. That pin is still to be
-written; add it the next time this divergence is touched.
+other members survive. The TypeScript side of the same body IS pinned too —
+`typescript/test/errors.test.ts`
+(`still counts an ARRAY or OBJECT member as absent while the others survive`)
+asserts exactly that. (An earlier revision of this entry claimed that file
+did not cover the body; it does.)
 
 ## Error envelope with a boolean member — CLOSED
 
@@ -162,3 +163,40 @@ The Python side is pinned by `python/tests/test_exceptions.py`
 Go and TypeScript lose the whole envelope by construction (their decoders
 reject the literal before any member is read), so they need no
 engine-specific pin for it.
+
+## Error-log sink: the OAuth leg reaches it in Go only
+
+**The divergence.** The opt-in diagnostic sink that receives the RAW body of
+a non-2xx response whose body is NOT a Daraja error envelope (a WAF page, an
+HTML error page, a truncated body) is wired differently by the three engines,
+and the difference is observable on the OAuth leg:
+
+- **Go** — `go/client.go`: `Config.ErrorLogger` is passed on BOTH legs. The
+  business leg (`post`, `go/client.go:881`) and the OAuth leg (`refresh`,
+  `go/client.go:738`) both hand it to `parseError`, so a non-envelope OAuth
+  failure reaches the sink.
+- **Python** — there is NO client-level sink at all. The only parameter is
+  `MpesaError.from_response(..., error_logger=...)`
+  (`python/mpesa/exceptions.py:171`), and `python/mpesa/client.py` never
+  wires one — so no Python client reaches a sink, on either leg.
+- **TypeScript** — `MpesaClientOptions.errorLogger`
+  (`typescript/src/client.ts`) is wired into the business leg only
+  (`MpesaClient._post`). The OAuth leg is minted by `TokenManager`
+  (`typescript/src/auth.ts`), which has no sink, so a non-envelope OAuth
+  failure never reaches it.
+
+**Why it is not a fixture.** The sink is a caller-supplied callback, not a
+wire value: the shared corpus asserts the error a caller receives, and
+cannot assert "this callback was invoked with these bytes, on that leg".
+The divergence is invisible to the corpus because the sink never changes the
+error the caller gets — it is a diagnostic side channel only.
+
+**What would close it.** Wire the sink onto the OAuth leg in TypeScript (and
+onto a client-level option in Python), or drop it from the OAuth leg in Go,
+and pin the agreed behaviour with an engine-specific test in each engine.
+
+The Go side is pinned by `go/errors_test.go`
+(`TestParseErrorLoggerReceivesDiagnostics`) and the TypeScript side by
+`typescript/test/errors.test.ts` (`hands the raw body to the opt-in sink with
+status and content type`). Python has no client-level sink to pin, so it has
+no engine-specific test for this.

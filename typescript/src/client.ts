@@ -408,6 +408,11 @@ const sharedTokenManagers = new Map<string, TokenManager>();
  * `|` join, ("a|b", "c") and ("a", "b|c") produced the same key, so two
  * different credential sets could share one cache entry.
  *
+ * INTERNAL — not public API: exported from this module for the test suite
+ * only. The package barrel (`src/index.ts`) does not re-export it, so it is
+ * not part of the published `@mpesa-sdk/core` surface and may change or
+ * disappear without a major-version bump.
+ *
  * @param baseUrl - The client's API base URL.
  * @param consumerKey - The OAuth consumer key.
  * @param consumerSecret - The OAuth consumer secret (hashed, never stored).
@@ -465,11 +470,21 @@ function sharedTokenManager(
  *   generic — "unexpected error response from gateway" — because an
  *   exception object is logged by every logger on the call path and must
  *   never carry a raw gateway payload (customer MSISDNs, WAF internals)
- *   off-box. A sink that throws is swallowed: it can never mask the gateway
- *   error. Parity: go `Config.ErrorLogger` (go/errors.go), python
- *   `error_logger` (python/mpesa/exceptions.py). The OAuth leg is minted by
- *   `TokenManager` (src/auth.ts) and therefore does NOT reach this sink.
- */
+   *   off-box. A sink that THROWS (synchronously) or whose returned PROMISE
+   *   REJECTS is swallowed: it can never mask the gateway error.
+   *
+   *   Sink parity is NOT uniform across the three engines — the real matrix:
+   *   - **Go** — `Config.ErrorLogger` (go/errors.go) is passed on BOTH legs:
+   *     the business leg (`go/client.go` `post`) and the OAuth leg
+   *     (`go/client.go` `refresh`), so a non-envelope OAuth failure also
+   *     reaches the sink.
+   *   - **Python** — there is NO client-level sink at all: only
+   *     `MpesaError.from_response(..., error_logger=...)` accepts one
+   *     (python/mpesa/exceptions.py), and `MpesaClient` never wires it.
+   *   - **TypeScript** — the OAuth leg is minted by `TokenManager`
+   *     (src/auth.ts), which has no sink, so ONLY the business leg reaches
+   *     this option.
+   */
 export interface MpesaClientOptions {
   readonly config: Config;
   readonly timeoutMs?: number;

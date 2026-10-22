@@ -417,6 +417,20 @@ describe("securityCredential RSA key-size floor", () => {
     const cred = securityCredential(selfSignedRSACert(2048), "password");
     expect(Buffer.from(cred, "base64").byteLength).toBe(256);
   });
+
+  it("reports the PASSWORD error first, not the weak-key error (go/py parity)", () => {
+    // Go (go/helpers.go) and Python (python/mpesa/helpers.py) validate the
+    // initiator password BEFORE the RSA key-size floor, so for the SAME bad
+    // input — an empty password AND a weak certificate — all three engines
+    // report the password error first. TypeScript used to apply the floor
+    // first and named the key size instead.
+    expect(() => securityCredential(selfSignedRSACert(1024), "")).toThrow(
+      "mpesa: initiator_password is required",
+    );
+    expect(() => securityCredential(selfSignedRSACert(1024), "   ")).toThrow(
+      "mpesa: initiator_password is required",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

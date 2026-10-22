@@ -427,9 +427,11 @@ export class Config {
  * {@link Config.toString} form.
  *
  * Installed with `Symbol.for("nodejs.util.inspect.custom")` rather than an
- * import of `node:util`, so this module keeps no Node-only import.
+ * import of `node:util`, so this module keeps no Node-only import. The
+ * hook is NOT writable: a redaction hook must not be replaceable at
+ * runtime.
  */
 Object.defineProperty(Config.prototype, Symbol.for("nodejs.util.inspect.custom"), {
   value(this: Config): string { return this.toString(); },
-  enumerable: false, configurable: true, writable: true,
+  enumerable: false, configurable: true, writable: false,
 });

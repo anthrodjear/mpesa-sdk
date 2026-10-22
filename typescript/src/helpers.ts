@@ -241,9 +241,27 @@ export function securityCredential(
     throw new Error("mpesa: M-Pesa certificate carries non-RSA public key");
   }
 
-  // The key-size floor is checked BEFORE any encryption runs: a 1024-bit
-  // key would happily encrypt the password, and the weak ciphertext would
-  // only be discovered to be weak later.
+  if (typeof initiatorPassword !== "string") {
+    throw new Error(
+      "mpesa: securityCredential(cert, password) — arg order swapped? certificate first, password second",
+    );
+  }
+  if (!initiatorPassword.trim()) {
+    throw new Error("mpesa: initiator_password is required");
+  }
+
+  // The key-size floor is checked AFTER the password validation, so all
+  // three engines report the SAME first error for the same bad input.
+  //
+  // Go (go/helpers.go) and Python (python/mpesa/helpers.py) both validate
+  // the initiator password FIRST and only then parse the certificate and
+  // apply the 2048-bit floor. TypeScript used to apply the floor FIRST,
+  // so a call with BOTH an empty password and a weak certificate reported
+  // the key size here but the password in Go and Python. The floor is
+  // still enforced before any encryption runs — a 1024-bit key would
+  // happily encrypt the password, and the weak ciphertext would only be
+  // discovered to be weak later — it is simply reported in the same
+  // order as the sibling engines.
   const keyBits = publicKey.asymmetricKeyDetails?.modulusLength;
   if (typeof keyBits !== "number") {
     // Fail closed: a key whose size cannot be read cannot be shown to meet
@@ -258,14 +276,6 @@ export function securityCredential(
     );
   }
 
-  if (typeof initiatorPassword !== "string") {
-    throw new Error(
-      "mpesa: securityCredential(cert, password) — arg order swapped? certificate first, password second",
-    );
-  }
-  if (!initiatorPassword.trim()) {
-    throw new Error("mpesa: initiator_password is required");
-  }
   const passwordBytes = Buffer.from(initiatorPassword, "utf-8");
   if (passwordBytes.byteLength > MAX_RSA_PLAINTEXT_BYTES) {
     throw new Error(
