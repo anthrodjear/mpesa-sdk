@@ -465,6 +465,10 @@ func (c *Client) zeroTokenLocked() {
 // runs lock-free, so it can start before Close() and land after it. The
 // commit phase refuses to write into a closed client, so a closed client
 // holds no bearer at all.
+//
+// Close also REFUSES any refresh that starts after it: a refresh attempt on
+// a closed client returns ErrClientClosed and issues NO OAuth request at
+// all — the Basic-auth credential is never put on the wire again.
 func (c *Client) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -505,6 +509,21 @@ func (c *Client) tokenWithGen(ctx context.Context) (string, uint64, error) {
 func (c *Client) leadRefresh(ctx context.Context) (string, uint64, error) {
 	for {
 		c.mu.Lock()
+		// A closed client must not issue another OAuth round-trip.
+		//
+		// The waiter path makes this necessary: a caller that was already
+		// inside this loop when Close() ran wakes up, finds `refreshing`
+		// cleared by the leader it was waiting on, and would become the NEXT
+		// leader — putting the Basic-auth credential (consumer key +
+		// consumer secret) on the wire one more time after the client was
+		// closed. Nothing would be committed or served (the commit phase
+		// refuses), but Close() advertises that the client must not be
+		// reused, and a closed client has no business talking to the
+		// gateway at all.
+		if c.closed {
+			c.mu.Unlock()
+			return "", 0, ErrClientClosed
+		}
 		if c.tokenFresh() {
 			tok, gen := string(c.tokenBytes), c.gen
 			c.mu.Unlock()
@@ -538,6 +557,15 @@ func (c *Client) leadRefresh(ctx context.Context) (string, uint64, error) {
 func (c *Client) leadForcedRefresh(ctx context.Context) (string, error) {
 	for {
 		c.mu.Lock()
+		// Same refusal as leadRefresh: a closed client issues no further
+		// OAuth request, forced or not. A forced refresh (401.003.01) would
+		// otherwise re-put the Basic-auth credential on the wire after
+		// Close() — the credential is long-lived and authenticates every
+		// token request, so it must not outlive the client.
+		if c.closed {
+			c.mu.Unlock()
+			return "", ErrClientClosed
+		}
 		if c.refreshing {
 			done := c.refreshDone
 			c.mu.Unlock()
@@ -623,7 +651,8 @@ func refreshCadence(expiresIn FlexInt64) time.Duration {
 // refresh performs one OAuth round-trip in three phases so the network leg
 // runs without c.mu held:
 //
-//  1. pre-flight under the write lock (credential + rate-limit gate)
+//  1. pre-flight under the write lock (closed-client refusal + credential
+//     and rate-limit gates)
 //  2. the OAuth HTTP round-trip, lock-free
 //  3. commit under the write lock (zero the old token, set the new one,
 //     bump the generation LAST so a reader never sees a bumped generation
@@ -651,9 +680,18 @@ func (c *Client) refresh(ctx context.Context, force bool) (string, error) {
 	// failures gates the next non-forced refresh as before.
 	now := c.cfg.Now()
 	c.mu.Lock()
+	closed := c.closed
 	limited := !force && c.refreshFailures >= 3 && !c.lastRefreshAttempt.IsZero() && now.Sub(c.lastRefreshAttempt) < refreshRateLimit
 	failures, since := c.refreshFailures, now.Sub(c.lastRefreshAttempt)
 	c.mu.Unlock()
+	// A closed client must not reach the OAuth endpoint. This is the LAST
+	// gate before the Basic-auth credential would be put on the wire: the
+	// leader may have been elected before Close() ran, and the credential
+	// is long-lived (it authenticates every token request), so a closed
+	// client stops here rather than making one more round-trip.
+	if closed {
+		return "", ErrClientClosed
+	}
 	if limited {
 		return "", fmt.Errorf("mpesa: refresh rate limited after %d consecutive failures (last attempt %v ago, need %v)",
 			failures, since.Round(time.Millisecond), refreshRateLimit)

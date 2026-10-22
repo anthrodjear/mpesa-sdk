@@ -1747,6 +1747,106 @@ func TestClientRenderingNeverLeaksCredentials(t *testing.T) {
 	}
 }
 
+// A closed client must not issue ANOTHER OAuth round-trip.
+//
+// Close() zeroes the cached bearer and marks the client closed, and its doc
+// says the client must not be reused. But leadRefresh/leadForcedRefresh only
+// re-checked `refreshing` after a wait — not `c.closed` — so a caller
+// already inside the single-flight loop could become the NEXT leader and
+// make one more Basic-auth request (consumer key + consumer secret on the
+// wire) after Close() had run.
+//
+// Every refresh path must now return ErrClientClosed AND leave the OAuth
+// hit counter untouched: the credential must not reach the gateway again.
+func TestClosedClientRefusesRefreshWithoutHittingOAuth(t *testing.T) {
+	newServer := func() (*httptest.Server, *int) {
+		oauthHits := 0
+		mux := http.NewServeMux()
+		mux.Handle("/oauth/v1/generate", oauthHandler(t, &oauthHits))
+		return httptest.NewServer(mux), &oauthHits
+	}
+
+	// 1. The public entry point: Token() on a closed client.
+	t.Run("Token", func(t *testing.T) {
+		srv, hits := newServer()
+		defer srv.Close()
+		c := testClient(t, srv.URL)
+		ctx := context.Background()
+		if _, err := c.Token(ctx); err != nil {
+			t.Fatalf("prime Token: %v", err)
+		}
+		if *hits != 1 {
+			t.Fatalf("oauth hits = %d after priming, want 1", *hits)
+		}
+		c.Close()
+		if _, err := c.Token(ctx); !errors.Is(err, ErrClientClosed) {
+			t.Fatalf("Token() err = %v, want ErrClientClosed", err)
+		}
+		if *hits != 1 {
+			t.Fatalf("oauth hits = %d after Close(), want 1 — a closed client must not reach the OAuth endpoint", *hits)
+		}
+	})
+
+	// 2. The single-flight LEADER path: this is the waiter that could
+	//    become the next leader after Close(). It is called directly so the
+	//    early closed-check in tokenWithGen cannot mask the loop's own gate.
+	t.Run("leadRefresh", func(t *testing.T) {
+		srv, hits := newServer()
+		defer srv.Close()
+		c := testClient(t, srv.URL)
+		ctx := context.Background()
+		if _, err := c.Token(ctx); err != nil {
+			t.Fatalf("prime Token: %v", err)
+		}
+		c.Close()
+		if _, _, err := c.leadRefresh(ctx); !errors.Is(err, ErrClientClosed) {
+			t.Fatalf("leadRefresh() err = %v, want ErrClientClosed", err)
+		}
+		if *hits != 1 {
+			t.Fatalf("oauth hits = %d after Close(), want 1 — a closed client must not reach the OAuth endpoint", *hits)
+		}
+	})
+
+	// 3. The FORCED path (401.003.01 recovery): same refusal, so the
+	//    Basic-auth credential is not re-sent after Close().
+	t.Run("forceRefresh", func(t *testing.T) {
+		srv, hits := newServer()
+		defer srv.Close()
+		c := testClient(t, srv.URL)
+		ctx := context.Background()
+		if _, err := c.Token(ctx); err != nil {
+			t.Fatalf("prime Token: %v", err)
+		}
+		c.Close()
+		if _, err := c.forceRefresh(ctx); !errors.Is(err, ErrClientClosed) {
+			t.Fatalf("forceRefresh() err = %v, want ErrClientClosed", err)
+		}
+		if *hits != 1 {
+			t.Fatalf("oauth hits = %d after Close(), want 1 — a closed client must not reach the OAuth endpoint", *hits)
+		}
+	})
+
+	// 4. The pre-flight gate inside refresh() itself: a leader elected
+	//    BEFORE Close() must stop before the HTTP call, so the Basic-auth
+	//    credential never goes on the wire for a closed client.
+	t.Run("refresh pre-flight", func(t *testing.T) {
+		srv, hits := newServer()
+		defer srv.Close()
+		c := testClient(t, srv.URL)
+		ctx := context.Background()
+		if _, err := c.Token(ctx); err != nil {
+			t.Fatalf("prime Token: %v", err)
+		}
+		c.Close()
+		if _, err := c.refresh(ctx, false); !errors.Is(err, ErrClientClosed) {
+			t.Fatalf("refresh() err = %v, want ErrClientClosed", err)
+		}
+		if *hits != 1 {
+			t.Fatalf("oauth hits = %d after Close(), want 1 — a closed client must not reach the OAuth endpoint", *hits)
+		}
+	})
+}
+
 // TestRefreshCadenceOverflowGuard verifies that refreshCadence does not
 // overflow when expires_in is near math.MaxInt64, and that the result is
 // always within [minCadence, maxCadence].
