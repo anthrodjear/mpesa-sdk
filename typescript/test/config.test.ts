@@ -618,6 +618,84 @@ describe("Config — util.inspect redaction", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Non-enumerable secrets — `console.dir` DISABLES the custom inspect hook
+//
+// Node documents `console.dir(obj)` as
+// `util.inspect(obj, { ...options, customInspect: false })`: it turns the
+// custom inspect hook OFF, so the default walk over the own ENUMERABLE
+// properties printed `consumerSecret` and `passkey` in cleartext. The
+// two secret fields are therefore non-enumerable own properties, which
+// the default walk and an object spread both skip.
+// ---------------------------------------------------------------------------
+
+describe("Config — non-enumerable secrets", () => {
+  const RAW_KEY = "0123456789abcdef";
+  const RAW_SECRET = "SUPERSECRET";
+  const RAW_PASSKEY = "PASSKEY123";
+
+  function makeCfg(): Config {
+    return new Config({
+      consumerKey: RAW_KEY,
+      consumerSecret: RAW_SECRET,
+      shortcode: "174379",
+      passkey: RAW_PASSKEY,
+    });
+  }
+
+  it("the secret and the passkey still read back exactly as passed in", () => {
+    // Non-enumerable does NOT mean private: the public API is unchanged.
+    const cfg = makeCfg();
+    expect(cfg.consumerSecret).toBe(RAW_SECRET);
+    expect(cfg.passkey).toBe(RAW_PASSKEY);
+  });
+
+  it("util.inspect with customInspect disabled leaks neither secret nor passkey", () => {
+    // This is what `console.dir(cfg)` does under the hood.
+    const out = inspect(makeCfg(), { customInspect: false });
+    expect(out).not.toContain(RAW_SECRET);
+    expect(out).not.toContain(RAW_PASSKEY);
+  });
+
+  it("an object spread carries neither secret nor passkey", () => {
+    const spread = { ...makeCfg() } as unknown as Record<string, unknown>;
+    expect(spread["consumerSecret"]).toBeUndefined();
+    expect(spread["passkey"]).toBeUndefined();
+    const blob = JSON.stringify(spread);
+    expect(blob).not.toContain(RAW_SECRET);
+    expect(blob).not.toContain(RAW_PASSKEY);
+  });
+
+  it("Object.entries and Object.keys carry neither secret nor passkey", () => {
+    const cfg = makeCfg();
+    for (const [key, value] of Object.entries(cfg)) {
+      expect(key).not.toBe("consumerSecret");
+      expect(key).not.toBe("passkey");
+      expect(String(value)).not.toContain(RAW_SECRET);
+      expect(String(value)).not.toContain(RAW_PASSKEY);
+    }
+    const keys = Object.keys(cfg);
+    expect(keys).not.toContain("consumerSecret");
+    expect(keys).not.toContain("passkey");
+  });
+
+  it("the non-secret fields stay enumerable", () => {
+    const keys = Object.keys(makeCfg());
+    for (const key of ["consumerKey", "shortcode", "environment", "limits", "trackDaily"]) {
+      expect(keys).toContain(key);
+    }
+  });
+
+  it("the custom-inspect, String() and JSON.stringify redaction still hold", () => {
+    const cfg = makeCfg();
+    for (const rendered of [inspect(cfg), String(cfg), JSON.stringify(cfg)]) {
+      expect(rendered).not.toContain(RAW_SECRET);
+      expect(rendered).not.toContain(RAW_PASSKEY);
+    }
+    expect(inspect(cfg)).toContain(cfg.toString());
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Trusted base URL allowlist
 // ---------------------------------------------------------------------------
 
