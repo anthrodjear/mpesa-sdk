@@ -251,7 +251,7 @@ def test_oauth_fetch_refuses_redirects_and_huge_body():
 class StreamOnlyResponse:
     """Mirrors test_client.StreamOnlyResponse: exposes ONLY iter_content
     -- no .content attribute exists, so any pre-read .content access
-    inside _refresh_locked would blow up as AttributeError."""
+    inside _refresh would blow up as AttributeError."""
 
     def __init__(self, status_code=200, text="{}", chunks=None):
         self.status_code = status_code
