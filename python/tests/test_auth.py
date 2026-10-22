@@ -677,3 +677,160 @@ def test_d10_invalid_token_path_yields_a_fresh_token():
     assert fresh == "tok-second"
     assert tm.generation == gen + 1
     assert len(session.calls) == 2
+
+
+# ---- B1: a forced refresh must reach the wire, gate or no gate --------------
+#
+# The single-flight round publishes its failure to every waiter. That is
+# right for a round's OWN waiters, but a FORCED refresh (401-triggered) must
+# not inherit a NON-forced round's refusal: the rate-limit gate refuses
+# NON-forced refreshes ONLY, so inheriting that refusal denies the forced
+# refresh the very thing it exists to do -- put a request on the wire.
+
+
+class GatedRefreshManager(TokenManager):
+    """A TokenManager whose refresh can be parked at a chosen point.
+
+    WHY: the single-flight protocol is only observable when one refresh is
+    provably IN FLIGHT while another caller arrives. A sleep-based
+    approximation is a race (and a flaky one); an EVENT makes the
+    interleaving exact and reproducible.
+    """
+
+    def __init__(self, session, base_url, consumer_key, consumer_secret,
+                 now=None):
+        super().__init__(session, base_url, consumer_key, consumer_secret,
+                         now=now)
+        # Which mode parks: "non-forced", "forced" or both.
+        self.park_non_forced = False
+        self.park_forced = False
+        self.parked = threading.Event()
+        self.resume = threading.Event()
+
+    def _refresh(self, force: bool = False) -> str:
+        if (self.park_forced if force else self.park_non_forced):
+            # The round is already claimed (so a peer sees _refreshing ==
+            # True) but the OAuth leg has not started: park HERE.
+            self.parked.set()
+            self.resume.wait(timeout=10.0)
+        return super()._refresh(force=force)
+
+
+def test_forced_refresh_does_not_inherit_a_peers_rate_limit_refusal():
+    """B1: a FORCED refresh must not inherit a NON-forced round's refusal.
+
+    The rate-limit gate refuses NON-forced refreshes only -- a forced
+    (401-triggered) refresh always reaches the wire. When a forced refresher
+    parked on a peer's NON-forced round and that round was refused by the
+    closed gate, it inherited the refusal and never touched the wire: the
+    exact denial it was meant to bypass.
+    """
+    # Arm the gate: three consecutive NON-forced failures.
+    session = FakeSession([FakeResponse(status_code=500, body=b"boom")
+                           for _ in range(4)])
+    tm = GatedRefreshManager(session, "https://sandbox.safaricom.co.ke",
+                             "k", "s")
+    for _ in range(3):
+        with pytest.raises(MpesaError):
+            tm.get_token()
+    assert len(session.calls) == 3
+
+    # The peer: a NON-forced refresh that parks mid-round (its round is
+    # claimed, so a concurrent caller sees a refresh in flight). The gate is
+    # closed, so the peer will be REFUSED once it resumes.
+    counting = CountingCondition(tm._lock)
+    counting.expected = 1
+    tm._cond = counting
+    tm.park_non_forced = True
+
+    peer_errors: list[BaseException] = []
+
+    def peer():
+        try:
+            tm.get_token()
+        except Exception as exc:          # the point of the test
+            peer_errors.append(exc)
+
+    peer_thread = threading.Thread(target=peer)
+    peer_thread.start()
+    assert tm.parked.wait(timeout=5.0), "the peer's refresh never started"
+
+    # The forced refresher arrives while the peer's NON-forced round is in
+    # flight: it must park on that round -- and must not be woken by the
+    # round's failure with the rate-limit refusal.
+    forced_errors: list[BaseException] = []
+
+    def forced():
+        try:
+            tm.refresh_after_invalid_token(tm.generation)
+        except Exception as exc:          # the point of the test
+            forced_errors.append(exc)
+
+    forced_thread = threading.Thread(target=forced)
+    forced_thread.start()
+    assert counting.parked.wait(timeout=5.0), "the forced refresher never parked"
+
+    # The peer resumes and is refused by the closed gate.
+    tm.resume.set()
+    peer_thread.join(timeout=10.0)
+    assert not peer_thread.is_alive(), "the peer hung"
+    assert len(peer_errors) == 1
+    assert isinstance(peer_errors[0], RefreshRateLimitedError)
+
+    forced_thread.join(timeout=10.0)
+    assert not forced_thread.is_alive(), "the forced refresher hung"
+
+    # The forced refresh reached the wire: ONE more OAuth call, and the
+    # error it raised is the gateway's -- NOT the rate-limit refusal.
+    assert len(session.calls) == 4, "the forced refresh never reached the wire"
+    assert len(forced_errors) == 1
+    assert not isinstance(forced_errors[0], RefreshRateLimitedError)
+    assert isinstance(forced_errors[0], MpesaError)
+
+
+def test_forced_round_failure_is_shared_with_its_own_waiters():
+    """B1: a FORCED round's failure IS shared with its own waiters.
+
+    The anti-stampede property must survive the B1 fix: one failed forced
+    refresh, ONE wire call, and every waiter woken with the same error.
+    """
+    workers = 5
+    session = FakeSession([FakeResponse(status_code=500, body=b"boom")
+                           for _ in range(workers + 1)])
+    tm = GatedRefreshManager(session, "https://sandbox.safaricom.co.ke",
+                             "k", "s")
+    counting = CountingCondition(tm._lock)
+    counting.expected = workers - 1
+    tm._cond = counting
+    tm.park_forced = True
+
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(workers)
+
+    def worker():
+        barrier.wait()
+        try:
+            tm.refresh_after_invalid_token(tm.generation)
+        except Exception as exc:          # the point of the test
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    # The leader is parked inside its OAuth leg; every other caller is
+    # parked on the condition.
+    assert tm.parked.wait(timeout=5.0), "the forced refresh never started"
+    assert counting.parked.wait(timeout=5.0), "the waiters never parked"
+    tm.resume.set()
+
+    for t in threads:
+        t.join(timeout=10.0)
+    assert not [t for t in threads if t.is_alive()], "a waiter hung"
+    assert len(errors) == workers
+    # ONE wire call: the waiters did not each run their own request.
+    assert len(session.calls) == 1, "the waiters each ran their own request"
+    # Every waiter was woken with the SAME error.
+    first = errors[0]
+    assert all(type(exc) is type(first) for exc in errors)
+    assert all(str(exc) == str(first) for exc in errors)
+    assert isinstance(first, MpesaError)

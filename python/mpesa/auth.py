@@ -75,12 +75,22 @@ class _RefreshRound:
     one failure into N requests against an already-sick endpoint, and
     handing the caller N different error objects to triage. The leader
     publishes the error here; the waiters re-raise it.
+
+    ``forced`` records the MODE the round ran in: a FORCED round (a
+    401-triggered refresh, which bypasses the rate-limit gate) or a
+    NON-FORCED one (an ordinary staleness refresh, which the gate CAN
+    refuse). The two modes have different failure semantics: a forced
+    refresher must not inherit a NON-forced round's refusal -- the
+    rate-limit refusal is the very denial a forced refresh exists to
+    bypass -- while a FORCED round's own failure IS shared with its own
+    waiters (the anti-stampede property).
     """
 
-    __slots__ = ("error",)
+    __slots__ = ("error", "forced")
 
-    def __init__(self) -> None:
+    def __init__(self, forced: bool = False) -> None:
         self.error: BaseException | None = None
+        self.forced = forced
 
 
 class TokenManager:
@@ -197,9 +207,11 @@ class TokenManager:
                         # error instead of stampeding the OAuth endpoint.
                         raise round.error
                     continue
-                # Leader: claim the round, then leave the lock.
+                # Leader: claim the round, then leave the lock. NON-FORCED:
+                # the rate-limit gate applies to this round, so a refusal is
+                # a legitimate outcome that this round's waiters inherit.
                 self._refreshing = True
-                round = _RefreshRound()
+                round = _RefreshRound(forced=False)
                 self._round = round
             break
 
@@ -235,6 +247,16 @@ class TokenManager:
         that arrives while it is in flight parks on the condition instead
         of issuing a second round-trip.
 
+        FAILURE-SHARING RULE (the two modes are NOT symmetric): a
+        FORCED round's failure is shared with its own waiters (one wire
+        call, one error -- the anti-stampede property), but a NON-forced
+        round's failure is NEVER inherited here. The rate-limit gate
+        refuses non-forced refreshes only, so a forced refresher that
+        inherited such a refusal would never reach the wire at all: the
+        exact denial a forced refresh exists to bypass. When that
+        happens the forced caller falls through and leads its OWN forced
+        attempt (``force=True`` skips the gate).
+
         Example::
 
             token = tm.refresh_after_invalid_token(gen)
@@ -253,10 +275,28 @@ class TokenManager:
                     round = self._round
                     self._cond.wait(timeout=_REFRESH_WAIT_SECONDS)
                     if round is not None and round.error is not None:
-                        raise round.error
+                        if round.forced:
+                            # A FORCED round's failure belongs to its OWN
+                            # waiters: re-raise it (one wire call, one
+                            # error -- the anti-stampede property).
+                            raise round.error
+                        # The observed round was NOT forced and it FAILED.
+                        # Its failure -- above all the rate-limit REFUSAL
+                        # the closed gate hands a non-forced refresh -- is
+                        # NOT ours to inherit: a forced refresh exists to
+                        # put a request on the wire, and inheriting the
+                        # refusal would deny it the very thing it is meant
+                        # to bypass (it would never reach the wire at all).
+                        # Fall through: re-evaluate and lead our OWN forced
+                        # attempt, which skips the gate (force=True).
                     continue
+                # Leader: claim a FORCED round, then leave the lock. The
+                # forced mode is what makes the failure-sharing rule
+                # above symmetric: a forced round's waiters share its
+                # failure, a non-forced round's waiters do not inherit it
+                # into the forced path.
                 self._refreshing = True
-                round = _RefreshRound()
+                round = _RefreshRound(forced=True)
                 self._round = round
             break
 
