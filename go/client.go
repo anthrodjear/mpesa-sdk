@@ -348,6 +348,27 @@ func tunedTransport() *http.Transport {
 	}
 }
 
+// oversizeDrainLimit bounds how many leftover bytes are drained from an
+// oversize response body before the connection is abandoned.
+const oversizeDrainLimit = 64 << 10
+
+// drainOversize consumes the leftover bytes of an oversize response so
+// net/http can REUSE the connection.
+//
+// WHY: the capped read stops with bytes still unread on the socket, and a
+// connection with unread bytes can never go back to the idle pool -- so
+// every oversize response cost a fresh TLS handshake (two extra
+// round-trips plus certificate verification) and could exhaust the
+// ephemeral port range.
+//
+// The drain is BOUNDED: a server that keeps streaming must not be able to
+// pin the connection (and the goroutine reading it) indefinitely. The bytes
+// are discarded as they arrive, never buffered, so the memory bound of the
+// size cap still holds.
+func drainOversize(r io.Reader) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(r, oversizeDrainLimit))
+}
+
 // NewClient returns a Client for cfg. Timeout defaults to 30s and Now to
 // time.Now when unset. An injected Config.HTTPClient is cloned (never
 // mutated) and always gets the never-follow-redirects policy: Daraja never
@@ -782,6 +803,10 @@ func (c *Client) refresh(ctx context.Context, force bool) (string, error) {
 		return fail(fmt.Errorf("mpesa: read oauth response: %w", err))
 	}
 	if len(body) > maxResponseLen {
+		// Drain the leftover bytes so the connection can go back to the
+		// idle pool instead of being dropped (#13). The size cap and the
+		// error the caller sees are unchanged.
+		drainOversize(resp.Body)
 		err := &OversizeError{Path: oauthPath}
 		c.recordRefreshFailure()
 		return fail(err)
@@ -897,6 +922,10 @@ func (c *Client) attempt(ctx context.Context, token, path string, payload any) (
 		return 0, ct, nil, fmt.Errorf("mpesa: read %s response: %w", path, err)
 	}
 	if len(body) > maxResponseLen {
+		// Drain the leftover bytes so the connection can go back to the
+		// idle pool instead of being dropped (#13). The size cap and the
+		// error the caller sees are unchanged.
+		drainOversize(resp.Body)
 		return 0, ct, nil, &OversizeError{Path: path}
 	}
 	return resp.StatusCode, ct, body, nil

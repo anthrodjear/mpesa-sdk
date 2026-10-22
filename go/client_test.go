@@ -10,10 +10,12 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1916,6 +1918,47 @@ func TestPinnedClientInheritsTheTunedIdleBudget(t *testing.T) {
 	}
 	if tr.TLSClientConfig == nil || tr.TLSClientConfig.VerifyPeerCertificate == nil {
 		t.Error("pinning callback was not installed on the tuned transport")
+	}
+}
+
+// #13: an oversize response must not poison the connection pool.
+//
+// The capped read stops with bytes still unread on the socket, and a
+// connection with unread bytes can never go back to the idle pool -- so
+// EVERY oversize response cost a fresh TLS handshake (two extra
+// round-trips plus certificate verification) and could exhaust the
+// ephemeral port range. Draining a bounded remainder lets net/http reuse
+// the connection.
+//
+// The server counts its accepted connections through the ConnState hook.
+func TestOversizeResponseDrainsTheBodySoTheConnectionIsReused(t *testing.T) {
+	var conns int64
+	mux := http.NewServeMux()
+	mux.Handle("/oauth/v1/generate", oauthHandler(t, new(int)))
+	mux.HandleFunc(stkPushPath, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Oversize by a realistic margin: past the 1MiB cap, but within
+		// the drain budget, so the leftover bytes CAN be consumed.
+		_, _ = w.Write(bytes.Repeat([]byte("A"), maxResponseLen+4096))
+	})
+	srv := httptest.NewUnstartedServer(mux)
+	srv.Config.ConnState = func(conn net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			atomic.AddInt64(&conns, 1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+
+	c := testClient(t, srv.URL)
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if _, err := c.STKPush(ctx, validSTKPushRequest()); err == nil {
+			t.Fatalf("request %d: expected the oversize error", i+1)
+		}
+	}
+	if got := atomic.LoadInt64(&conns); got != 1 {
+		t.Errorf("connections opened = %d, want 1: the oversize body must be drained so the connection is reused", got)
 	}
 }
 
