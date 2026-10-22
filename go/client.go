@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -39,6 +40,19 @@ const (
 	defaultTimeout   = 30 * time.Second
 	maxResponseLen   = 1 << 20
 	refreshRateLimit = 5 * time.Second // minimum time between OAuth refresh attempts
+
+	// Idle-connection budget of the transport the SDK owns (#14).
+	//
+	// http.DefaultTransport keeps only DefaultMaxIdleConnsPerHost (2) idle
+	// connections PER HOST -- a browser-ish default that starves a
+	// server-side client: at a few hundred requests/second the pool
+	// cannot retain idle connections, so every burst re-dials TLS (an
+	// extra round-trip plus certificate verification) and can exhaust
+	// the ephemeral port range. The SDK therefore owns its transport
+	// instead of inheriting that cap.
+	idleConnsTotal   = 100
+	idleConnsPerHost = 32
+	idleConnTimeout  = 90 * time.Second
 )
 
 // pinnedSPKIHashes maps hostnames to their expected SPKI SHA-256 hashes.
@@ -298,11 +312,51 @@ func transportDisablesVerification(rt http.RoundTripper) bool {
 	return false
 }
 
+// tunedTransport returns the transport the SDK owns: a clone of the
+// process default transport (so the system proxy, the dialer and the
+// root-CA configuration survive) carrying a real idle-connection budget.
+//
+// CLONING rather than building from scratch matters: http.DefaultTransport
+// is where the machine's proxy configuration, its dialer and its root CA
+// set live, and a hand-built transport would silently drop all three.
+// Only the idle-connection fields are raised.
+//
+// The fallback covers a program that replaced the package-level
+// http.DefaultTransport with something that is not an *http.Transport:
+// rather than inherit an unknown connection budget, the SDK builds an
+// equivalent explicit transport.
+func tunedTransport() *http.Transport {
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		tr := dt.Clone()
+		tr.MaxIdleConns = idleConnsTotal
+		tr.MaxIdleConnsPerHost = idleConnsPerHost
+		tr.IdleConnTimeout = idleConnTimeout
+		return tr
+	}
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          idleConnsTotal,
+		MaxIdleConnsPerHost:   idleConnsPerHost,
+		IdleConnTimeout:       idleConnTimeout,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}
+
 // NewClient returns a Client for cfg. Timeout defaults to 30s and Now to
 // time.Now when unset. An injected Config.HTTPClient is cloned (never
 // mutated) and always gets the never-follow-redirects policy: Daraja never
 // legitimately redirects, and following 307/308 would replay request bodies
 // against an arbitrary Location host.
+//
+// The SDK-owned transport is NOT http.DefaultTransport: it is a clone of it
+// with a real idle-connection budget (see tunedTransport), because the
+// default's 2-idle-connections-per-host cap re-dials TLS under load.
 //
 // Security: an injected Transport with InsecureSkipVerify=true is refused
 // outright (fail-closed, Python verify=True parity), including when hidden
@@ -317,8 +371,8 @@ func transportDisablesVerification(rt http.RoundTripper) bool {
 // TLS pinning (cfg.TLSPinningEnabled) is enforced, never simulated: the pin
 // set for the configured host is snapshotted once here, and NewClient fails
 // closed when no pin is registered. Pinning is installed by cloning the
-// concrete *http.Transport (nil Transport ⇒ a pinned clone of
-// http.DefaultTransport), which preserves Proxy/DialContext/RootCAs and any
+// concrete *http.Transport (nil Transport ⇒ a pinned clone of the SDK's
+// tuned transport), which preserves Proxy/DialContext/RootCAs and any
 // pre-existing VerifyPeerCertificate. A wrapper chain or an opaque custom
 // RoundTripper CANNOT be pinned — replacing it would silently discard the
 // caller's tracing/retry/logging behaviour, and leaving it in place would
@@ -334,7 +388,7 @@ func NewClient(cfg Config) (*Client, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	hc := &http.Client{Timeout: cfg.Timeout}
+	hc := &http.Client{Timeout: cfg.Timeout, Transport: tunedTransport()}
 	if cfg.HTTPClient != nil {
 		if transportDisablesVerification(cfg.HTTPClient.Transport) {
 			return nil, fmt.Errorf("mpesa: refusing HTTPClient with InsecureSkipVerify (would disable TLS verification)")
@@ -378,13 +432,12 @@ func NewClient(cfg Config) (*Client, error) {
 		}
 		switch concrete, _ := hc.Transport.(*http.Transport); {
 		case hc.Transport == nil:
-			// No transport injected: pin a clone of the process default so
-			// system Proxy/DialContext/RootCAs tuning survives.
-			if dt, ok := http.DefaultTransport.(*http.Transport); ok {
-				hc.Transport = applyPinning(dt)
-			} else {
-				hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{VerifyPeerCertificate: verify}}
-			}
+			// No transport injected: pin the SDK's OWN tuned transport so
+			// the pinned client inherits the same idle-connection budget
+			// (a clone of http.DefaultTransport would re-introduce the
+			// 2-per-host cap on the pinned client) while keeping the
+			// system Proxy/DialContext/RootCAs tuning.
+			hc.Transport = applyPinning(tunedTransport())
 		case concrete != nil:
 			// Exactly an *http.Transport: pin its clone, keeping every tuned
 			// field (Proxy, DialContext, MaxIdleConns, RootCAs...).

@@ -1847,6 +1847,78 @@ func TestClosedClientRefusesRefreshWithoutHittingOAuth(t *testing.T) {
 	})
 }
 
+// #14: http.DefaultTransport keeps only 2 idle connections PER HOST -- a
+// browser-ish default that starves a server-side client. At a few hundred
+// requests/second the pool cannot retain idle connections, so bursts
+// re-dial TLS (two extra round-trips plus certificate verification) and
+// can exhaust ephemeral ports. The SDK must own a transport with a real
+// idle-connection budget, cloned from the process default so the system
+// proxy, dialer and root-CA configuration survive.
+func TestNewClientOwnsATunedTransport(t *testing.T) {
+	const timeout = 17 * time.Second
+	c, err := NewClient(Config{
+		ConsumerKey:    "test-key",
+		ConsumerSecret: "test-secret",
+		Shortcode:      testShortcode,
+		Passkey:        testPasskey,
+		Environment:    Sandbox,
+		Timeout:        timeout,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	tr, ok := c.http.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T, want *http.Transport", c.http.Transport)
+	}
+	if tr.MaxIdleConnsPerHost <= 2 {
+		t.Errorf("MaxIdleConnsPerHost = %d, want materially more than the default transport's 2", tr.MaxIdleConnsPerHost)
+	}
+	// A per-host budget above the global one is unreachable: the global
+	// cap would close the idle connections first.
+	if tr.MaxIdleConns < tr.MaxIdleConnsPerHost {
+		t.Errorf("MaxIdleConns = %d, want at least MaxIdleConnsPerHost (%d)", tr.MaxIdleConns, tr.MaxIdleConnsPerHost)
+	}
+	if tr.IdleConnTimeout <= 0 {
+		t.Errorf("IdleConnTimeout = %v, want a positive budget", tr.IdleConnTimeout)
+	}
+	// The SDK-owned client still honours the configured timeout.
+	if c.http.Timeout != timeout {
+		t.Errorf("http.Client.Timeout = %v, want %v", c.http.Timeout, timeout)
+	}
+}
+
+// #14: the TLS-pinning path must inherit the SAME idle-connection budget.
+// Pinning clones a transport, and a clone of the DEFAULT transport would
+// silently re-introduce the 2-per-host cap on the pinned client.
+func TestPinnedClientInheritsTheTunedIdleBudget(t *testing.T) {
+	resetPinnedSPKIHashes(t)
+	hostname := hostnameFromURL(Sandbox.BaseURL())
+	_, hash := generatePinnedCert(t)
+	if err := PinSPKI(hostname, hash); err != nil {
+		t.Fatalf("PinSPKI: %v", err)
+	}
+	c, err := NewClient(Config{
+		ConsumerKey:       "test-key",
+		ConsumerSecret:    "test-secret",
+		Environment:       Sandbox,
+		TLSPinningEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("NewClient with pinning: %v", err)
+	}
+	tr, ok := c.http.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T, want *http.Transport", c.http.Transport)
+	}
+	if tr.MaxIdleConnsPerHost <= 2 {
+		t.Errorf("pinned MaxIdleConnsPerHost = %d, want materially more than 2", tr.MaxIdleConnsPerHost)
+	}
+	if tr.TLSClientConfig == nil || tr.TLSClientConfig.VerifyPeerCertificate == nil {
+		t.Error("pinning callback was not installed on the tuned transport")
+	}
+}
+
 // TestRefreshCadenceOverflowGuard verifies that refreshCadence does not
 // overflow when expires_in is near math.MaxInt64, and that the result is
 // always within [minCadence, maxCadence].
