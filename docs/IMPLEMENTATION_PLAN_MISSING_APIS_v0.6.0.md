@@ -240,21 +240,6 @@ Safaricom may have a separate `/mpesa/buygoods/v1/...` endpoint for:
 
 ---
 
-### Phase 1: Foundation (Week 1)
-
-| Task | Owner | Deliverable |
-|------|-------|-------------|
-| Add new enum constants (`CommandBusinessPayBill`, `CommandBusinessBuyGoods`, `CommandTaxRemittance`) | Go | `enums.go` |
-| Add Python enums | Python | `enums.py` |
-| Add TypeScript enums | TypeScript | `enums.ts` |
-| Add contract fixtures for each new API | All | `contract/fixtures/` |
-| Update Go `CommandID` type to include new values | Go | `enums.go` |
-| Update Python/TS enums | Python/TS | `enums.py`, `enums.ts` |
-
-**Deliverable:** All enums + contract fixtures committed, CI green
-
----
-
 ### Phase 2: B2B Express Checkout (Week 2)
 
 | Task | Engine | Files |
@@ -351,75 +336,6 @@ For **EACH** new API, before merge:
 ---
 
 ## 5. Security Review Gates
-
-### Per-PR Gate (Automated in CI)
-```yaml
-# .github/workflows/security-review.yml
-jobs:
-  security-review:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check for new request types
-        run: |
-          # Scan for new request structs without LogSafe/GoString/logSafe
-          # grep -r "type.*Request struct" go/ python/ typescript/src/ | grep -v test
-      - name: Check credential redaction
-        run: |
-          # Verify all request types redact SecurityCredential, Passkey, Passkey
-      - name: Check PII redaction
-        run: |
-          # Verify PII fields redacted in logSafe/GoString/LogSafe
-```
-
-### Pre-Merge Security Checklist (Manual)
-
-- [ ] All secrets redacted in all 3 engines
-- [ ] All PII redacted in all structured logs
-- [ ] No `json.Marshal(req)` in logging paths
-- [ ] All callback/result URLs redacted
-- [ ] All PII (names, phones, PINs) redacted in logs
-- [ ] Contract fixtures added for new API
-- [ ] Conformance tests pass in all 3 engines
-- [ ] CHANGES.md updated
-- [ ] Documentation updated
-
----
-
-## 6. Timeline & Milestones
-
-| Week | Focus | Deliverable |
-|------|-------|-------------|
-| 1 | Foundation | Enums, contract fixtures, CI green |
-| 2 | B2B Express Checkout | All 3 engines + conformance |
-| 3 | Tax Remittance | All 3 engines + conformance |
-| 4 | Bill Manager | All 4 endpoints, all 3 engines |
-| 5 | Buy Goods Manager (if API exists) | Research + implement or document |
-| 6 | Security audit, docs, CHANGES.md, release prep | v0.6.0 release |
-
-**Total: 6 weeks (1 engineer)**
-
----
-
-## 5. Security Review Checklist (Per API)
-
-For **EACH** new API, before merge:
-
-| Check | Implementation |
-|-------|----------------|
-| Credential redaction | `GoString`/`Format`/`LogSafe`/`logSafe`/`toString`/`toJSON`/`logSafe` all redact secrets |
-| PII handling | Names, phones, PINs redacted in `LogSafe`/`logSafe`/`LogSafe` |
-| URL redaction | `callBackURL`, `ResultURL`, `QueueTimeOutURL`, `ValidationURL`, `ConfirmationURL` redacted |
-| Input validation | Amount > 0, enum validation, URL format, phone format, amount limits |
-| Limits enforcement | Use existing `limits` framework (`checkPerTransaction`, `_accrue_daily`) |
-| Contract fixtures | Add to `contract/fixtures/<api>/` with valid/invalid cases |
-| Conformance tests | All three engines pass shared fixture tests |
-| Documentation | Update `docs/apis/<api>.md` with request/response examples |
-| CHANGES.md | Add entry under Unreleased |
-
----
-
-## 6. Security Review Gates
 
 ### Per-PR Gate (Automated in CI)
 ```yaml
@@ -541,7 +457,7 @@ If any API causes issues:
 2. **Week 1:** Add enums, contract fixtures, CI green
 2. **Week 2:** B2B Express Checkout
 3. **Week 3:** Tax Remittance
-5. **Week 4-5:** Bill Manager
+4. **Week 4-5:** Bill Manager
 5. **Week 5-6:** Buy Goods Manager (research first)
 5. **Week 6:** Security audit, docs, v0.6.0 release
 
