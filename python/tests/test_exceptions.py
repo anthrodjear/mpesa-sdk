@@ -9,6 +9,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mpesa.exceptions import MpesaError
@@ -106,3 +108,87 @@ def test_from_response_never_raises_on_garbage():
         err = MpesaError.from_response(400 + i, blob)
         assert isinstance(err, MpesaError)
         assert isinstance(str(err), str)
+
+
+# ---------------------------------------------------------------------------
+# Envelope members that arrive as non-strings (D1)
+# ---------------------------------------------------------------------------
+
+def test_numeric_error_code_survives_as_its_wire_string():
+    """A bare-number ``errorCode`` must not be DROPPED.
+
+    The gateway sends ``"errorCode": 401`` as a number in some captures.
+    Go's ``FlexString`` (go/coercion.go:23-47) coerces it to ``"401"`` and
+    TypeScript's ``coerceEnvelopeField`` (typescript/src/errors.ts:59) does
+    the same, so Python dropping the member made one engine lose the
+    gateway's error code while the other two kept it.
+
+    The 401 RETRY is not what this is about: the retry probe keys on the
+    DOTTED code ``"401.003.01"`` (mpesa/client.py), which a bare number
+    never matched in any engine.
+    """
+    body = json.dumps({"requestId": "r-1", "errorCode": 401,
+                       "errorMessage": "Invalid token"}).encode("utf-8")
+    err = MpesaError.from_response(401, body, "application/json")
+    assert err.error_code == "401"
+    # The other members are untouched by the coercion.
+    assert err.request_id == "r-1"
+    assert err.error_message == "Invalid token"
+
+
+def test_boolean_envelope_member_becomes_its_json_text():
+    """``true``/``false`` are rendered as JSON text, not dropped."""
+    body = json.dumps({"requestId": "r-1", "errorCode": True,
+                       "errorMessage": "boom"}).encode("utf-8")
+    err = MpesaError.from_response(400, body, "application/json")
+    assert err.error_code == "true"
+
+    body = json.dumps({"requestId": "r-1", "errorCode": False,
+                       "errorMessage": "boom"}).encode("utf-8")
+    err = MpesaError.from_response(400, body, "application/json")
+    assert err.error_code == "false"
+
+
+def test_null_envelope_member_counts_as_absent():
+    """A JSON null is absence, not the literal text "None"."""
+    body = json.dumps({"requestId": "r-1", "errorCode": None,
+                       "errorMessage": "boom"}).encode("utf-8")
+    err = MpesaError.from_response(400, body, "application/json")
+    assert err.error_code is None
+    assert err.request_id == "r-1"
+    assert err.error_message == "boom"
+
+
+@pytest.mark.parametrize("member", [[1, 2], {"a": 1}])
+def test_non_scalar_envelope_member_counts_as_absent_while_others_survive(member):
+    """An array/object member is absent; the OTHER members survive.
+
+    This is the documented divergence with Go (see
+    contract/known-divergences.md): Go's ``FlexString`` rejects an array or
+    an object as a HARD error, so the WHOLE envelope is lost there, while
+    Python keeps the survivors.
+    """
+    body = json.dumps({"requestId": "r-1", "errorCode": member,
+                       "errorMessage": "boom"}).encode("utf-8")
+    err = MpesaError.from_response(400, body, "application/json")
+    assert err.error_code is None
+    assert err.request_id == "r-1"
+    assert err.error_message == "boom"
+
+
+def test_envelope_coercion_agrees_with_coerce_str_on_scalars():
+    """The local envelope helper and the shared coercion agree on scalars.
+
+    Parity is asserted for the SCALAR cases only. The two deliberately
+    differ on containers: ``coerce_str`` renders a dict/list as compact
+    JSON (its documented behaviour), while the envelope helper treats a
+    non-scalar as ABSENT, because the error envelope has no meaningful
+    text form for one.
+    """
+    from mpesa.coercion import coerce_str
+    from mpesa.exceptions import _envelope_value
+
+    cases = ["401", "Invalid token", 401, 0, 3599.0, 1.5, -7, True, False,
+             None]
+    for raw in cases:
+        assert _envelope_value(raw) == (coerce_str(raw) or ""), raw

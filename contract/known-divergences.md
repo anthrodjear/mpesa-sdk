@@ -47,9 +47,10 @@ with this list.
   the WHOLE body, so every member is lost — the `requestId` and the
   `errorMessage` are dropped along with the offending `errorCode` — and
   the caller sees the generic "unexpected error response from gateway".
-- **Python** — `python/mpesa/exceptions.py`: `from_response` copies only
-  the members that arrive as `str`, so a non-scalar member counts as
-  absent and the OTHER members survive.
+- **Python** — `python/mpesa/exceptions.py`: `from_response` coerces each
+  member to its wire string form (strings pass through, numbers and
+  booleans are rendered as their JSON text), so a non-scalar member counts
+  as absent and the OTHER members survive.
 - **TypeScript** — `typescript/src/errors.ts`: `coerceEnvelopeField` turns
   anything that is not a string or a number into `""`, so a non-scalar
   member counts as absent and the OTHER members survive.
