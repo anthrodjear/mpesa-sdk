@@ -9,9 +9,12 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa.exceptions import MpesaError
+from mpesa.coercion import coerce_str
+from mpesa.exceptions import MpesaError, _envelope_value
 
 ENVELOPE = (
     b'{"requestId":"43169-3253970-1","errorCode":"500.001.1001",'
@@ -106,3 +109,179 @@ def test_from_response_never_raises_on_garbage():
         err = MpesaError.from_response(400 + i, blob)
         assert isinstance(err, MpesaError)
         assert isinstance(str(err), str)
+
+
+# ---------------------------------------------------------------------------
+# Envelope members that arrive as non-strings (D1)
+# ---------------------------------------------------------------------------
+
+def test_numeric_error_code_survives_as_its_wire_string():
+    """A bare-number ``errorCode`` must not be DROPPED.
+
+    The gateway sends ``"errorCode": 401`` as a number in some captures.
+    Go's ``FlexString`` (go/coercion.go:23-47) coerces it to ``"401"`` and
+    TypeScript's ``coerceEnvelopeField`` (typescript/src/errors.ts:59) does
+    the same, so Python dropping the member made one engine lose the
+    gateway's error code while the other two kept it.
+
+    The 401 RETRY is not what this is about: the retry probe keys on the
+    DOTTED code ``"401.003.01"`` (mpesa/client.py), which a bare number
+    never matched in any engine.
+    """
+    body = json.dumps({"requestId": "r-1", "errorCode": 401,
+                       "errorMessage": "Invalid token"}).encode("utf-8")
+    err = MpesaError.from_response(401, body, "application/json")
+    assert err.error_code == "401"
+    # The other members are untouched by the coercion.
+    assert err.request_id == "r-1"
+    assert err.error_message == "Invalid token"
+
+
+def test_boolean_envelope_member_becomes_its_json_text():
+    """``true``/``false`` are rendered as JSON text, not dropped."""
+    body = json.dumps({"requestId": "r-1", "errorCode": True,
+                       "errorMessage": "boom"}).encode("utf-8")
+    err = MpesaError.from_response(400, body, "application/json")
+    assert err.error_code == "true"
+
+    body = json.dumps({"requestId": "r-1", "errorCode": False,
+                       "errorMessage": "boom"}).encode("utf-8")
+    err = MpesaError.from_response(400, body, "application/json")
+    assert err.error_code == "false"
+
+
+def test_null_envelope_member_counts_as_absent():
+    """A JSON null is absence, not the literal text "None"."""
+    body = json.dumps({"requestId": "r-1", "errorCode": None,
+                       "errorMessage": "boom"}).encode("utf-8")
+    err = MpesaError.from_response(400, body, "application/json")
+    assert err.error_code is None
+    assert err.request_id == "r-1"
+    assert err.error_message == "boom"
+
+
+@pytest.mark.parametrize("member", [[1, 2], {"a": 1}])
+def test_non_scalar_envelope_member_counts_as_absent_while_others_survive(member):
+    """An array/object member is absent; the OTHER members survive.
+
+    This is the documented divergence with Go (see
+    contract/known-divergences.md): Go's ``FlexString`` rejects an array or
+    an object as a HARD error, so the WHOLE envelope is lost there, while
+    Python keeps the survivors.
+    """
+    body = json.dumps({"requestId": "r-1", "errorCode": member,
+                       "errorMessage": "boom"}).encode("utf-8")
+    err = MpesaError.from_response(400, body, "application/json")
+    assert err.error_code is None
+    assert err.request_id == "r-1"
+    assert err.error_message == "boom"
+
+
+def test_envelope_coercion_agrees_with_coerce_str_on_scalars():
+    """The local envelope helper and the shared coercion agree on the
+    scalars listed here.
+
+    That is the WHOLE claim: the two are not the same function, and every
+    case this test does NOT list either AGREES with the envelope helper or
+    is pinned as a KNOWN DIFFERENCE in
+    ``test_envelope_coercion_known_differences_from_coerce_str`` -- the
+    differences are pinned there, not hidden here.
+    """
+    cases = ["401", "Invalid token", 401, 0, 3599.0, 1.5, -7, True, False,
+             None]
+    for raw in cases:
+        assert _envelope_value(raw) == (coerce_str(raw) or ""), raw
+
+
+def test_envelope_coercion_known_differences_from_coerce_str():
+    """Every known difference between the two coercions, named and pinned.
+
+    ``coerce_str`` is the general-purpose wire-value canonicaliser;
+    ``_envelope_value`` is the member-level half of the error envelope's
+    contract. They are deliberately not interchangeable, so each known
+    difference -- and the one case where the two now AGREE -- is
+    asserted here rather than left for a reader to rediscover:
+
+    * WHITESPACE-PADDED STRING -- ``coerce_str`` trims it, the envelope
+      helper passes it through untouched (the envelope carries a trace
+      id, not a canonicalisable value).
+    * NON-FINITE FLOAT -- ``coerce_str`` renders NaN/Infinity as
+      "nan"/"inf", the envelope helper treats the member as ABSENT so it
+      can never reach the caller as text.
+    * CONTAINER -- ``coerce_str`` renders a map or a list as compact JSON,
+      the envelope helper treats the member as ABSENT: an envelope member
+      is a SCALAR field, and a JSON document delivered as one would reach
+      the caller inside a scalar field's text.
+    * OVER-LONG STRING -- ``coerce_str`` truncates at 4096 characters, the
+      envelope helper passes the string through whole. The envelope path
+      does bound the member, but at a DIFFERENT limit (512, in
+      ``_sanitize``), so the two functions do not agree on the cap.
+    * OUT-OF-MAGNITUDE INTEGRAL FLOAT -- the two AGREE ("1e+30"):
+      beyond +/-2**53 both fall back to ``repr``, so the envelope never
+      prints the ~19 spurious digits of ``str(int(1e30))``.
+    """
+    # Whitespace-padded string: the trimming difference.
+    assert _envelope_value("  x  ") == "  x  "
+    assert coerce_str("  x  ") == "x"
+
+    # Non-finite float: absence in the envelope, text in coerce_str.
+    assert _envelope_value(float("nan")) == ""
+    assert _envelope_value(float("inf")) == ""
+    assert coerce_str(float("nan")) == "nan"
+    assert coerce_str(float("inf")) == "inf"
+
+    # Container: absence in the envelope, compact JSON in coerce_str.
+    assert _envelope_value({"a": 1}) == ""
+    assert coerce_str({"a": 1}) == '{"a":1}'
+    assert _envelope_value([1, 2]) == ""
+    assert coerce_str([1, 2]) == "[1,2]"
+
+    # Over-long string: the envelope passes it whole, coerce_str truncates.
+    overlong = "a" * 5000
+    assert len(_envelope_value(overlong)) == 5000
+    assert len(coerce_str(overlong)) == 4096
+
+    # Out-of-magnitude integral float: the two agree on the honest
+    # repr() rendering (the D1-era 31-digit expansion is gone).
+    assert _envelope_value(1e30) == "1e+30"
+    assert coerce_str(1e30) == "1e+30"
+
+
+def test_out_of_magnitude_integral_float_is_not_expanded():
+    """An integral float beyond 2**53 must not be turned into digits.
+
+    ``str(int(1e30))`` prints 31 digits carrying ~19 spurious ones
+    ("1000000000000000019884624838656") -- exactly the corruption the
+    coercion module's magnitude rule exists to prevent. The envelope
+    helper mirrors ``coerce_str``: within +/-2**53 the integer text is
+    produced, beyond it the honest ``repr`` rendering wins.
+    """
+    assert _envelope_value(1e30) == "1e+30"
+    assert _envelope_value(1e30) != "1000000000000000019884624838656"
+    assert _envelope_value(3599.0) == "3599"
+    assert _envelope_value(2 ** 53) == str(2 ** 53)
+
+    # End to end: the member survives as its repr form, not as digits.
+    body = json.dumps({"requestId": "r-1", "errorCode": 1e30,
+                       "errorMessage": "boom"}).encode("utf-8")
+    err = MpesaError.from_response(400, body, "application/json")
+    assert err.error_code == "1e+30"
+    assert err.request_id == "r-1"
+    assert err.error_message == "boom"
+
+
+def test_non_finite_float_member_counts_as_absent():
+    """``NaN`` / ``Infinity`` are absence, not the text "nan"/"inf".
+
+    Python's ``json`` decoder accepts the bare ``NaN``/``Infinity``
+    literals (Go's and TypeScript's reject them outright), so the
+    envelope helper must refuse a non-finite member itself -- the same
+    defence in depth ``mpesa.results`` applies to balance floats.
+    """
+    for literal in ("NaN", "Infinity", "-Infinity"):
+        body = ('{"requestId":"r-1","errorCode":%s,"errorMessage":"boom"}'
+                % literal).encode("utf-8")
+        err = MpesaError.from_response(400, body, "application/json")
+        assert err.error_code is None, literal
+        assert err.request_id == "r-1"
+        assert err.error_message == "boom"

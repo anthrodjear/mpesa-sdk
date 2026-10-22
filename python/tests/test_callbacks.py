@@ -103,6 +103,22 @@ def test_missing_inner_scalar_names_key():
         StkCallbackResult.from_json(raw)
 
 
+def test_missing_result_desc_is_rejected():
+    """Python REQUIRES all four wire scalars, so a callback without
+    ResultDesc raises -- while Go TOLERATES the very same body (its
+    ResultDesc is a plain string field with no presence check) and
+    TypeScript rejects it as well.
+
+    A shared fixture cannot express "these engines legitimately differ" --
+    one body, three outcomes -- so the divergence is pinned here, engine by
+    engine, and tracked in contract/known-divergences.md.
+    """
+    raw = (b'{"Body":{"stkCallback":{"MerchantRequestID":"m",'
+           b'"CheckoutRequestID":"ws_CO_1","ResultCode":"0"}}}')
+    with pytest.raises(ValueError, match="ResultDesc"):
+        StkCallbackResult.from_json(raw)
+
+
 def test_classify_wiring_across_encodings():
     for code, want in (("0", ResultClass.SUCCESS), ("1032", ResultClass.FAILURE),
                        ("1037", ResultClass.INDETERMINATE)):

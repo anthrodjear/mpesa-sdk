@@ -39,8 +39,15 @@
  * @packageDocumentation
  */
 
+import { createHash } from "node:crypto";
+
 import { Config, ConfigError, Environment } from "./config.js";
-import { MpesaError, decodeJsonObject, tryDecodeJsonObject } from "./errors.js";
+import {
+  MpesaError,
+  decodeJsonObject,
+  tryDecodeJsonObject,
+  type ErrorLogger,
+} from "./errors.js";
 import {
   checkDailyLimit,
   enforcePerTransactionLimit,
@@ -366,8 +373,8 @@ function requireLengthRange(field: string, value: string, min: number, max: numb
 // ─── Shared token-cache registry ─────────────────────────────────────────────
 
 /**
- * Process-wide {@link TokenManager} registry keyed by
- * `baseUrl|consumerKey|consumerSecret`.
+ * Process-wide {@link TokenManager} registry keyed by a DIGEST of the
+ * credential tuple (see {@link sharedTokenCacheKey}).
  *
  * Rationale: a fresh TokenManager per client instance means every
  * `fromEnv()` call performs its own OAuth round-trip, and because Daraja
@@ -386,12 +393,48 @@ function requireLengthRange(field: string, value: string, min: number, max: numb
 const SHARED_TOKEN_CACHE_MAX = 8;
 const sharedTokenManagers = new Map<string, TokenManager>();
 
+/**
+ * Cache key for the process-wide {@link TokenManager} registry: a SHA-256
+ * digest of the credential tuple.
+ *
+ * The registry is a module-level `Map` that lives for the PROCESS
+ * lifetime, so a key holding the consumer secret in cleartext would keep
+ * that secret in the heap (heap dumps, `--inspect`, secret scanners) long
+ * after the client was discarded. A digest is deterministic — the same
+ * credentials must map to the same cache entry — and reveals nothing about
+ * the secret.
+ *
+ * The tuple is LENGTH-PREFIXED rather than joined with a separator: with a
+ * `|` join, ("a|b", "c") and ("a", "b|c") produced the same key, so two
+ * different credential sets could share one cache entry.
+ *
+ * INTERNAL — not public API: exported from this module for the test suite
+ * only. The package barrel (`src/index.ts`) does not re-export it, so it is
+ * not part of the published `@mpesa-sdk/core` surface and may change or
+ * disappear without a major-version bump.
+ *
+ * @param baseUrl - The client's API base URL.
+ * @param consumerKey - The OAuth consumer key.
+ * @param consumerSecret - The OAuth consumer secret (hashed, never stored).
+ * @returns The hex SHA-256 digest of the tuple.
+ */
+export function sharedTokenCacheKey(
+  baseUrl: string,
+  consumerKey: string,
+  consumerSecret: string,
+): string {
+  const material = `${baseUrl.length}:${baseUrl}` +
+    `${consumerKey.length}:${consumerKey}` +
+    `${consumerSecret.length}:${consumerSecret}`;
+  return createHash("sha256").update(material, "utf8").digest("hex");
+}
+
 function sharedTokenManager(
   baseUrl: string,
   consumerKey: string,
   consumerSecret: string,
 ): TokenManager {
-  const key = `${baseUrl}|${consumerKey}|${consumerSecret}`;
+  const key = sharedTokenCacheKey(baseUrl, consumerKey, consumerSecret);
   const existing = sharedTokenManagers.get(key);
   if (existing !== undefined) return existing;
   const manager = new TokenManager({ baseUrl, consumerKey, consumerSecret });
@@ -421,13 +464,34 @@ function sharedTokenManager(
  *   `false` to surface the 401 immediately with NO second fetch and NO
  *   forced token refresh (callers that mint their own credentials per
  *   request, or that must not invalidate sibling tokens, opt out).
- */
+ * @property errorLogger - OPT-IN diagnostic sink for the RAW body of a
+ *   non-2xx response whose body is NOT a Daraja error envelope (a WAF page,
+ *   an HTML error page, a truncated body). The exception text itself stays
+ *   generic — "unexpected error response from gateway" — because an
+ *   exception object is logged by every logger on the call path and must
+ *   never carry a raw gateway payload (customer MSISDNs, WAF internals)
+   *   off-box. A sink that THROWS (synchronously) or whose returned PROMISE
+   *   REJECTS is swallowed: it can never mask the gateway error.
+   *
+   *   Sink parity is NOT uniform across the three engines — the real matrix:
+   *   - **Go** — `Config.ErrorLogger` (go/errors.go) is passed on BOTH legs:
+   *     the business leg (`go/client.go` `post`) and the OAuth leg
+   *     (`go/client.go` `refresh`), so a non-envelope OAuth failure also
+   *     reaches the sink.
+   *   - **Python** — there is NO client-level sink at all: only
+   *     `MpesaError.from_response(..., error_logger=...)` accepts one
+   *     (python/mpesa/exceptions.py), and `MpesaClient` never wires it.
+   *   - **TypeScript** — the OAuth leg is minted by `TokenManager`
+   *     (src/auth.ts), which has no sink, so ONLY the business leg reaches
+   *     this option.
+   */
 export interface MpesaClientOptions {
   readonly config: Config;
   readonly timeoutMs?: number;
   readonly now?: () => number;
   readonly fetch?: typeof globalThis.fetch;
   readonly retryOnUnauthorized?: boolean;
+  readonly errorLogger?: ErrorLogger;
 }
 
 /**
@@ -458,6 +522,8 @@ export class MpesaClient {
   private readonly _fetch: typeof globalThis.fetch;
   /** Whether a 401.003.01 triggers the retry-once + forced refresh. */
   private readonly _retryOnUnauthorized: boolean;
+  /** Opt-in diagnostic sink for raw non-envelope error bodies (never secrets). */
+  private readonly _errorLogger: ErrorLogger | undefined;
   /** Token manager with generation-guarded caching. */
   private readonly _tokens: TokenManager;
   /**
@@ -493,6 +559,7 @@ export class MpesaClient {
     this._now = opts.now ?? (() => Date.now());
     this._fetch = opts.fetch ?? globalThis.fetch.bind(globalThis);
     this._retryOnUnauthorized = opts.retryOnUnauthorized ?? true;
+    this._errorLogger = opts.errorLogger;
     this._limits = opts.config.limits;
     this._trackDaily = opts.config.trackDaily;
     // Pure-default clients share one process-wide TokenManager per
@@ -776,7 +843,11 @@ export class MpesaClient {
     }
 
     if (result.status < 200 || result.status > 299) {
-      throw MpesaError.fromResponse(result.status, result.body, result.contentType);
+      // The raw body reaches the caller ONLY through the opt-in sink — the
+      // exception text stays generic (D7 / go `parseError` parity).
+      throw MpesaError.fromResponse(
+        result.status, result.body, result.contentType, this._errorLogger,
+      );
     }
 
     return out(result.body);
@@ -1413,6 +1484,29 @@ export class MpesaClient {
 }
 
 // ─── Factory functions ────────────────────────────────────────────────────────
+
+/**
+ * `util.inspect` hook — the TypeScript equivalent of Python's
+ * `MpesaClient.__repr__` (python/mpesa/client.py) and Go's
+ * `Client.Format` (go/client.go).
+ *
+ * `util.inspect` does NOT consult `toString()`/`toJSON()`: left to its own
+ * devices it walks the own enumerable properties, so it printed the
+ * nested `_tokens` TokenManager — and with it the consumer key and the
+ * consumer secret — in cleartext, which is exactly what `console.log(client)`
+ * does. SECURITY.md forbids cleartext credentials in logs, so the hook
+ * routes `inspect` (and therefore `console.log`) through the
+ * credential-safe {@link MpesaClient.toString} form.
+ *
+ * Installed with `Symbol.for("nodejs.util.inspect.custom")` rather than an
+ * import of `node:util`, so this module keeps no Node-only import. The
+ * hook is NOT writable: a redaction hook must not be replaceable at
+ * runtime.
+ */
+Object.defineProperty(MpesaClient.prototype, Symbol.for("nodejs.util.inspect.custom"), {
+  value(this: MpesaClient): string { return this.toString(); },
+  enumerable: false, configurable: true, writable: false,
+});
 
 /**
  * Create a MpesaClient from a validated Config.

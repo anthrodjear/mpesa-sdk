@@ -17,7 +17,7 @@ Every Daraja-facing reader in this package enforces the SAME 1 MiB bound
 * :func:`check_body_size` -- pre-parse gate used by the callback, result
   and sync-response models before ``json.loads``.
 * :func:`read_capped` (alias :func:`_read_capped`) -- bounded streaming
-  reader shared by ``auth.TokenManager._refresh_locked`` and
+  reader shared by ``auth.TokenManager._refresh`` and
   ``client.MpesaClient._send`` (previously near-identical ``iter_content``
   cap loops in both places). Reads at most ``MAX_BODY_BYTES + 1`` bytes
   via ``iter_content`` -- Go ``LimitReader`` parity -- so a gzip bomb

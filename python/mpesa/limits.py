@@ -171,13 +171,15 @@ class TransactionLimits:
     STK Push, ``c2b`` covers C2B simulate, ``b2c`` covers B2C payout,
     ``reversal`` covers Reversal, ``qr`` covers dynamic QR, and
     ``default`` covers everything else that carries an amount (Transaction
-    Status, etc.). Reversal and dynamic QR each get their OWN daily
-    bucket when ``Config.track_daily`` is on (``MpesaClient._accrue_daily``
-    is called with the service name ``"reversal"`` or ``"qr"``
-    respectively). The daily quota is consumed-on-attempt: accrued before
-    dispatch, rolled back only on transport-level failures
-    (``requests.exceptions.RequestException``) so a network blip does not
-    permanently drain the budget.
+    Status, etc.). Reversal and dynamic QR each get their OWN bucket for
+    BOTH bounds: the per-transaction check spends ``"reversal"``/``"qr"``,
+    and so does the daily accrual when ``Config.track_daily`` is on
+    (``MpesaClient._accrue_daily`` is called with the service name
+    ``"reversal"`` or ``"qr"`` respectively), so one service never resolves
+    to two different ceilings inside one engine. The daily quota is
+    consumed-on-attempt: accrued before dispatch, rolled back only on
+    transport-level failures (``requests.exceptions.RequestException``) so
+    a network blip does not permanently drain the budget.
 
     Each field is merged INDEPENDENTLY against its own default pair, so
     ``TransactionLimits(b2c=ServiceLimits(500_000, 2_500_000))`` is an

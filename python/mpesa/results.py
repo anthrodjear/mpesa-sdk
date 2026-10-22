@@ -45,6 +45,38 @@ __all__ = ["AsyncResult", "Parameter", "ReferenceItem", "BalanceSegment",
 # historic error text ("mpesa: result body exceeds ...").
 _BALANCE_NUM_RE = re.compile(r"[+-]?[0-9]{1,18}(\.[0-9]{1,6})?", re.ASCII)
 
+#: Decimal rendering of 2**53 for the TEXTUAL magnitude compare below (Go
+#: ``maxSafeBalanceStr`` parity).
+_MAX_SAFE_BALANCE_STR = "9007199254740992"
+
+
+def _exceeds_safe_balance(text: str) -> bool:
+    """Does the ASCII-gated decimal *text* exceed +/-2**53 in magnitude?
+
+    The comparison is TEXTUAL, and it has to be: ``float("9007199254740993")``
+    is ALREADY exactly ``9007199254740992`` -- the very rounding this gate
+    exists to catch -- so a post-conversion ``abs(value) > 2**53`` test can
+    never see the overflow it is meant to detect, and the row would come
+    back with a silently wrong amount. Comparing the integer digits by
+    LENGTH and then lexicographically (a numeric compare for equal digit
+    counts) rejects the hostile text exactly. An integer part equal to
+    2**53 with any non-zero fraction exceeds it as well.
+
+    The SIGN is ignored: this is a magnitude gate, so a negative balance
+    beyond the limit is skipped exactly like a positive one (Go
+    ``exceedsSafeBalance``, go/results.go).
+
+    Call only with text that passed :data:`_BALANCE_NUM_RE`.
+    """
+    s = text[1:] if text[:1] in ("+", "-") else text
+    int_part, _, frac_part = s.partition(".")
+    int_part = int_part.lstrip("0") or "0"
+    if len(int_part) != len(_MAX_SAFE_BALANCE_STR):
+        return len(int_part) > len(_MAX_SAFE_BALANCE_STR)
+    if int_part != _MAX_SAFE_BALANCE_STR:
+        return int_part > _MAX_SAFE_BALANCE_STR
+    return frac_part.strip("0") != ""
+
 
 @dataclass(frozen=True)
 class Parameter:
@@ -83,6 +115,11 @@ def parse_balance_segments(
     Tolerates trailing separators and unknown extra fields; MALFORMED
     ROWS ARE SKIPPED AND COUNTED, never fatal (docs/apis/account-balance.md).
 
+    A numeric field beyond +/-2**53 is skipped as well: the magnitude
+    cannot survive a float64 round-trip, so the row is counted instead of
+    being returned with a silently wrong amount (Go ``exceedsSafeBalance``
+    parity).
+
     Example::
 
         segments, skipped = parse_balance_segments(result_text)
@@ -98,11 +135,17 @@ def parse_balance_segments(
             continue
         # ASCII gate: float() would otherwise accept "1_000" and Unicode
         # Nd digits ("١٢٣") that Go's ParseFloat rejects.
-        if not all(_BALANCE_NUM_RE.fullmatch(f.strip()) for f in fields[2:6]):
+        texts = [f.strip() for f in fields[2:6]]
+        if not all(_BALANCE_NUM_RE.fullmatch(t) for t in texts):
+            skipped += 1
+            continue
+        # Precision gate BEFORE the float conversion: 9007199254740993
+        # rounds to exactly 2**53, so the check must be textual.
+        if any(_exceeds_safe_balance(t) for t in texts):
             skipped += 1
             continue
         try:
-            nums = [float(f.strip()) for f in fields[2:6]]
+            nums = [float(t) for t in texts]
         except ValueError:
             skipped += 1
             continue

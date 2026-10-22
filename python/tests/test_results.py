@@ -178,7 +178,76 @@ def test_unparseable_result_body_value_error():
 def test_balance_numeric_gate_rejects_unicode_and_underscore():
     junk = ("Working Account|KES|700000.00|700000.00|0.00|0.00&"
             "Bad Account|KES|1_000|0.00|0.00|0.00&"
-            "\u0661\u0662\u0663 Account|KES|\u0661.00|0.00|0.00|0.00&")
+            "١٢٣ Account|KES|١.00|0.00|0.00|0.00&")
     segments, skipped = parse_balance_segments(junk)
     assert len(segments) == 1 and skipped == 2
     assert segments[0].account_name == "Working Account"
+
+
+# ---------------------------------------------------------------------------
+# The 2**53 gate (D3)
+# ---------------------------------------------------------------------------
+
+def test_balance_beyond_2p53_is_skipped_and_counted():
+    """A magnitude that cannot survive a float64 round-trip is DROPPED.
+
+    ``float("9007199254740993")`` is ALREADY exactly 9007199254740992 --
+    the very rounding this gate exists to catch -- so a post-conversion
+    check could never see the overflow, and the row came back with a
+    silently wrong amount. Go (``exceedsSafeBalance``, go/results.go) and
+    TypeScript compare the TEXT and skip the row; Python now does too.
+    """
+    segments, skipped = parse_balance_segments(
+        "AcctOne|KES|9007199254740993|0|0|0")
+    assert segments == ()
+    assert skipped == 1
+
+
+def test_balance_exactly_at_2p53_is_kept():
+    """2**53 itself IS representable, so the boundary value survives."""
+    segments, skipped = parse_balance_segments(
+        "AcctOne|KES|9007199254740992|0|0|0")
+    assert len(segments) == 1
+    assert skipped == 0
+    assert segments[0].available == 9007199254740992.0
+    # The same value with two decimals is the same money, and is kept too.
+    segments, skipped = parse_balance_segments(
+        "AcctOne|KES|9007199254740992.00|0|0|0")
+    assert len(segments) == 1
+    assert skipped == 0
+
+
+def test_balance_one_cent_above_2p53_is_skipped():
+    """An integer part of exactly 2**53 plus any non-zero fraction is over."""
+    segments, skipped = parse_balance_segments(
+        "AcctOne|KES|9007199254740992.01|0|0|0")
+    assert segments == ()
+    assert skipped == 1
+
+
+def test_balance_negative_beyond_2p53_is_skipped_like_go():
+    """The gate compares the MAGNITUDE: the sign is stripped first.
+
+    Go strips the leading sign before comparing (``exceedsSafeBalance``),
+    so a negative balance beyond the limit is skipped exactly like a
+    positive one -- and the negative boundary value itself survives.
+    """
+    segments, skipped = parse_balance_segments(
+        "AcctOne|KES|-9007199254740993|0|0|0")
+    assert segments == ()
+    assert skipped == 1
+    segments, skipped = parse_balance_segments(
+        "AcctOne|KES|-9007199254740992|0|0|0")
+    assert len(segments) == 1
+    assert skipped == 0
+
+
+def test_ordinary_balance_amounts_are_kept():
+    """Ordinary money is untouched by the magnitude gate."""
+    segments, skipped = parse_balance_segments("AcctOne|KES|250.75|0|0|0")
+    assert len(segments) == 1 and skipped == 0
+    assert segments[0].available == 250.75
+    segments, skipped = parse_balance_segments("AcctOne|KES|0|0|0|0")
+    assert len(segments) == 1 and skipped == 0
+    assert segments[0].available == 0.0
+

@@ -10,9 +10,22 @@
  * ever exposes the key.
  *
  * `JSON.stringify(config)` invokes `toJSON()` and returns the redacted
- * form, so it is safe for structured logging. Environment-variable wiring
- * belongs to the Client layer. Safaricom requires IP whitelisting for
- * production credentials.
+ * form, so it is safe for structured logging. `util.inspect` — and
+ * therefore `console.log` — is intercepted by the
+ * `nodejs.util.inspect.custom` hook installed below the class, so
+ * `console.log(config)` never prints the raw object.
+ *
+ * `console.dir(config)` is NOT covered by that hook: Node documents it
+ * as `util.inspect(obj, { ...options, customInspect: false })` — it
+ * DISABLES the custom inspect hook — so the default walk would print
+ * the consumer secret and the passkey in cleartext. `consumerSecret`
+ * and `passkey` are therefore NON-ENUMERABLE own properties: the
+ * default inspect walk and an object spread (`{ ...config }`) skip
+ * them, so neither can leak a secret. The values stay readable
+ * (`config.consumerSecret`) and the public shape is unchanged.
+ *
+ * Environment-variable wiring belongs to the Client layer. Safaricom
+ * requires IP whitelisting for production credentials.
  *
  * @example
  * ```ts
@@ -164,7 +177,15 @@ function maskCredential(value: string): string {
 export class Config {
   /** OAuth consumer key — non-empty string. */
   readonly consumerKey: string;
-  /** OAuth consumer secret — non-empty string. */
+  /**
+   * OAuth consumer secret — non-empty string.
+   *
+   * NON-ENUMERABLE own property: the default `util.inspect` walk (which
+   * `console.dir` forces by disabling the custom inspect hook) and an
+   * object spread skip it, so the secret cannot leak through either.
+   * The value stays readable as `cfg.consumerSecret` — only the
+   * enumerability changes, never the public shape.
+   */
   readonly consumerSecret: string;
   /**
    * M-Pesa shortcode — digits-only, 5 to 10 characters, OR empty.
@@ -172,7 +193,13 @@ export class Config {
    * per-request instead of via config; validated only when non-empty.
    */
   readonly shortcode: string;
-  /** Daraja passkey — non-empty string. */
+  /**
+   * Daraja passkey — non-empty string.
+   *
+   * NON-ENUMERABLE own property, like {@link Config.consumerSecret}: the
+   * default `util.inspect` walk and an object spread skip it, so the
+   * passkey cannot leak through `console.dir(cfg)` or `{ ...cfg }`.
+   */
   readonly passkey: string;
   /** Target environment (defaults to SANDBOX). */
   readonly environment: Environment;
@@ -231,6 +258,23 @@ export class Config {
     this.consumerSecret = opts.consumerSecret;
     this.shortcode = opts.shortcode ?? "";
     this.passkey = opts.passkey;
+    // The two SECRET fields are re-declared NON-ENUMERABLE.
+    //
+    // The `nodejs.util.inspect.custom` hook below covers `util.inspect`
+    // and therefore `console.log`, but Node documents `console.dir` as
+    // `util.inspect(obj, { ...options, customInspect: false })` — it
+    // DISABLES the custom hook — so the default walk would print the
+    // consumer secret and the passkey in cleartext. A non-enumerable own
+    // property is skipped by that walk AND by an object spread
+    // (`{ ...config }`), so neither can leak a secret.
+    //
+    // A redefine of an existing configurable data property keeps its
+    // value/writable/configurable attributes, so ONLY `enumerable` moves
+    // and the value assigned above is preserved. The public API is
+    // unchanged: `cfg.consumerSecret` and `cfg.passkey` still read back
+    // exactly what was passed in.
+    Object.defineProperty(this, "consumerSecret", { enumerable: false });
+    Object.defineProperty(this, "passkey", { enumerable: false });
     this.environment = opts.environment ?? Environment.SANDBOX;
     this.limits = resolveTransactionLimits(opts.limits);
     // Deep-freeze the resolved limits (and each nested service bucket):
@@ -370,3 +414,24 @@ export class Config {
     return this.toJSON();
   }
 }
+
+/**
+ * `util.inspect` hook — the TypeScript equivalent of Go's `Config.Format`
+ * (go/config.go) and Python's `__repr__` (python/mpesa/config.py).
+ *
+ * `util.inspect` does NOT consult `toString()`/`toJSON()`: left to its own
+ * devices it walks the own enumerable properties and prints `consumerSecret`
+ * and `passkey` in cleartext, which is exactly what `console.log(cfg)` does.
+ * SECURITY.md forbids cleartext credentials in logs, so the hook routes
+ * `inspect` (and therefore `console.log`) through the redacted
+ * {@link Config.toString} form.
+ *
+ * Installed with `Symbol.for("nodejs.util.inspect.custom")` rather than an
+ * import of `node:util`, so this module keeps no Node-only import. The
+ * hook is NOT writable: a redaction hook must not be replaceable at
+ * runtime.
+ */
+Object.defineProperty(Config.prototype, Symbol.for("nodejs.util.inspect.custom"), {
+  value(this: Config): string { return this.toString(); },
+  enumerable: false, configurable: true, writable: false,
+});

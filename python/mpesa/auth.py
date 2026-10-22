@@ -57,6 +57,65 @@ _TRUSTED_BASE_URLS = frozenset({
     "https://sandbox.safaricom.co.ke",
     "https://api.safaricom.co.ke",
 })
+#: How long a waiter parks on the refresh condition before it re-checks
+#: the cache. The wait is BOUNDED so that a lost notification -- or a
+#: leader that never returns -- cannot park a caller forever: the waiter
+#: simply re-evaluates and becomes the next leader if the cache is still
+#: stale. The leader's own completion wakes every waiter immediately, so
+#: this slice is a safety net, not the normal latency.
+_REFRESH_WAIT_SECONDS = 5.0
+
+
+def _fresh_error(exc: BaseException) -> BaseException:
+    """A FRESH exception instance carrying the same type and message.
+
+    WHY: the leader's exception was raised verbatim by every waiter, so N
+    threads raised ONE instance and each raise overwrote its
+    ``__traceback__`` -- a caller logging the traceback could see another
+    thread's stack. A copy keeps the two things callers branch on (the type
+    and the message) while giving every waiter its own object.
+
+    ``MpesaError`` survives the copy: its ``args`` are exactly the four
+    envelope members its constructor takes, so ``status_code``,
+    ``request_id``, ``error_code`` and ``error_message`` are all preserved.
+    The instance attributes are carried over as well, because
+    ``MpesaError.from_response`` substitutes the generic message AFTER
+    construction (an unparseable body): a copy built from ``args`` alone
+    would report a DIFFERENT message than the leader raised.
+    """
+    try:
+        fresh = type(exc)(*exc.args)
+    except Exception:  # an exotic exception type: keep the original
+        return exc
+    fresh.__dict__.update(exc.__dict__)
+    return fresh
+
+
+class _RefreshRound:
+    """The outcome of ONE refresh attempt, shared with its waiters.
+
+    WHY: when the leader's OAuth round-trip fails, every waiter must be
+    woken with THAT error. Without it each waiter would wake up, find
+    the cache still stale and start its OWN OAuth round-trip -- turning
+    one failure into N requests against an already-sick endpoint, and
+    handing the caller N different error objects to triage. The leader
+    publishes the error here; the waiters re-raise it.
+
+    ``forced`` records the MODE the round ran in: a FORCED round (a
+    401-triggered refresh, which bypasses the rate-limit gate) or a
+    NON-FORCED one (an ordinary staleness refresh, which the gate CAN
+    refuse). The two modes have different failure semantics: a forced
+    refresher must not inherit a NON-forced round's refusal -- the
+    rate-limit refusal is the very denial a forced refresh exists to
+    bypass -- while a FORCED round's own failure IS shared with its own
+    waiters (the anti-stampede property).
+    """
+
+    __slots__ = ("error", "forced")
+
+    def __init__(self, forced: bool = False) -> None:
+        self.error: BaseException | None = None
+        self.forced = forced
 
 
 class TokenManager:
@@ -119,6 +178,15 @@ class TokenManager:
         self._now: Callable[[], datetime] = now or (
             lambda: datetime.now(timezone.utc))
         self._lock = threading.Lock()
+        # The condition is built ON the mutex: waiters park on it (which
+        # RELEASES the mutex while they wait) while the elected leader
+        # refreshes with NO lock held. Holding the mutex across the OAuth
+        # round-trip -- the old behaviour -- froze every thread that
+        # needed a token, and every other user of that mutex, for up to
+        # the full 30s timeout.
+        self._cond = threading.Condition(self._lock)
+        self._refreshing = False
+        self._round: _RefreshRound | None = None
         self._token: str | None = None
         self._expires_at: datetime | None = None
         self._gen = 0
@@ -132,20 +200,32 @@ class TokenManager:
     def get_token_with_gen(self) -> "tuple[str, int]":
         """Return ``(token, gen)`` from ONE coherent snapshot.
 
-        Fast path snapshots under the lock and returns immediately when
-        fresh WITHOUT performing any state mutation (double-checked
-        pattern); stale callers re-acquire for the single-flight refresh,
-        whose recheck keeps concurrent refetches at exactly one.
+        Single-flight WITHOUT holding the lock across the network: the
+        first caller that finds the cache stale becomes the LEADER and
+        performs the OAuth round-trip with NO lock held; every other
+        caller parks on the condition and re-checks once the leader
+        publishes its result (Go ``leadRefresh`` parity).
+
+        WHY the split: the refresh used to run the whole OAuth GET
+        inside ``self._lock``, so a slow or hung OAuth endpoint froze
+        every thread that needed a token -- and every other user of that
+        mutex -- for up to the full 30s timeout, roughly once an hour.
 
         Example::
 
             token, gen = tm.get_token_with_gen()
         """
-        now = self._now()
-        with self._lock:
+        def recheck() -> "tuple[str, int] | None":
+            # Fast path. INVARIANT: refresh_after_invalid_token nulls
+            # _token under this same lock BEFORE it claims its round, so
+            # the token the gateway just rejected can never be served
+            # here while the forced refresh is in flight.
+            now = self._now()
             if self._token and self._expires_at and now < self._expires_at:
                 return self._token, self._gen
-            return self._refresh_locked(force=False), self._gen
+            return None
+
+        return self._single_flight(forced=False, recheck=recheck)
 
     def refresh_after_invalid_token(self, my_gen: int) -> str:
         """Resolve a 401.003.01 under the generation guard.
@@ -159,18 +239,115 @@ class TokenManager:
         via ``tokenFresh()`` and force-refreshes when it is stale -- an
         expired adopt would hand back a dead bearer).
 
+        The forced refresh runs OUTSIDE the lock, on the same
+        leader/waiter scheme as :meth:`get_token_with_gen`: the leader
+        performs the OAuth round-trip with no lock held, and a caller
+        that arrives while it is in flight parks on the condition instead
+        of issuing a second round-trip.
+
+        FAILURE-SHARING RULE (the two modes are NOT symmetric): a
+        FORCED round's failure is shared with its own waiters (one wire
+        call, one error -- the anti-stampede property), but a NON-forced
+        round's failure is NEVER inherited here. The rate-limit gate
+        refuses non-forced refreshes only, so a forced refresher that
+        inherited such a refusal would never reach the wire at all: the
+        exact denial a forced refresh exists to bypass. When that
+        happens the forced caller falls through and leads its OWN forced
+        attempt (``force=True`` skips the gate).
+
         Example::
 
             token = tm.refresh_after_invalid_token(gen)
         """
+        def recheck() -> "tuple[str, int] | None":
+            if self._gen != my_gen:
+                now = self._now()
+                if self._token and self._expires_at and now < self._expires_at:
+                    return self._token, self._gen
+            else:
+                # OUR view is current, so the cached token is the one
+                # the gateway rejected: it must not stay servable.
+                self._token = None
+            return None
+
+        token, _gen = self._single_flight(forced=True, recheck=recheck)
+        return token
+
+    def _single_flight(
+            self, forced: bool,
+            recheck: Callable[[], "tuple[str, int] | None"]) -> "tuple[str, int]":
+        """The ONE leader/waiter protocol both refresh entry points share.
+
+        Returns ``(token, gen)``. The caller supplies *recheck*, the
+        per-mode fast path: it is called UNDER THE LOCK before every
+        attempt and returns the ``(token, gen)`` to hand back, or None to
+        continue with the protocol. It may mutate the cache -- the forced
+        path drops the rejected token there, BEFORE any round is claimed,
+        which is what keeps the rejected-but-fresh token unservable.
+
+        The protocol (identical for both modes):
+
+        1. *recheck* -- adopt a usable token if there is one.
+        2. A refresh is in flight: park on the condition (which RELEASES
+           the lock while waiting) instead of queueing behind the mutex
+           for the whole round-trip. The wait is BOUNDED, so a lost
+           notification or a leader that never returns parks nobody
+           forever: the waiter re-checks and becomes the next leader.
+        3. Otherwise claim the round and leave the lock. The OAuth
+           round-trip runs with NO lock held.
+
+        FAILURE-SHARING RULE (the two modes are NOT symmetric): a round's
+        failure is shared with the waiters of THAT round -- one wire call,
+        one error, no stampede. A FORCED round's failure is therefore
+        inherited by a forced waiter, but a NON-forced round's failure is
+        NOT: the rate-limit gate refuses non-forced refreshes only, so a
+        forced refresher that inherited such a refusal would never reach
+        the wire at all -- the exact denial a forced refresh exists to
+        bypass. A forced waiter that observed a failed non-forced round
+        falls through and leads its OWN forced attempt (``force=True``
+        skips the gate).
+        """
+        while True:
+            with self._lock:
+                adopted = recheck()
+                if adopted is not None:
+                    return adopted
+                if self._refreshing:
+                    # A leader is already refreshing: park on the
+                    # condition (which releases the lock while waiting)
+                    # instead of queueing behind the mutex for the whole
+                    # round-trip.
+                    refresh_round = self._round
+                    self._cond.wait(timeout=_REFRESH_WAIT_SECONDS)
+                    if refresh_round is not None and refresh_round.error is not None:
+                        if refresh_round.forced or not forced:
+                            # The leader failed: every waiter sees the
+                            # SAME error instead of stampeding the OAuth
+                            # endpoint. A forced waiter inherits ONLY a
+                            # forced round's failure (see the rule above).
+                            raise _fresh_error(refresh_round.error)
+                    continue
+                # Leader: claim the round, then leave the lock. The round
+                # records the mode it runs in, because the failure-sharing
+                # rule above is mode-dependent.
+                self._refreshing = True
+                refresh_round = _RefreshRound(forced=forced)
+                self._round = refresh_round
+            break
+
+        try:
+            token = self._refresh(force=forced)
+        except BaseException as exc:
+            with self._lock:
+                refresh_round.error = exc
+                self._refreshing = False
+                self._cond.notify_all()
+            raise
         with self._lock:
-            if self._gen == my_gen:
-                self._token = None          # forceRefreshLocked parity
-                return self._refresh_locked(force=True)
-            now = self._now()
-            if self._token and self._expires_at and now < self._expires_at:
-                return self._token
-            return self._refresh_locked(force=True)
+            self._refreshing = False
+            gen = self._gen
+            self._cond.notify_all()
+        return token, gen
 
     @staticmethod
     def _cadence(expires_in_seconds: int | None) -> float:
@@ -188,12 +365,18 @@ class TokenManager:
             return 3000.0
         return max(60.0, min(seconds - 60, 3000))
 
-    def _refresh_locked(self, force: bool = False) -> str:
+    def _refresh(self, force: bool = False) -> str:
         """Hard OAuth round-trip against
         ``{base}/oauth/v1/generate?grant_type=client_credentials``
-        (docs/apis/oauth.md). Holds the write lock across the network
-        call -- callers stall ~once per refresh window; that is the
-        deliberate single-flight tradeoff (see go/client.go).
+        (docs/apis/oauth.md).
+
+        NO lock is held across the network call. The caller (the leader
+        elected by :meth:`get_token_with_gen` or
+        :meth:`refresh_after_invalid_token`) runs the whole HTTP leg
+        here, and every state mutation below is guarded by its own SHORT
+        critical section. Holding the mutex across the round-trip --
+        the old behaviour -- froze every thread that needed a token for
+        up to the full 30s timeout.
 
         Rate-limit parity with ``go/client.go refreshLocked``: non-forced
         refreshes are throttled after ``_REFRESH_FAILURE_THRESHOLD``
@@ -219,22 +402,27 @@ class TokenManager:
         # Rate limit: only the GUARD is gated on non-forced refreshes
         # (Go `if !force` verbatim); the CLOCK advances on EVERY attempt
         # including forced. A refused (rate-limited) call is not an
-        # attempt and leaves the clock untouched.
-        now_gate = self._now()
-        if not force:
-            if (self._failures >= _REFRESH_FAILURE_THRESHOLD
-                    and self._last_attempt is not None
-                    and (now_gate - self._last_attempt).total_seconds()
-                    < _REFRESH_RATE_LIMIT_SECONDS):
-                elapsed = (now_gate - self._last_attempt).total_seconds()
-                raise RefreshRateLimitedError(
-                    f"mpesa: refresh rate limited after {self._failures} "
-                    f"consecutive failures (last attempt {elapsed:.3f}s ago, "
-                    f"need {_REFRESH_RATE_LIMIT_SECONDS:.1f}s)")
-        self._last_attempt = now_gate
+        # attempt and leaves the clock untouched. The gate check and the
+        # stamp share one short critical section so the decision and the
+        # stamp cannot be split by another thread.
+        with self._lock:
+            now_gate = self._now()
+            if not force:
+                if (self._failures >= _REFRESH_FAILURE_THRESHOLD
+                        and self._last_attempt is not None
+                        and (now_gate - self._last_attempt).total_seconds()
+                        < _REFRESH_RATE_LIMIT_SECONDS):
+                    elapsed = (now_gate - self._last_attempt).total_seconds()
+                    raise RefreshRateLimitedError(
+                        f"mpesa: refresh rate limited after {self._failures} "
+                        f"consecutive failures (last attempt {elapsed:.3f}s "
+                        f"ago, need {_REFRESH_RATE_LIMIT_SECONDS:.1f}s)")
+            self._last_attempt = now_gate
         try:
             auth = base64.b64encode(
                 f"{self._consumer_key}:{self._consumer_secret}".encode("latin-1"))
+            # The OAuth leg runs with NO lock held: a hung endpoint must
+            # not freeze the token cache for every other thread.
             response = self._session.get(
                 f"{self._base_url}{_OAUTH_PATH}", timeout=self._timeout,
                 headers={"Authorization": f"Basic {auth.decode('ascii')}"},
@@ -257,6 +445,15 @@ class TokenManager:
             token_response = OAuthToken.from_json(payload)
             if not token_response.access_token:
                 raise ValueError("mpesa: oauth response missing access_token")
+        except Exception:
+            with self._lock:
+                self._failures += 1
+                # Re-stamp on failure so the 3-in-5s gate measures from the
+                # moment the failed attempt LANDED, not from when it started.
+                # Mirrors Go recordRefreshFailure.
+                self._last_attempt = self._now()
+            raise
+        with self._lock:
             now = self._now()
             self._token = token_response.access_token
             self._expires_at = now + timedelta(
@@ -264,13 +461,6 @@ class TokenManager:
             self._gen += 1
             self._failures = 0
             return self._token
-        except Exception:
-            self._failures += 1
-            # Re-stamp on failure so the 3-in-5s gate measures from the
-            # moment the failed attempt LANDED, not from when it started.
-            # Mirrors Go recordRefreshFailure.
-            self._last_attempt = self._now()
-            raise
 
     @property
     def generation(self) -> int:

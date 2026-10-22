@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1614,6 +1617,351 @@ func TestRefreshWaitersHonorContextCancellation(t *testing.T) {
 	})
 }
 
+// Close() must WIN against a token refresh that was already in flight.
+//
+// The zeroing guarantee in SECURITY.md is absolute: a closed client holds
+// no bearer. A refresh that started BEFORE Close() and finishes after it
+// used to commit a fresh token into the closed client. No token was ever
+// SERVED (every entry point re-checks c.closed), so this was never a
+// credential-use defect — but the credential still sat in the closed
+// client's memory, which is exactly what Close() exists to prevent.
+func TestCloseWinsAgainstInFlightTokenRefresh(t *testing.T) {
+	// The server HOLDS the OAuth response until the test releases it, so
+	// the refresh is provably in flight when Close() runs — a channel
+	// handshake, not a sleep whose length has to be guessed.
+	oauthInFlight := make(chan struct{})
+	releaseOAuth := make(chan struct{})
+	var inFlightOnce, releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseOAuth) }) }
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/v1/generate", func(w http.ResponseWriter, r *http.Request) {
+		inFlightOnce.Do(func() { close(oauthInFlight) })
+		<-releaseOAuth
+		writeJSON(t, w, http.StatusOK, map[string]any{"access_token": "tok-after-close", "expires_in": "3599"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	// Unblock the handler whatever the outcome: defers run LIFO, so
+	// release() fires before srv.Close() waits on the outstanding request.
+	defer release()
+
+	c := testClient(t, srv.URL)
+
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, err := c.Token(context.Background())
+		refreshDone <- err
+	}()
+
+	select {
+	case <-oauthInFlight:
+	case <-time.After(10 * time.Second):
+		t.Fatal("oauth leg never reached the server")
+	}
+
+	// The refresh is now provably in flight: the server holds the request
+	// and has not answered it yet.
+	c.Close()
+	release()
+
+	select {
+	case err := <-refreshDone:
+		if !errors.Is(err, ErrClientClosed) {
+			t.Fatalf("Token() err = %v, want ErrClientClosed", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("in-flight refresh never finished")
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.tokenBytes) != 0 {
+		t.Fatalf("token bytes = %q, want empty: Close() must survive an in-flight refresh", c.tokenBytes)
+	}
+	if !c.tokenExpiry.IsZero() {
+		t.Fatalf("token expiry = %v, want zero: Close() must survive an in-flight refresh", c.tokenExpiry)
+	}
+}
+
+// A *Client holds the consumer key, the consumer secret, the passkey and
+// the live bearer token. Every one of those fields is UNEXPORTED, so fmt
+// never reaches the nested Config.Format for them and "%+v" used to print
+// ALL of them — a live Daraja bearer grants full API access, and a leaked
+// consumer secret authenticates every OAuth request.
+//
+// Every fmt verb, the nested-struct form and slog.Any must now render
+// credential-free, while still saying something useful.
+func TestClientRenderingNeverLeaksCredentials(t *testing.T) {
+	const (
+		leakKey    = "SUPERSECRETKEY"
+		leakSecret = "SUPERSECRET"
+		leakPass   = "PASSKEY123"
+		leakToken  = "bearer-token-abcdef"
+	)
+	c, err := NewClient(Config{
+		ConsumerKey:    leakKey,
+		ConsumerSecret: leakSecret,
+		Shortcode:      testShortcode,
+		Passkey:        leakPass,
+		Environment:    Sandbox,
+		Now:            func() time.Time { return fixedClock },
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	// Simulate a cached bearer token — the live credential.
+	c.mu.Lock()
+	c.tokenBytes = []byte(leakToken)
+	c.tokenExpiry = fixedClock.Add(time.Hour)
+	c.mu.Unlock()
+
+	// The token bytes as fmt renders them inside a struct ("[98 101 ...]").
+	tokenBytesDecimal := fmt.Sprintf("%v", c.tokenBytes)
+
+	var logBuf bytes.Buffer
+	slog.New(slog.NewTextHandler(&logBuf, nil)).Info("client", "client", slog.Any("client", c))
+
+	renderings := map[string]string{
+		"%v":     fmt.Sprintf("%v", c),
+		"%+v":    fmt.Sprintf("%+v", c),
+		"%#v":    fmt.Sprintf("%#v", c),
+		"%s":     fmt.Sprintf("%s", c),
+		"%q":     fmt.Sprintf("%q", c),
+		"struct": fmt.Sprintf("%v", struct{ C *Client }{c}),
+		"slog":   logBuf.String(),
+	}
+	for name, rendered := range renderings {
+		for _, secret := range []string{leakKey, leakSecret, leakPass, leakToken, tokenBytesDecimal} {
+			if strings.Contains(rendered, secret) {
+				t.Errorf("%s rendering leaks %q: %s", name, secret, rendered)
+			}
+		}
+		// The rendering must still be USEFUL: the base URL identifies which
+		// environment the client talks to.
+		if !strings.Contains(rendered, "https://sandbox.safaricom.co.ke") {
+			t.Errorf("%s rendering lost the base URL: %s", name, rendered)
+		}
+	}
+	// The cached-token state is still reported (without the token itself).
+	if !strings.Contains(renderings["%v"], "cached:true") {
+		t.Errorf("%%v rendering lost the cached-token state: %s", renderings["%v"])
+	}
+}
+
+// A closed client must not issue ANOTHER OAuth round-trip.
+//
+// Close() zeroes the cached bearer and marks the client closed, and its doc
+// says the client must not be reused. But leadRefresh/leadForcedRefresh only
+// re-checked `refreshing` after a wait — not `c.closed` — so a caller
+// already inside the single-flight loop could become the NEXT leader and
+// make one more Basic-auth request (consumer key + consumer secret on the
+// wire) after Close() had run.
+//
+// Every refresh path must now return ErrClientClosed AND leave the OAuth
+// hit counter untouched: the credential must not reach the gateway again.
+func TestClosedClientRefusesRefreshWithoutHittingOAuth(t *testing.T) {
+	newServer := func() (*httptest.Server, *int) {
+		oauthHits := 0
+		mux := http.NewServeMux()
+		mux.Handle("/oauth/v1/generate", oauthHandler(t, &oauthHits))
+		return httptest.NewServer(mux), &oauthHits
+	}
+
+	// 1. The public entry point: Token() on a closed client.
+	t.Run("Token", func(t *testing.T) {
+		srv, hits := newServer()
+		defer srv.Close()
+		c := testClient(t, srv.URL)
+		ctx := context.Background()
+		if _, err := c.Token(ctx); err != nil {
+			t.Fatalf("prime Token: %v", err)
+		}
+		if *hits != 1 {
+			t.Fatalf("oauth hits = %d after priming, want 1", *hits)
+		}
+		c.Close()
+		if _, err := c.Token(ctx); !errors.Is(err, ErrClientClosed) {
+			t.Fatalf("Token() err = %v, want ErrClientClosed", err)
+		}
+		if *hits != 1 {
+			t.Fatalf("oauth hits = %d after Close(), want 1 — a closed client must not reach the OAuth endpoint", *hits)
+		}
+	})
+
+	// 2. The single-flight LEADER path: this is the waiter that could
+	//    become the next leader after Close(). It is called directly so the
+	//    early closed-check in tokenWithGen cannot mask the loop's own gate.
+	t.Run("leadRefresh", func(t *testing.T) {
+		srv, hits := newServer()
+		defer srv.Close()
+		c := testClient(t, srv.URL)
+		ctx := context.Background()
+		if _, err := c.Token(ctx); err != nil {
+			t.Fatalf("prime Token: %v", err)
+		}
+		c.Close()
+		if _, _, err := c.leadRefresh(ctx); !errors.Is(err, ErrClientClosed) {
+			t.Fatalf("leadRefresh() err = %v, want ErrClientClosed", err)
+		}
+		if *hits != 1 {
+			t.Fatalf("oauth hits = %d after Close(), want 1 — a closed client must not reach the OAuth endpoint", *hits)
+		}
+	})
+
+	// 3. The FORCED path (401.003.01 recovery): same refusal, so the
+	//    Basic-auth credential is not re-sent after Close().
+	t.Run("forceRefresh", func(t *testing.T) {
+		srv, hits := newServer()
+		defer srv.Close()
+		c := testClient(t, srv.URL)
+		ctx := context.Background()
+		if _, err := c.Token(ctx); err != nil {
+			t.Fatalf("prime Token: %v", err)
+		}
+		c.Close()
+		if _, err := c.forceRefresh(ctx); !errors.Is(err, ErrClientClosed) {
+			t.Fatalf("forceRefresh() err = %v, want ErrClientClosed", err)
+		}
+		if *hits != 1 {
+			t.Fatalf("oauth hits = %d after Close(), want 1 — a closed client must not reach the OAuth endpoint", *hits)
+		}
+	})
+
+	// 4. The pre-flight gate inside refresh() itself: a leader elected
+	//    BEFORE Close() must stop before the HTTP call, so the Basic-auth
+	//    credential never goes on the wire for a closed client.
+	t.Run("refresh pre-flight", func(t *testing.T) {
+		srv, hits := newServer()
+		defer srv.Close()
+		c := testClient(t, srv.URL)
+		ctx := context.Background()
+		if _, err := c.Token(ctx); err != nil {
+			t.Fatalf("prime Token: %v", err)
+		}
+		c.Close()
+		if _, err := c.refresh(ctx, false); !errors.Is(err, ErrClientClosed) {
+			t.Fatalf("refresh() err = %v, want ErrClientClosed", err)
+		}
+		if *hits != 1 {
+			t.Fatalf("oauth hits = %d after Close(), want 1 — a closed client must not reach the OAuth endpoint", *hits)
+		}
+	})
+}
+
+// #14: http.DefaultTransport keeps only 2 idle connections PER HOST -- a
+// browser-ish default that starves a server-side client. At a few hundred
+// requests/second the pool cannot retain idle connections, so bursts
+// re-dial TLS (two extra round-trips plus certificate verification) and
+// can exhaust ephemeral ports. The SDK must own a transport with a real
+// idle-connection budget, cloned from the process default so the system
+// proxy, dialer and root-CA configuration survive.
+func TestNewClientOwnsATunedTransport(t *testing.T) {
+	const timeout = 17 * time.Second
+	c, err := NewClient(Config{
+		ConsumerKey:    "test-key",
+		ConsumerSecret: "test-secret",
+		Shortcode:      testShortcode,
+		Passkey:        testPasskey,
+		Environment:    Sandbox,
+		Timeout:        timeout,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	tr, ok := c.http.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T, want *http.Transport", c.http.Transport)
+	}
+	if tr.MaxIdleConnsPerHost <= 2 {
+		t.Errorf("MaxIdleConnsPerHost = %d, want materially more than the default transport's 2", tr.MaxIdleConnsPerHost)
+	}
+	// A per-host budget above the global one is unreachable: the global
+	// cap would close the idle connections first.
+	if tr.MaxIdleConns < tr.MaxIdleConnsPerHost {
+		t.Errorf("MaxIdleConns = %d, want at least MaxIdleConnsPerHost (%d)", tr.MaxIdleConns, tr.MaxIdleConnsPerHost)
+	}
+	if tr.IdleConnTimeout <= 0 {
+		t.Errorf("IdleConnTimeout = %v, want a positive budget", tr.IdleConnTimeout)
+	}
+	// The SDK-owned client still honours the configured timeout.
+	if c.http.Timeout != timeout {
+		t.Errorf("http.Client.Timeout = %v, want %v", c.http.Timeout, timeout)
+	}
+}
+
+// #14: the TLS-pinning path must inherit the SAME idle-connection budget.
+// Pinning clones a transport, and a clone of the DEFAULT transport would
+// silently re-introduce the 2-per-host cap on the pinned client.
+func TestPinnedClientInheritsTheTunedIdleBudget(t *testing.T) {
+	resetPinnedSPKIHashes(t)
+	hostname := hostnameFromURL(Sandbox.BaseURL())
+	_, hash := generatePinnedCert(t)
+	if err := PinSPKI(hostname, hash); err != nil {
+		t.Fatalf("PinSPKI: %v", err)
+	}
+	c, err := NewClient(Config{
+		ConsumerKey:       "test-key",
+		ConsumerSecret:    "test-secret",
+		Environment:       Sandbox,
+		TLSPinningEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("NewClient with pinning: %v", err)
+	}
+	tr, ok := c.http.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T, want *http.Transport", c.http.Transport)
+	}
+	if tr.MaxIdleConnsPerHost <= 2 {
+		t.Errorf("pinned MaxIdleConnsPerHost = %d, want materially more than 2", tr.MaxIdleConnsPerHost)
+	}
+	if tr.TLSClientConfig == nil || tr.TLSClientConfig.VerifyPeerCertificate == nil {
+		t.Error("pinning callback was not installed on the tuned transport")
+	}
+}
+
+// #13: an oversize response must not poison the connection pool.
+//
+// The capped read stops with bytes still unread on the socket, and a
+// connection with unread bytes can never go back to the idle pool -- so
+// EVERY oversize response cost a fresh TLS handshake (two extra
+// round-trips plus certificate verification) and could exhaust the
+// ephemeral port range. Draining a bounded remainder lets net/http reuse
+// the connection.
+//
+// The server counts its accepted connections through the ConnState hook.
+func TestOversizeResponseDrainsTheBodySoTheConnectionIsReused(t *testing.T) {
+	var conns int64
+	mux := http.NewServeMux()
+	mux.Handle("/oauth/v1/generate", oauthHandler(t, new(int)))
+	mux.HandleFunc(stkPushPath, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Oversize by a realistic margin: past the 1MiB cap, but within
+		// the drain budget, so the leftover bytes CAN be consumed.
+		_, _ = w.Write(bytes.Repeat([]byte("A"), maxResponseLen+4096))
+	})
+	srv := httptest.NewUnstartedServer(mux)
+	srv.Config.ConnState = func(conn net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			atomic.AddInt64(&conns, 1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+
+	c := testClient(t, srv.URL)
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if _, err := c.STKPush(ctx, validSTKPushRequest()); err == nil {
+			t.Fatalf("request %d: expected the oversize error", i+1)
+		}
+	}
+	if got := atomic.LoadInt64(&conns); got != 1 {
+		t.Errorf("connections opened = %d, want 1: the oversize body must be drained so the connection is reused", got)
+	}
+}
+
 // TestRefreshCadenceOverflowGuard verifies that refreshCadence does not
 // overflow when expires_in is near math.MaxInt64, and that the result is
 // always within [minCadence, maxCadence].
@@ -1633,9 +1981,9 @@ func TestRefreshCadenceOverflowGuard(t *testing.T) {
 		{"normal_3599s", FlexInt64(3599), maxCadence}, // 3539s > 50min, clamped
 		{"normal_3600s", FlexInt64(3600), maxCadence}, // 3540s > 50min, clamped
 		{"normal_120s", FlexInt64(120), 60 * time.Second},
-		{"normal_90s", FlexInt64(90), minCadence},   // 90-60=30s, clamped to the 60s parity floor
-		{"normal_61s", FlexInt64(61), minCadence},   // 61-60=1s, clamped to minCadence
-		{"normal_60s", FlexInt64(60), minCadence},   // 60-60=0s, clamped to minCadence
+		{"normal_90s", FlexInt64(90), minCadence}, // 90-60=30s, clamped to the 60s parity floor
+		{"normal_61s", FlexInt64(61), minCadence}, // 61-60=1s, clamped to minCadence
+		{"normal_60s", FlexInt64(60), minCadence}, // 60-60=0s, clamped to minCadence
 
 		// Edge: zero and negative fall back to maxCadence
 		{"zero", FlexInt64(0), maxCadence},

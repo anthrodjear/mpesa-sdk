@@ -60,7 +60,9 @@ single worst-case process, not as a control. Check-and-increment is atomic in
 all three engines, and the day rolls at Africa/Nairobi (UTC+3, no DST)
 midnight — the merchant-reporting day. Quota is consumed **on attempt**: a
 request rejected before dispatch consumes nothing, one that fails afterwards
-was already consumed. Reversal and Dynamic QR share one `default` daily bucket.
+was already consumed. Reversal and Dynamic QR each have their own `reversal` /
+`qr` bucket — for the per-transaction ceiling AND the per-day ceiling — so
+raising one service's tier never moves another's.
 
 ## Error shapes
 
