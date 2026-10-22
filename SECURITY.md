@@ -107,3 +107,25 @@ Brief guidance when integrating this SDK:
 - **Never log credentials.** Consumer Key, Consumer Secret, Passkey, and Security Credential must never appear in application logs, log aggregation systems, APM traces, or debug output. The SDK's redaction helpers (`repr()`/`log_safe()` in Python, `GoString`/`Format` in Go, `toString()`/`toJSON()`/`logSafe()` in TypeScript) mask these values automatically — always use them when serializing `Config` or request objects for logging. Logging raw credentials — even at debug level — creates a persistent record that outlives the process and may be shipped to centralized log stores.
 - **Consumer Keys are secrets, not identifiers.** Treat `MPESA_CONSUMER_KEY` and `MPESA_CONSUMER_SECRET` with the same care as database passwords. They authenticate every OAuth token request and grant full access to your Daraja app. Never embed them in client-side code, commit them to source control, or expose them in error messages. Rotate them immediately if you suspect leakage.
 - **Indeterminate results must not auto-fail.** Timeouts or ambiguous Daraja responses should be recorded as *pending* and reconciled via the transaction status query — auto-marking them as failed risks double-charging customers.
+
+## Security Audit
+
+A static capability analysis using [Google Capslock](https://github.com/google/capslock) was performed on the Go SDK (`go/`). See [docs/security-audit.md](docs/security-audit.md) for the full report.
+
+**Summary:** All capabilities are expected and justified for a payment SDK. No capabilities indicate vulnerabilities or over-privilege.
+
+| Capability | References | Assessment |
+|------------|------------|------------|
+| NETWORK | 24 | ✅ Required — HTTPS to Daraja API |
+| FILESYSTEM | 1 | ✅ Certificate parsing only |
+| READ_SYSTEM_STATE | 1 | ✅ Time access for token expiry |
+| ARBITRARY_EXECUTION | 1 | ✅ CSPRNG for security tokens |
+| UNANALYZED | 21 | Stdlib internals (TLS, HTTP, JSON) |
+| UNSAFE_POINTER | 55 | Stdlib internals (TLS, crypto, JSON) |
+| REFLECT | 48 | JSON + FlexString/FlexInt64 coercion |
+
+**No capabilities indicate vulnerabilities or over-privilege.** The SDK implements defense-in-depth at every layer.
+
+---
+
+*Audited by: anthrodjear*
