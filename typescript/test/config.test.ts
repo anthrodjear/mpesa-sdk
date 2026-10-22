@@ -6,6 +6,7 @@
  * (_redacted/log_safe) translated to TypeScript's class-based approach.
  */
 import { describe, expect, it } from "vitest";
+import { inspect } from "node:util";
 import { Environment, Config, ConfigError } from "../src/config.js";
 
 // ---------------------------------------------------------------------------
@@ -567,6 +568,51 @@ describe("ConfigError passkey field name", () => {
     } catch (e) {
       expect(e).toBeInstanceOf(ConfigError);
       expect((e as ConfigError).message).toContain("passkey");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// util.inspect redaction (D6) — Go `Config.Format` / Python `__repr__` parity
+// ---------------------------------------------------------------------------
+
+describe("Config — util.inspect redaction", () => {
+  const RAW_KEY = "0123456789abcdef";
+  const RAW_SECRET = "SUPERSECRET";
+  const RAW_PASSKEY = "PASSKEY123";
+
+  function makeCfg(): Config {
+    return new Config({
+      consumerKey: RAW_KEY,
+      consumerSecret: RAW_SECRET,
+      shortcode: "174379",
+      passkey: RAW_PASSKEY,
+    });
+  }
+
+  it("util.inspect prints neither the secret, nor the passkey, nor the raw key", () => {
+    // util.inspect does NOT consult toString()/toJSON(): without the
+    // inspect hook it walks the own enumerable properties and prints
+    // consumerSecret and passkey in cleartext — which is exactly what
+    // `console.log(cfg)` does.
+    const out = inspect(makeCfg());
+    expect(out).not.toContain(RAW_SECRET);
+    expect(out).not.toContain(RAW_PASSKEY);
+    expect(out).not.toContain(RAW_KEY);
+  });
+
+  it("util.inspect renders the redacted toString() form", () => {
+    const cfg = makeCfg();
+    expect(inspect(cfg)).toContain(cfg.toString());
+    expect(inspect(cfg)).toContain("key=0123...cdef");
+  });
+
+  it("String() and JSON.stringify() stay redacted", () => {
+    const cfg = makeCfg();
+    for (const rendered of [String(cfg), JSON.stringify(cfg)]) {
+      expect(rendered).not.toContain(RAW_SECRET);
+      expect(rendered).not.toContain(RAW_PASSKEY);
+      expect(rendered).not.toContain(RAW_KEY);
     }
   });
 });

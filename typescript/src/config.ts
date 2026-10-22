@@ -10,7 +10,10 @@
  * ever exposes the key.
  *
  * `JSON.stringify(config)` invokes `toJSON()` and returns the redacted
- * form, so it is safe for structured logging. Environment-variable wiring
+ * form, so it is safe for structured logging. `util.inspect` — and
+ * therefore `console.log` — is intercepted by the
+ * `nodejs.util.inspect.custom` hook installed below the class, so the
+ * raw object is never printed either. Environment-variable wiring
  * belongs to the Client layer. Safaricom requires IP whitelisting for
  * production credentials.
  *
@@ -370,3 +373,22 @@ export class Config {
     return this.toJSON();
   }
 }
+
+/**
+ * `util.inspect` hook — the TypeScript equivalent of Go's `Config.Format`
+ * (go/config.go) and Python's `__repr__` (python/mpesa/config.py).
+ *
+ * `util.inspect` does NOT consult `toString()`/`toJSON()`: left to its own
+ * devices it walks the own enumerable properties and prints `consumerSecret`
+ * and `passkey` in cleartext, which is exactly what `console.log(cfg)` does.
+ * SECURITY.md forbids cleartext credentials in logs, so the hook routes
+ * `inspect` (and therefore `console.log`) through the redacted
+ * {@link Config.toString} form.
+ *
+ * Installed with `Symbol.for("nodejs.util.inspect.custom")` rather than an
+ * import of `node:util`, so this module keeps no Node-only import.
+ */
+Object.defineProperty(Config.prototype, Symbol.for("nodejs.util.inspect.custom"), {
+  value(this: Config): string { return this.toString(); },
+  enumerable: false, configurable: true, writable: true,
+});
