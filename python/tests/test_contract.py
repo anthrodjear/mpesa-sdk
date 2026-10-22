@@ -8,26 +8,34 @@ fails in another is either an engine drift bug or a wrong expectation --
 decide which by checking the Daraja wire contract (``docs/apis/``), then
 fix whichever is wrong.
 
-TWO CASES ARE RED ON PURPOSE -- they pin live defects, and this phase does
-not fix them:
+TWO CASES WERE RED -- they pinned live defects, and the Phase 1 fix
+corrected the ENGINE, not the assertion. Both are GREEN here now:
 
 * ``error-envelope-numeric-code`` (**D1**) -- ``MpesaError.from_response``
-  keeps only the envelope members that arrive as ``str``, so a numeric
-  ``errorCode`` is DROPPED: the typed error a caller receives loses the
-  gateway's error code (``error_code`` is ``None`` instead of ``"401"``)
-  while the envelope's other members -- the ``requestId``, the
-  ``errorMessage`` -- survive. The 401 retry probe is NOT affected: it keys
+  used to keep only the envelope members that arrive as ``str``, so a
+  numeric ``errorCode`` was DROPPED: the typed error a caller received lost
+  the gateway's error code (``error_code`` was ``None`` instead of
+  ``"401"``) while the envelope's other members -- the ``requestId``, the
+  ``errorMessage`` -- survived. The 401 retry probe is NOT affected: it keys
   on the DOTTED code ``"401.003.01"`` (``mpesa/client.py``), which a
-  numeric member would never have matched anyway, so Go and Python behave
-  identically there.
-* ``balance-over-2p53`` (**D3**) -- ``parse_balance_segments`` has no
-  2**53 gate, so a balance that cannot survive a float64 round-trip is
+  numeric member would never have matched anyway, so Go and Python behaved
+  identically there. The engine now coerces numbers and booleans to their
+  JSON text, so the case is green in all three engines.
+* ``balance-over-2p53`` (**D3**) -- ``parse_balance_segments`` had no
+  2**53 gate, so a balance that cannot survive a float64 round-trip was
   returned with a silently rounded amount instead of being skipped and
   counted (Go ``exceedsSafeBalance`` and the TypeScript parity already
-  skip it).
+  skipped it). The engine now skips and counts such rows exactly like the
+  other two, so the case is green in all three engines.
 
-The assertions stay in place when the defects are fixed: Phase 1 turns
-these cases green by changing the ENGINE, never by weakening this file.
+One case is still red elsewhere: ``error-envelope-unparseable`` fails in
+the TypeScript engine only (defect D7 -- the raw upstream body is embedded
+in the exception text). It is scheduled for a later phase and does not
+affect this suite.
+
+The assertions were never weakened: both cases turned green because the
+ENGINE changed. The harness assertions are never weakened to make a case
+pass.
 """
 
 from __future__ import annotations

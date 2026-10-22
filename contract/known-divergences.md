@@ -55,6 +55,10 @@ with this list.
   anything that is not a string or a number into `""`, so a non-scalar
   member counts as absent and the OTHER members survive.
 
+On the ARRAY/OBJECT member this entry is about, Python and TypeScript
+agree. They differ about a BOOLEAN member — see "Error envelope with a
+boolean member" below.
+
 **Why it is not a fixture.** The body has two different outcomes — Go loses
 the whole envelope, Python and TypeScript keep the survivors — and the
 corpus asserts ONE expected error code and error message for a body.
@@ -67,10 +71,49 @@ member on its own, so one mistyped member cannot erase the others) or
 Python and TypeScript abort the whole envelope as Go does — and express
 the agreed behaviour as an ordinary fixture.
 
-Today only the Go side is pinned: `go/errors_test.go`
-(`TestParseErrorArrayFieldFallsBackToGeneric`) asserts that an array
-`errorCode` costs the caller the whole envelope. The Python and
-TypeScript sides of the same body have no pin yet, and the files that
-would carry one (`python/tests/test_exceptions.py`,
-`typescript/test/errors.test.ts`) are outside the scope of the contract
-harness. Add them when the divergence is next touched.
+The Go side is pinned by `go/errors_test.go`
+(`TestParseErrorArrayFieldFallsBackToGeneric`), which asserts that an
+array `errorCode` costs the caller the whole envelope. The Python side is
+pinned by `python/tests/test_exceptions.py`
+(`test_non_scalar_envelope_member_counts_as_absent_while_others_survive`),
+which asserts that an array or object member counts as absent while the
+other members survive. The TypeScript side of the same body has NO pin
+yet — `typescript/test/errors.test.ts` does not cover it, and that file is
+outside the scope of the contract harness. That pin is still to be
+written; add it the next time this divergence is touched.
+
+## Error envelope with a boolean member
+
+**The divergence.** An error body whose `errorCode` (or `requestId`, or
+`errorMessage`) is a JSON BOOLEAN:
+
+- **Go** — `go/coercion.go`: `FlexString.UnmarshalJSON` falls through the
+  string and number branches to the raw text, so `true` is rendered as the
+  wire text `"true"` and the envelope survives.
+- **Python** — `python/mpesa/exceptions.py`: `_envelope_value` renders a
+  boolean as its JSON text (`"true"` / `"false"`), which is the same
+  rendering Go produces.
+- **TypeScript** — `typescript/src/errors.ts`: `coerceEnvelopeField`
+  accepts only a string or a number, so a boolean counts as ABSENT and the
+  member is dropped.
+
+This divergence was INTRODUCED by the D1 fix. Before it, Python dropped a
+boolean member too, so Python and TypeScript agreed; Python now agrees
+with Go, and the two engines disagree.
+
+**Why it is not a fixture.** A shared fixture carries ONE expectation for
+one body, and the two behaviours are both defensible: the corpus cannot
+assert "the code is `true`" for an engine that renders it absent, nor "the
+code is absent" for an engine that renders it `"true"`. Asserting either
+way is an engine-specific claim, not a wire contract.
+
+**What would close it.** Align TypeScript's `coerceEnvelopeField` with Go
+and Python — accept a boolean and render it as its JSON text — and express
+the agreed behaviour as an ordinary fixture. The alternative is to make Go
+and Python drop booleans as well.
+
+Go's side is pinned by `go/coercion_test.go` (`TestFlexStringBranches`
+covers `true` and `false`), and Python's by
+`python/tests/test_exceptions.py`
+(`test_boolean_envelope_member_becomes_its_json_text`). TypeScript has no
+equivalent pin for the boolean member.

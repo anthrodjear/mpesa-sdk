@@ -15,10 +15,13 @@ error a caller received lost the gateway's error code (`error_code` was
 `None` instead of `"401"`) while the envelope's other members survived.
 (The 401 retry probe is NOT affected: it keys on the DOTTED code
 `401.003.01`, which a numeric member would never have matched anyway, so
-Go and Python behave identically there.) The Python engine also never grew
-the 2**53 balance gate Go and TypeScript already had. A fixture the three
-engines read cannot drift the same way twice — the second engine to
-disagree fails the build.
+Go and Python behaved identically there.) The Python engine also had never
+grown the 2**53 balance gate Go and TypeScript already had.
+
+Both of those defects are FIXED now: the corpus caught them, the Python
+ENGINE changed, and the cases are green in all three engines. A fixture
+the three engines read cannot drift the same way twice — the second engine
+to disagree fails the build.
 
 Engine behaviour the corpus CANNOT express is tracked separately in
 [`known-divergences.md`](known-divergences.md).
@@ -163,26 +166,24 @@ duplicate-key fixture expects the FIRST value.
 | `stk-callback-duplicate-metadata` | `stk_callback` | Duplicate metadata names resolve FIRST-WINS | green everywhere |
 | `stk-callback-amount-as-string` | `stk_callback` | A numeric metadata STRING is the same money as the number ("100" vs 100) | green everywhere |
 | `stk-callback-amount-not-plain-decimal` | `stk_callback` | The metadata value stays the string `"1e3"` — a value the plain-decimal grammar rejects — and matches the expectation textually | green everywhere |
-| `balance-over-2p53` | `balance_segment` | A balance beyond 2**53 is SKIPPED and counted, never returned rounded | **red in Python (D3)** |
-| `error-envelope-numeric-code` | `error_envelope` | A numeric `errorCode` is coerced to its wire string form | **red in Python (D1)** |
+| `balance-over-2p53` | `balance_segment` | A balance beyond 2**53 is SKIPPED and counted, never returned rounded | green everywhere |
+| `error-envelope-numeric-code` | `error_envelope` | A numeric `errorCode` is coerced to its wire string form | green everywhere |
 | `error-envelope-unparseable` | `error_envelope` | A non-JSON body yields the generic message and NO error code | **red in TypeScript (D7)** |
 
 ## Expected red state
 
-The corpus is RED in two engines until the corresponding defects are fixed,
+The corpus is RED in ONE engine until the corresponding defect is fixed,
 and that redness is the point: it is the visible proof that the defect is
 still there.
 
 | Case | Red in | Defect |
 |---|---|---|
-| `error-envelope-numeric-code` | Python | D1 — a numeric envelope member is dropped, so the typed error loses the gateway's error code |
-| `balance-over-2p53` | Python | D3 — no 2**53 gate, so an unrepresentable balance is returned rounded |
 | `error-envelope-unparseable` | TypeScript | D7 — the raw upstream body is embedded in the exception text |
 
-Those cases are NOT marked `xfail` and NOT skipped: they must keep failing
+That case is NOT marked `xfail` and NOT skipped: it must keep failing
 loudly, so the moment the fix lands the case turns green and the change is
-visible in the diff. **The branch carrying them is therefore EXPECTED TO
-FAIL CI until the fixes land.**
+visible in the diff. **The TypeScript CI job is therefore EXPECTED TO FAIL
+until that fix lands** — the Go and Python suites are green.
 
 Everything else in the corpus is green in all three engines.
 
