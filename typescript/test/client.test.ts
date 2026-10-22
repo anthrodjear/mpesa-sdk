@@ -6,7 +6,7 @@
  * with exact parity on retry, generation-guard, and validation semantics.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MpesaClient, createClient, createClientFromEnv } from "../src/client.js";
+import { MpesaClient, createClient, createClientFromEnv, sharedTokenCacheKey } from "../src/client.js";
 import { Config, ConfigError, Environment } from "../src/config.js";
 import { MpesaError, MpesaDecodeError } from "../src/errors.js";
 import {
@@ -2942,5 +2942,48 @@ describe("Shared token cache across default clients", () => {
     await clientB.stkPush(validSTKPushRequest());
 
     expect(oauthHits).toBe(1); // one cache, one mint — no cross-invalidation
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shared token-cache key — the credential tuple is hashed, never stored
+// ---------------------------------------------------------------------------
+
+describe("sharedTokenCacheKey", () => {
+  const BASE_URL = "https://sandbox.safaricom.co.ke";
+
+  it("contains neither the consumer secret nor the consumer key", () => {
+    // The registry is a module-level Map that lives for the process
+    // lifetime: a key holding the secret in cleartext keeps it in the
+    // heap (heap dumps, --inspect, secret scanners) long after the
+    // client is discarded.
+    const key = sharedTokenCacheKey(BASE_URL, "test-key", "SUPERSECRET");
+    expect(key).not.toContain("SUPERSECRET");
+    expect(key).not.toContain("test-key");
+  });
+
+  it("is a SHA-256 hex digest", () => {
+    expect(sharedTokenCacheKey(BASE_URL, "k", "s")).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("is stable across calls — the same credentials reuse one cache entry", () => {
+    expect(sharedTokenCacheKey(BASE_URL, "k", "s")).toBe(
+      sharedTokenCacheKey(BASE_URL, "k", "s"),
+    );
+  });
+
+  it("differs when ANY component differs", () => {
+    const base = sharedTokenCacheKey(BASE_URL, "k", "s");
+    expect(sharedTokenCacheKey("https://api.safaricom.co.ke", "k", "s")).not.toBe(base);
+    expect(sharedTokenCacheKey(BASE_URL, "k2", "s")).not.toBe(base);
+    expect(sharedTokenCacheKey(BASE_URL, "k", "s2")).not.toBe(base);
+  });
+
+  it("is unambiguous — a separator-joined tuple could collide", () => {
+    // The old `|` join mapped ("a|b", "c") and ("a", "b|c") onto the
+    // same key: two DIFFERENT credential sets sharing one cache entry.
+    expect(sharedTokenCacheKey("u", "a|b", "c")).not.toBe(
+      sharedTokenCacheKey("u", "a", "b|c"),
+    );
   });
 });

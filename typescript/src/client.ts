@@ -39,6 +39,8 @@
  * @packageDocumentation
  */
 
+import { createHash } from "node:crypto";
+
 import { Config, ConfigError, Environment } from "./config.js";
 import {
   MpesaError,
@@ -371,8 +373,8 @@ function requireLengthRange(field: string, value: string, min: number, max: numb
 // ─── Shared token-cache registry ─────────────────────────────────────────────
 
 /**
- * Process-wide {@link TokenManager} registry keyed by
- * `baseUrl|consumerKey|consumerSecret`.
+ * Process-wide {@link TokenManager} registry keyed by a DIGEST of the
+ * credential tuple (see {@link sharedTokenCacheKey}).
  *
  * Rationale: a fresh TokenManager per client instance means every
  * `fromEnv()` call performs its own OAuth round-trip, and because Daraja
@@ -391,12 +393,43 @@ function requireLengthRange(field: string, value: string, min: number, max: numb
 const SHARED_TOKEN_CACHE_MAX = 8;
 const sharedTokenManagers = new Map<string, TokenManager>();
 
+/**
+ * Cache key for the process-wide {@link TokenManager} registry: a SHA-256
+ * digest of the credential tuple.
+ *
+ * The registry is a module-level `Map` that lives for the PROCESS
+ * lifetime, so a key holding the consumer secret in cleartext would keep
+ * that secret in the heap (heap dumps, `--inspect`, secret scanners) long
+ * after the client was discarded. A digest is deterministic — the same
+ * credentials must map to the same cache entry — and reveals nothing about
+ * the secret.
+ *
+ * The tuple is LENGTH-PREFIXED rather than joined with a separator: with a
+ * `|` join, ("a|b", "c") and ("a", "b|c") produced the same key, so two
+ * different credential sets could share one cache entry.
+ *
+ * @param baseUrl - The client's API base URL.
+ * @param consumerKey - The OAuth consumer key.
+ * @param consumerSecret - The OAuth consumer secret (hashed, never stored).
+ * @returns The hex SHA-256 digest of the tuple.
+ */
+export function sharedTokenCacheKey(
+  baseUrl: string,
+  consumerKey: string,
+  consumerSecret: string,
+): string {
+  const material = `${baseUrl.length}:${baseUrl}` +
+    `${consumerKey.length}:${consumerKey}` +
+    `${consumerSecret.length}:${consumerSecret}`;
+  return createHash("sha256").update(material, "utf8").digest("hex");
+}
+
 function sharedTokenManager(
   baseUrl: string,
   consumerKey: string,
   consumerSecret: string,
 ): TokenManager {
-  const key = `${baseUrl}|${consumerKey}|${consumerSecret}`;
+  const key = sharedTokenCacheKey(baseUrl, consumerKey, consumerSecret);
   const existing = sharedTokenManagers.get(key);
   if (existing !== undefined) return existing;
   const manager = new TokenManager({ baseUrl, consumerKey, consumerSecret });
