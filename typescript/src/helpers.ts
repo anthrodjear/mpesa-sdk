@@ -159,6 +159,18 @@ export function normalizePhone(raw: string): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * Minimum RSA key size (bits) for the M-Pesa certificate.
+ *
+ * That public key encrypts the initiator password on the wire, so a key
+ * below 2048 bits protects the credential less than the gateway credential
+ * is meant to be protected. The official M-Pesa certificates ship 2048-bit
+ * keys (`assets/certs/*`), so the floor refuses only a misconfigured or
+ * tampered certificate — never a legitimate one. Go and Python enforce the
+ * same floor.
+ */
+const MIN_RSA_KEY_BITS = 2048;
+
+/**
  * Maximum initiator-password size in UTF-8 bytes for RSA-2048 PKCS#1 v1.5:
  * `keySize - 11 = 245` (Go `rsa.EncryptPKCS1v15` parity — longer
  * plaintexts fail inside the primitive with an opaque error, so reject
@@ -181,6 +193,8 @@ const MAX_RSA_PLAINTEXT_BYTES = 245;
  * Hardening (Go `*rsa.PublicKey` / Python `RSAPublicKey` parity):
  * - The certificate's public key MUST be RSA (`asymmetricKeyType === "rsa"`)
  *   — EC/EdDSA certs are rejected before any crypto runs.
+ * - The RSA key MUST be at least 2048 bits — a weaker key is refused, and
+ *   the error names the size actually found.
  * - The UTF-8-encoded password MUST fit the RSA-2048 PKCS#1 v1.5 limit
  *   (≤ 245 bytes) — longer inputs are rejected with a length-only message
  *   that never echoes the password.
@@ -193,9 +207,9 @@ const MAX_RSA_PLAINTEXT_BYTES = 245;
  * @param initiatorPassword - Raw UTF-8 initiator password to encrypt.
  *   Must be non-blank and encode to ≤ 245 UTF-8 bytes.
  * @returns Base64-encoded ciphertext.
- * @throws {Error} Unparseable cert, non-RSA key, empty password,
- *   or oversize password (> 245 UTF-8 bytes — message carries the
- *   byte count only, never the password).
+ * @throws {Error} Unparseable cert, non-RSA key, an RSA key below 2048
+ *   bits, empty password, or oversize password (> 245 UTF-8 bytes —
+ *   message carries the byte count only, never the password).
  *
  * @example
  * ```ts
@@ -225,6 +239,23 @@ export function securityCredential(
   const publicKey = cert.publicKey;
   if (!publicKey || publicKey.asymmetricKeyType !== "rsa") {
     throw new Error("mpesa: M-Pesa certificate carries non-RSA public key");
+  }
+
+  // The key-size floor is checked BEFORE any encryption runs: a 1024-bit
+  // key would happily encrypt the password, and the weak ciphertext would
+  // only be discovered to be weak later.
+  const keyBits = publicKey.asymmetricKeyDetails?.modulusLength;
+  if (typeof keyBits !== "number") {
+    // Fail closed: a key whose size cannot be read cannot be shown to meet
+    // the floor, so it is refused rather than waved through.
+    throw new Error(
+      "mpesa: cannot determine the RSA key size of the M-Pesa certificate",
+    );
+  }
+  if (keyBits < MIN_RSA_KEY_BITS) {
+    throw new Error(
+      `mpesa: M-Pesa certificate RSA key is ${keyBits} bits, want at least ${MIN_RSA_KEY_BITS}`,
+    );
   }
 
   if (typeof initiatorPassword !== "string") {
