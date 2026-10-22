@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -1681,6 +1682,71 @@ func TestCloseWinsAgainstInFlightTokenRefresh(t *testing.T) {
 	}
 }
 
+// A *Client holds the consumer key, the consumer secret, the passkey and
+// the live bearer token. Every one of those fields is UNEXPORTED, so fmt
+// never reaches the nested Config.Format for them and "%+v" used to print
+// ALL of them — a live Daraja bearer grants full API access, and a leaked
+// consumer secret authenticates every OAuth request.
+//
+// Every fmt verb, the nested-struct form and slog.Any must now render
+// credential-free, while still saying something useful.
+func TestClientRenderingNeverLeaksCredentials(t *testing.T) {
+	const (
+		leakKey    = "SUPERSECRETKEY"
+		leakSecret = "SUPERSECRET"
+		leakPass   = "PASSKEY123"
+		leakToken  = "bearer-token-abcdef"
+	)
+	c, err := NewClient(Config{
+		ConsumerKey:    leakKey,
+		ConsumerSecret: leakSecret,
+		Shortcode:      testShortcode,
+		Passkey:        leakPass,
+		Environment:    Sandbox,
+		Now:            func() time.Time { return fixedClock },
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	// Simulate a cached bearer token — the live credential.
+	c.mu.Lock()
+	c.tokenBytes = []byte(leakToken)
+	c.tokenExpiry = fixedClock.Add(time.Hour)
+	c.mu.Unlock()
+
+	// The token bytes as fmt renders them inside a struct ("[98 101 ...]").
+	tokenBytesDecimal := fmt.Sprint(c.tokenBytes)
+
+	var logBuf bytes.Buffer
+	slog.New(slog.NewTextHandler(&logBuf, nil)).Info("client", "client", slog.Any("client", c))
+
+	renderings := map[string]string{
+		"%v":     fmt.Sprintf("%v", c),
+		"%+v":    fmt.Sprintf("%+v", c),
+		"%#v":    fmt.Sprintf("%#v", c),
+		"%s":     fmt.Sprintf("%s", c),
+		"%q":     fmt.Sprintf("%q", c),
+		"struct": fmt.Sprintf("%v", struct{ C *Client }{c}),
+		"slog":   logBuf.String(),
+	}
+	for name, rendered := range renderings {
+		for _, secret := range []string{leakKey, leakSecret, leakPass, leakToken, tokenBytesDecimal} {
+			if strings.Contains(rendered, secret) {
+				t.Errorf("%s rendering leaks %q: %s", name, secret, rendered)
+			}
+		}
+		// The rendering must still be USEFUL: the base URL identifies which
+		// environment the client talks to.
+		if !strings.Contains(rendered, "https://sandbox.safaricom.co.ke") {
+			t.Errorf("%s rendering lost the base URL: %s", name, rendered)
+		}
+	}
+	// The cached-token state is still reported (without the token itself).
+	if !strings.Contains(renderings["%v"], "cached:true") {
+		t.Errorf("%%v rendering lost the cached-token state: %s", renderings["%v"])
+	}
+}
+
 // TestRefreshCadenceOverflowGuard verifies that refreshCadence does not
 // overflow when expires_in is near math.MaxInt64, and that the result is
 // always within [minCadence, maxCadence].
@@ -1700,9 +1766,9 @@ func TestRefreshCadenceOverflowGuard(t *testing.T) {
 		{"normal_3599s", FlexInt64(3599), maxCadence}, // 3539s > 50min, clamped
 		{"normal_3600s", FlexInt64(3600), maxCadence}, // 3540s > 50min, clamped
 		{"normal_120s", FlexInt64(120), 60 * time.Second},
-		{"normal_90s", FlexInt64(90), minCadence},   // 90-60=30s, clamped to the 60s parity floor
-		{"normal_61s", FlexInt64(61), minCadence},   // 61-60=1s, clamped to minCadence
-		{"normal_60s", FlexInt64(60), minCadence},   // 60-60=0s, clamped to minCadence
+		{"normal_90s", FlexInt64(90), minCadence}, // 90-60=30s, clamped to the 60s parity floor
+		{"normal_61s", FlexInt64(61), minCadence}, // 61-60=1s, clamped to minCadence
+		{"normal_60s", FlexInt64(60), minCadence}, // 60-60=0s, clamped to minCadence
 
 		// Edge: zero and negative fall back to maxCadence
 		{"zero", FlexInt64(0), maxCadence},

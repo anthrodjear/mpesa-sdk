@@ -223,6 +223,49 @@ type Client struct {
 	closed bool
 }
 
+// GoString renders a credential-free summary of the client.
+//
+// Why this method exists at all: every field of Client is UNEXPORTED, so
+// fmt cannot Interface() the nested Config value and therefore NEVER
+// reaches Config.Format for it — "%+v" on a *Client printed the raw
+// struct fields, i.e. the consumer key, the consumer secret, the passkey
+// AND the cached bearer token (as raw decimal bytes). A live Daraja bearer
+// grants full API access and a leaked consumer secret authenticates every
+// OAuth request, so a plain fmt.Sprintf("%+v", client) on a log line was
+// a credential disclosure.
+//
+// The rendering therefore carries NO credential: not the consumer key,
+// not the consumer secret, not the passkey, not the token bytes, not the
+// resolved limits and not the injected *http.Client (whose transport can
+// carry proxy/TLS internals). It keeps only the operational facts a log
+// line actually needs — which host, whether the client is closed, and
+// whether a token is cached.
+//
+// The mutable fields are read under c.mu.RLock(). The mutex is never
+// copied: the receiver is a pointer, so the lock is shared, not
+// duplicated (copying it by value would be a data race, and vet would
+// flag it).
+func (c *Client) GoString() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return fmt.Sprintf("mpesa.Client{baseURL:%q closed:%t cached:%t}",
+		c.baseURL, c.closed, len(c.tokenBytes) > 0)
+}
+
+// Format routes EVERY fmt verb (%v, %+v, %s, %q, ...) through the
+// credential-free form.
+//
+// GoStringer alone is NOT enough: it only covers %#v, while %v and %+v
+// print the raw struct fields. This mirrors Config.Format (go/config.go)
+// for the same reason — an unexported field is never passed to
+// fmt.Formatter, so the nested Config.Format never runs for it.
+//
+// The receiver is a POINTER so that fmt.Sprintf("%+v", client) on a
+// *Client is intercepted at all.
+func (c *Client) Format(f fmt.State, verb rune) {
+	_, _ = fmt.Fprint(f, c.GoString())
+}
+
 // transportDisablesVerification walks the RoundTripper chain looking for any
 // *http.Transport with TLSClientConfig.InsecureSkipVerify=true.
 //
