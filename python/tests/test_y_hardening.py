@@ -104,7 +104,7 @@ def test_refused_refresh_does_not_advance_rate_limit_clock():
     """A REFUSED (rate-limited) refresh is not an attempt: it must leave
     both the failure counter and the ``_last_attempt`` clock untouched.
 
-    The guard in ``_refresh_locked`` raises BEFORE the ``_last_attempt``
+    The guard in ``_refresh`` raises BEFORE the ``_last_attempt``
     assignment, so a refusal cannot push the 3-in-5s window forward. If
     it did, the window would be measured from the refusal time instead
     of the last real attempt and a later attempt would stay refused.
