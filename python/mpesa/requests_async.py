@@ -259,9 +259,11 @@ class ReversalRequest:
         _printable("TransactionID", self.transaction_id, 64)
         _require("TransactionID", self.transaction_id)
         _amount_int("Reversal Amount", self.amount)
-        # Reversal spends its OWN tier bucket (mpesa.limits) -- the same
-        # bucket the daily path accrues into, so one service never
-        # resolves to two different ceilings inside one engine.
+        # Reversal spends its OWN tier bucket (mpesa.limits) for BOTH
+        # bounds -- the per-transaction check and the daily accrual -- so
+        # one service never resolves to two different ceilings inside one
+        # engine. Resolving it to ``default`` instead made a raised
+        # Reversal tier honoured on one bound and ignored on the other.
         _check_transaction_limit(
             "Reversal Amount", "reversal", self.amount, limits)
         _require("ReceiverParty", self.receiver_party)

@@ -117,3 +117,44 @@ covers `true` and `false`), and Python's by
 `python/tests/test_exceptions.py`
 (`test_boolean_envelope_member_becomes_its_json_text`). TypeScript has no
 equivalent pin for the boolean member.
+
+## Error envelope with a non-finite number member
+
+**The divergence.** An error body whose `errorCode` (or `requestId`, or
+`errorMessage`) is the non-standard JSON literal `NaN`, `Infinity` or
+`-Infinity`:
+
+- **Go** — `go/errors.go`: `encoding/json` rejects `NaN`/`Infinity`
+  outright (they are not JSON), so the `json.Unmarshal` of the WHOLE body
+  fails and every member is lost — the `requestId` and the
+  `errorMessage` are dropped along with the offending `errorCode` — and
+  the caller sees the generic "unexpected error response from gateway".
+- **Python** — `python/mpesa/exceptions.py`: Python's `json` decoder
+  ACCEPTS the bare `NaN`/`Infinity` literals, so the body parses;
+  `_envelope_value` then treats a non-finite member as ABSENT (the same
+  defence in depth `mpesa.results` applies to balance floats) and the
+  OTHER members survive.
+- **TypeScript** — `typescript/src/errors.ts`: `JSON.parse` rejects
+  `NaN`/`Infinity` outright, so the whole body fails to parse and every
+  member is lost.
+
+**Why it is not a fixture.** The body has two different outcomes — Go and
+TypeScript lose the whole envelope, Python keeps the survivors — and the
+corpus asserts ONE expected error code and error message for a body.
+Asserting "Go loses the requestId too" is an engine-specific claim, not
+a wire contract. The corpus loader cannot even carry such a body: the
+fixture is not valid JSON, so Python's lenient decoder accepts it while
+Go's and TypeScript's reject the FILE itself.
+
+**What would close it.** Align the three decoders on one rule — either
+Python rejects the non-standard literals (a strict `parse_constant` hook)
+so all three engines lose the whole envelope, or Go and TypeScript accept
+them member-wise so all three keep the survivors — and express the
+agreed behaviour as an ordinary fixture.
+
+The Python side is pinned by `python/tests/test_exceptions.py`
+(`test_non_finite_float_member_counts_as_absent`), which asserts that a
+`NaN`/`Infinity` member counts as absent while the other members survive.
+Go and TypeScript lose the whole envelope by construction (their decoders
+reject the literal before any member is read), so they need no
+engine-specific pin for it.

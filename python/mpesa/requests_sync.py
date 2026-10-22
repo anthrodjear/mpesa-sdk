@@ -691,11 +691,11 @@ class QRCodeRequest:
         _require("MerchantName", self.merchant_name)
         _require("RefNo", self.ref_no)
         _amount_int("QR Amount", self.amount)
-        # QR spends its OWN tier bucket (mpesa.limits) -- the same bucket
-        # the daily path accrues into. Resolving it to ``default`` instead
-        # made one service answer to two ceilings inside one engine, so a
-        # raised QR tier was honoured on one of them and ignored on the
-        # other.
+        # QR spends its OWN tier bucket (mpesa.limits) for BOTH bounds --
+        # the per-transaction check and the daily accrual -- so one
+        # service never resolves to two different ceilings inside one
+        # engine. Resolving it to ``default`` instead made a raised QR
+        # tier honoured on one bound and ignored on the other.
         _check_transaction_limit("QR Amount", "qr", self.amount, limits)
         try:
             self.trx_code = QRTrxCode(_enum_value(self.trx_code))
