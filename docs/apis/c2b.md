@@ -43,7 +43,7 @@ Auth: Bearer token.
 | `CommandID` | enum | `CustomerPayBillOnline` (Paybill) \| `CustomerBuyGoodsOnline` (Till) |
 | `Amount` | numeric | payment amount |
 | `Msisdn` | numeric | payer; sandbox test number `254708374149` |
-| `BillRefNumber` | string | required for Paybill (`null` for Buy Goods) |
+| `BillRefNumber` | string | required for Paybill (omitted for Buy Goods) |
 
 Registration semantics: **sandbox** — re-register freely before each simulation;
 **production** — one-time registration; changes require deleting URLs in Self-Service →

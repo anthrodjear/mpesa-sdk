@@ -113,7 +113,8 @@ the agreed behaviour as an ordinary fixture. The alternative is to make Go
 and Python drop booleans as well.
 
 Go's side is pinned by `go/coercion_test.go` (`TestFlexStringBranches`
-covers `true` and `false`), and Python's by
+covers `true`; `false` is covered by the `kept` list in
+`TestFlexStringRejectsArraysAndObjects`), and Python's by
 `python/tests/test_exceptions.py`
 (`test_boolean_envelope_member_becomes_its_json_text`). TypeScript has no
 equivalent pin for the boolean member.

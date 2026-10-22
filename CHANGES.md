@@ -1,6 +1,9 @@
 # Changes — Unreleased (main)
 
-- **Reversal and Dynamic QR get their own daily buckets** (`reversal`, `qr`) instead of sharing `default`. Only affects users who had overridden `default` limits — their Reversal/QR now inherit the Safaricom defaults unless explicitly configured.
+- **Reversal and Dynamic QR get their own limit buckets** (`reversal`, `qr`) instead of sharing `default` — for BOTH the per-transaction ceiling and the per-day bucket. Only affects users who had overridden `default` limits — their Reversal/QR now inherit the Safaricom defaults unless explicitly configured.
+- **A numeric `errorCode` survives** — a gateway that sends `"errorCode": 401` as a number now yields `error_code == "401"` instead of `None`, and the generic "unexpected error response from gateway" message no longer replaces the envelope.
+- **Balance rows beyond ±2⁵³ are skipped and counted** — an amount that cannot survive a float64 round-trip is dropped from the balance instead of being returned rounded, and the skipped count says how many were dropped.
+- **`BillRefNumber` is required for PayBill simulations only** — a C2B simulate request for `CustomerPayBillOnline` must carry it; `CustomerBuyGoodsOnline` is unaffected (the key is omitted, not null).
 - **`retryOnUnauthorized` (Go) / `retry_on_unauthorized` (Python) / `retryOnUnauthorized` (TypeScript) option added** — defaults to `true`; set to `false` to surface the first `401.003.01` without the automatic single retry. Go: `Config.DisableRetryOnUnauthorized`; Python: `Config(retry_on_unauthorized=False)`; TS: `Config({ retryOnUnauthorized: false })`.
 - **Daily budget refunded on transport error only** — a failed network request (timeout, connection error) no longer consumes the daily ceiling; gateway errors (4xx/5xx) still consume it. Mirrors the "attempt was made" principle. Doc: `docs/apis/limits.md:59-61`.
 - **Refresh cadence floor raised to 60 seconds** across all three engines (was ~1 s) — a hostile/buggy gateway `expires_in` can no longer drive a sub-second OAuth storm.

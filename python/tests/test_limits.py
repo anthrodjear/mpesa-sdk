@@ -756,7 +756,7 @@ AMOUNT_CASES = [1, 10, 250_000, 250_001, 300_000, 500_000, 500_001,
 
 
 def test_sync_and_async_agree_on_amount_bounds():
-    """STK (sync, ``stk`` tier) and Reversal (async, ``default`` tier)."""
+    """STK (sync, ``stk`` tier) and Reversal (async, ``reversal`` tier)."""
     for amount in AMOUNT_CASES:
         sync_ok = True
         try:
