@@ -648,8 +648,12 @@ class C2BSimulateRequest:
         _amount_int("simulate Amount", self.amount)
         _check_transaction_limit("simulate Amount", "c2b", self.amount, limits)
         self.msisdn = _phone("Msisdn", self.msisdn)
+        # minimum=0: BillRefNumber is mandatory IFF the paybill command is
+        # chosen (docs/apis/c2b.md), so the free-text LENGTH rule must not
+        # make it mandatory for Buy Goods as well. The explicit _require
+        # below carries the command-dependent part.
         self.bill_ref_number = _free_text(
-            "BillRefNumber", self.bill_ref_number, 32)
+            "BillRefNumber", self.bill_ref_number, 32, minimum=0)
         if cmd == TransactionType.CUSTOMER_PAY_BILL_ONLINE.value:
             _require("BillRefNumber", self.bill_ref_number)
         self._validated = True
