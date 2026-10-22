@@ -1,9 +1,14 @@
 package mpesa
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
+	"math/big"
 	"os"
 	"regexp"
 	"strings"
@@ -203,6 +208,54 @@ func TestSecurityCredentialEmptyPassword(t *testing.T) {
 			t.Fatalf("password %q: err = %v, want cheapest-first password rejection", pw, err)
 		}
 	}
+}
+
+// A certificate whose RSA key is BELOW the 2048-bit floor must be REFUSED:
+// that key encrypts the initiator password on the wire, and a key this weak
+// is exactly what the floor exists to keep out. The weak certificate is
+// generated HERE, so no weak key material is ever committed to the repo.
+func TestSecurityCredentialRejectsWeakRSAKey(t *testing.T) {
+	weak := selfSignedCertPEM(t, 1024)
+	_, err := SecurityCredential(weak, "pw")
+	if err == nil {
+		t.Fatal("1024-bit RSA key accepted, want rejection")
+	}
+	if !strings.Contains(err.Error(), "1024") {
+		t.Fatalf("err = %v, want the ACTUAL key size named", err)
+	}
+
+	// The floor must not reject a legitimate key: a 2048-bit certificate
+	// — the size the official M-Pesa certs ship — still encrypts.
+	cred, err := SecurityCredential(selfSignedCertPEM(t, 2048), "pw")
+	if err != nil {
+		t.Fatalf("2048-bit RSA key rejected: %v", err)
+	}
+	if len(cred) != 344 {
+		t.Fatalf("credential length = %d, want 344", len(cred))
+	}
+}
+
+// selfSignedCertPEM builds a self-signed certificate carrying an RSA key of
+// the requested size. Self-signed is enough: SecurityCredential never checks
+// the chain or the validity dates (the official certs ship long-expired by
+// design), so only the public key matters here.
+func selfSignedCertPEM(t *testing.T, bits int) []byte {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, bits)
+	if err != nil {
+		t.Fatalf("generate %d-bit RSA key: %v", bits, err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "mpesa-key-size-test"},
+		NotBefore:    time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+		NotAfter:     time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
 func TestSecurityCredentialRejectsGarbage(t *testing.T) {

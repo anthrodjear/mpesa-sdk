@@ -70,6 +70,16 @@ func NormalizePhone(s string) (string, error) {
 	return p, nil
 }
 
+// minRSAPublicKeyBits is the floor for the M-Pesa certificate's RSA key.
+//
+// Why a floor: that public key encrypts the initiator password on the wire,
+// so a key below 2048 bits protects the credential less than the gateway
+// credential is meant to be protected. The official M-Pesa certificates
+// ship 2048-bit keys (assets/certs/*), so the floor refuses only a
+// misconfigured or tampered certificate — never a legitimate one. Python
+// and TypeScript enforce the same floor.
+const minRSAPublicKeyBits = 2048
+
 // SecurityCredential encrypts the initiator password with the M-Pesa public
 // key certificate using RSA PKCS#1 v1.5 and base64-encodes the ciphertext.
 //
@@ -83,6 +93,7 @@ func NormalizePhone(s string) (string, error) {
 // (assets/certs/* — encryption-only public keys, not trust anchors).
 // Max plaintext is keySize-11 bytes (245 B for RSA-2048); longer passwords
 // fail with an encryption error. Errors never echo password/cert material.
+// The certificate's RSA key must be at least minRSAPublicKeyBits (2048).
 func SecurityCredential(certPEMorDER []byte, initiatorPassword string) (string, error) {
 	if strings.TrimSpace(initiatorPassword) == "" {
 		return "", fmt.Errorf("mpesa: initiator password is required")
@@ -98,6 +109,12 @@ func SecurityCredential(certPEMorDER []byte, initiatorPassword string) (string, 
 	pub, ok := cert.PublicKey.(*rsa.PublicKey)
 	if !ok {
 		return "", fmt.Errorf("mpesa: M-Pesa certificate carries non-RSA public key %T", cert.PublicKey)
+	}
+	// The key-size floor is checked BEFORE any encryption runs: a
+	// 1024-bit key would happily encrypt the password, and the weak
+	// ciphertext would only be discovered to be weak later.
+	if bits := pub.N.BitLen(); bits < minRSAPublicKeyBits {
+		return "", fmt.Errorf("mpesa: M-Pesa certificate RSA key is %d bits, want at least %d", bits, minRSAPublicKeyBits)
 	}
 	pwBytes := []byte(initiatorPassword)
 	// Zero the password bytes after use to minimise the window where the
