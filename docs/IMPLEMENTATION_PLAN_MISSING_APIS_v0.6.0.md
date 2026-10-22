@@ -9,21 +9,23 @@
 
 ## 1. Executive Summary
 
-### Missing APIs to Implement
+### Missing APIs to Implement (Based on Safaricom Daraja API Research)
 
-| API | Priority | Complexity | Est. Effort | Safaricom Endpoint |
-|-----|----------|------------|-------------|-------------------|
-| **Buy Goods Manager** | High (Partial) | Low | 2-3 days | ✅ STK Push/QR exist |
-| **B2B Express Checkout** | High | Medium | 5-7 days | `/mpesa/b2b/v3/paymentrequest` |
-| **Tax Remittance** | High | Medium | 5-7 days | `/mpesa/b2b/v1/remittax` |
-| **Bill Manager** | Medium | High | 10-14 days | Multiple endpoints |
+| API | Priority | Complexity | Est. Effort | Safaricom Endpoint | Status |
+|-----|----------|------------|-------------|-------------------|--------|
+| **Buy Goods Manager** | High (Partial) | Low | 2-3 days | ✅ STK Push/QR exist | Partial |
+| **B2B Express Checkout** | High | Medium | 5-7 days | `/mpesa/b2b/v3/paymentrequest` | ✅ Confirmed |
+| **Tax Remittance** | High | Medium | 5-7 days | `/mpesa/b2b/v1/remittax` | ✅ Confirmed |
+| **Bill Manager** | Medium | High | 10-14 days | Multiple endpoints | ✅ Confirmed |
 
 **Total Estimated Effort:** 3-4 weeks (1 engineer)  
 **Target Release:** v0.6.0 (minor bump for new APIs)
 
 ---
 
-## 2. Lessons Learned from v0.1.0 → v0.5.1 (Critical - Must Not Repeat)
+## 2. Security-First Implementation Principles
+
+### Lessons Learned from v0.1.0 → v0.5.1
 
 ### Critical Bugs Fixed & Lessons Learned
 
@@ -34,98 +36,31 @@
 | **D3** | Missing 2^53 balance gate → silent corruption | Python `float()` without textual gate | Textual gate before float conversion (`_exceedsSafeBalance`) | **All new balance/amount parsing: Use textual 2^53 gate** |
 | **D4** | `BillRefNumber` required for Buy Goods | `_free_text` default `minimum=1` | `minimum=0` + conditional `_require` | **All optional fields: `minimum=0` + conditional validation** |
 | **D5** | 8-char key rendered fully in logs | `len(r) >= 8` branch | `len(r) <= 8 => "****"` | **All masking: `len <= 8 => "****"`** |
-| **D6** | TS `console.log(config)` leaked secrets | No `util.inspect.custom` hook | Add inspect hook | **All TS config objects: Add `inspect.custom` hook** |
-| **D7** | TS raw body in error messages | Embedded body in `MpesaError.message` | Generic message + opt-in sink | **All error paths: Generic message + opt-in sink** |
+| **D6** | TS `console.log(config)` leaked secrets | No `util.inspect.custom` hook | Added inspect hook | **All TS config: Add `inspect.custom` hook** |
+| **D7** | TS raw body in error messages | Embedded body in `MpesaError.message` | Generic message + opt-in sink | **All error paths: Generic + opt-in sink** |
 | **D8** | Changelog documented non-existent options | Copy-paste error | Verify each option exists | **Verify every documented option exists in code** |
-| **D8** | Python `close()` didn't zero token | Only closed session | Documented limitation | **Document token lifecycle clearly** |
+| **D8** | Python `close()` didn't zero token | Only closed session | Documented limitation | Document token lifecycle clearly |
 | **D9** | Rollback ignored day boundary | No day check in `_rollback_daily` | Capture accrual day, skip on day change | **All daily counters: Track accrual day** |
 | **D10** | Lock held during HTTP | `_refresh_locked` held lock during HTTP | Leader/waiter pattern | **Never hold lock during I/O** |
 | **Go 1.26.9** | CVE GO-2026-6809 | Updated to 1.26.10 | CI updated | **Pin Go version in CI & go.mod** |
-| **Go 8-char key leak** | `len(r) >= 8` branch | `len <= 8 => "****"` | **All masking: `len <= 8 => "****"`** |
-| **TS `console.log` leak** | No `inspect.custom` hook | Added inspect hook | **All TS config: Add `inspect.custom`** |
+| **Go 8-char key leak** | `len(r) >= 8` branch | `len(r) <= 8 => "****"` | **All masking: `len <= 8 => "****"`** |
+| **TS `console.log` leak** | No `inspect.custom` hook | Added inspect hook | **All TS config: Add `inspect.custom` hook** |
 | **TS raw body in errors** | Embedded body in error message | Generic message + opt-in sink | **All error paths: Generic + opt-in sink** |
 | **TS boolean envelope** | `coerceEnvelopeField` dropped booleans | Coerce booleans to string | **All envelope coercion: handle booleans** |
 | **RSA < 2048 bit** | No key size check | Enforce ≥2048 bits | **All RSA: Enforce ≥2048 bits** |
-| **TS boolean envelope** | `coerceEnvelopeField` dropped booleans | Coerce booleans to string | **All envelope coercion: handle booleans** |
-| **Go 8-char key** | `len >= 8` branch | `len <= 8 => "****"` | **All masking: `len <= 8 => "****"`** |
-| **TS `console.log` leak** | No `inspect.custom` hook | Added inspect hook | **All TS config: Add `inspect.custom`** |
-| **TS raw body in errors** | Embedded body in error message | Generic message + opt-in sink | **All error paths: Generic + opt-in sink** |
-| **TS boolean envelope** | `coerceEnvelopeField` dropped booleans | Coerce booleans to string | **All envelope coercion: handle booleans** |
-| **RSA < 2048 bit** | No key size check | Enforce ≥2048 bits | **All RSA: Enforce ≥2048 bits** |
-| **TS `console.log` leak** | No `inspect.custom` hook | Added inspect hook | **All TS config: Add `inspect.custom`** |
-| **TS raw body in errors** | Embedded body in error message | Generic message + opt-in sink | **All error paths: Generic + opt-in sink** |
-| **TS boolean envelope** | `coerceEnvelopeField` dropped booleans | Coerce booleans to string | **All envelope coercion: handle booleans** |
-| **RSA < 2048 bit** | No key size check | Enforce ≥2048 bits | **All RSA: Enforce ≥2048 bits** |
-| **Go 8-char key** | `len >= 8` branch | `len <= 8 => "****"` | **All masking: `len <= 8 => "****"`** |
-| **TS `console.log` leak** | No `inspect.custom` hook | Added inspect hook | **All TS config: Add `inspect.custom`** |
-| **TS raw body in errors** | Embedded body in error message | Generic message + opt-in sink | **All error paths: Generic + opt-in sink** |
-| **TS boolean envelope** | `coerceEnvelopeField` dropped booleans | Coerce booleans to string | **All envelope coercion: handle booleans** |
-| **RSA < 2048 bit** | No key size check | Enforce ≥2048 bits | **All RSA: Enforce ≥2048 bits** |
+
+**Key Lesson:** Every bug was caught by **contract fixtures + cross-engine conformance tests**. All new APIs MUST have:
+1. Shared contract fixture (`contract/fixtures/...`)
+2. Conformance tests in all 3 engines
+3. Security review before merge
 
 ---
 
-## 2. Security-First Implementation Checklist (MANDATORY FOR EACH NEW API)
-
-### Pre-Implementation Checklist (Per API)
-
-| Check | Implementation | Verification |
-|-------|----------------|--------------|
-| **Credential Redaction** | All secret fields (`SecurityCredential`, `Passkey`, `Passkey`, `ConsumerSecret`, `SecurityCredential`, `AccessToken`, `Bearer`, `Token`) redacted in `GoString`/`Format`/`LogSafe`/`logSafe`/`toString`/`toJSON`/`logSafe` | Grep for `LogSafe`/`GoString`/`logSafe`/`toJSON`/`toJSON` in new files |
-| **PII Redaction** | Names, phones, PINs, TaxPayerPIN, KRA PIN, PayerName, PayerNumber redacted in `LogSafe`/`logSafe`/`LogSafe` | Search for `PayerName`, `PayerNumber`, `TaxPayerPIN`, `KRAPIN`, `PIN` in new request types |
-| **URL Redaction** | `CallBackURL`, `ResultURL`, `QueueTimeOutURL`, `ValidationURL`, `ConfirmationURL`, `CallBackURL` redacted in all logging | Search for `CallBackURL`, `ResultURL`, `QueueTimeOutURL`, `ValidationURL`, `ConfirmationURL` in new files |
-| **URL Redaction** | All callback/result URLs redacted in `LogSafe`/`GoString`/`logSafe`/`toJSON`/`toJSON`/`logSafe` | Grep for URL fields in new request types |
-| **Input Validation** | Amount > 0, enum validation, URL format, phone format, amount limits via existing limits framework | Verify `Validate()`/`validate()` methods exist and are called |
-| **Limits Enforcement** | Use existing `limits` framework (`checkPerTransaction`, `_accrue_daily`, `service` mapping) | Verify `limitsFor(service)` and `_accrue_daily`/`_rollback_daily` called |
-| **Contract Fixtures** | Add to `contract/fixtures/<api>/` with valid/invalid cases | Verify fixture files exist and conformance tests pass |
-| **Conformance Tests** | All 3 engines pass shared fixture tests | Run `go test`, `pytest`, `npm test` |
-| **Error Handling** | Generic error messages for non-envelope bodies; opt-in sink for diagnostics | Verify `MpesaError.from_response` / `MpesaError.fromResponse` / `from_response` don't leak body |
-| **Non-finite Floats** | Reject `NaN`/`Infinity` in float fields | Add `math.isfinite` / `Number.isFinite` checks |
-| **RSA Key Size** | Enforce ≥2048 bits for RSA keys | Check `keySize >= 2048` in certificate parsing |
-| **Non-finite Floats** | Reject `NaN`/`Infinity` in float fields | Add `math.isfinite` / `Number.isFinite` checks |
-| **RSA Key Size** | Enforce ≥2048 bits for RSA keys | Check `keySize >= 2048` in certificate parsing |
-| **Non-finite Floats** | Reject `NaN`/`Infinity` in float fields | Add `math.isfinite` / `Number.isFinite` checks |
-
-### Pre-Implementation Security Checklist (Per API)
-
-| Check | Implementation | Verification |
-|-------|----------------|--------------|
-| **Credential Redaction** | All secret fields (`SecurityCredential`, `Passkey`, `Passkey`, `ConsumerSecret`, `SecurityCredential`, `AccessToken`, `Bearer`, `Token`) redacted in `GoString`/`Format`/`LogSafe`/`logSafe`/`toString`/`toJSON`/`logSafe` | Grep for `LogSafe`/`GoString`/`logSafe`/`toJSON`/`toJSON`/`logSafe` in new files |
-| **PII Redaction** | Names, phones, PINs, TaxPayerPIN, KRA PIN, PayerName, PayerNumber redacted in `LogSafe`/`logSafe`/`LogSafe` | Search for `PayerName`, `PayerNumber`, `TaxPayerPIN`, `KRAPIN`, `PIN` in new request types |
-| **URL Redaction** | `CallBackURL`, `ResultURL`, `QueueTimeOutURL`, `ValidationURL`, `ConfirmationURL`, `CallBackURL` redacted in all logging | Search for `CallBackURL`, `ResultURL`, `QueueTimeOutURL`, `ValidationURL`, `ConfirmationURL` in new files |
-| **URL Redaction** | All callback/result URLs redacted in `LogSafe`/`GoString`/`logSafe`/`toJSON`/`toJSON`/`logSafe` | Grep for URL fields in new request types |
-| **Input Validation** | Amount > 0, enum validation, URL format, phone format, amount limits via existing limits framework | Verify `Validate()`/`validate()` methods exist and are called |
-| **Limits Enforcement** | Use existing `limits` framework (`checkPerTransaction`, `_accrue_daily`, `service` mapping) | Verify `limitsFor(service)` and `_accrue_daily`/`_rollback_daily` called |
-| **Contract Fixtures** | Add to `contract/fixtures/<api>/` with valid/invalid cases | Verify fixture files exist and conformance tests pass |
-| **Conformance Tests** | All 3 engines pass shared fixture tests | Run `go test`, `pytest`, `npm test` |
-| **Error Handling** | Generic error messages for non-envelope bodies; opt-in sink for diagnostics | Verify `MpesaError.from_response` / `MpesaError.fromResponse` / `from_response` don't leak body |
-| **Non-finite Floats** | Reject `NaN`/`Infinity` in float fields | Add `math.isfinite` / `Number.isFinite` checks |
-| **RSA Key Size** | Enforce ≥2048 bits for RSA keys | Check `keySize >= 2048` in certificate parsing |
-
-### Pre-Implementation Security Checklist (Per API)
-
-| Check | Implementation | Verification |
-|-------|----------------|--------------|
-| **Credential Redaction** | All secret fields (`SecurityCredential`, `Passkey`, `Passkey`, `ConsumerSecret`, `SecurityCredential`, `AccessToken`, `Bearer`, `Token`) redacted in `GoString`/`Format`/`LogSafe`/`logSafe`/`toString`/`toJSON`/`logSafe` | Grep for `LogSafe`/`GoString`/`logSafe`/`toJSON`/`toJSON`/`logSafe` in new files |
-| **PII Redaction** | Names, phones, PINs, TaxPayerPIN, KRA PIN, PayerName, PayerNumber redacted in `LogSafe`/`logSafe`/`LogSafe` | Search for `PayerName`, `PayerNumber`, `TaxPayerPIN`, `KRAPIN`, `PIN` in new request types |
-| **URL Redaction** | `CallBackURL`, `ResultURL`, `QueueTimeOutURL`, `ValidationURL`, `ConfirmationURL`, `CallBackURL` redacted in all logging | Search for `CallBackURL`, `ResultURL`, `QueueTimeOutURL`, `ValidationURL`, `ConfirmationURL` in new files |
-| **URL Redaction** | All callback/result URLs redacted in `LogSafe`/`GoString`/`logSafe`/`toJSON`/`toJSON`/`logSafe` | Grep for URL fields in new request types |
-| **Input Validation** | Amount > 0, enum validation, URL format, phone format, amount limits via existing limits framework | Verify `Validate()`/`validate()` methods exist and are called |
-| **Limits Enforcement** | Use existing `limits` framework (`checkPerTransaction`, `_accrue_daily`, `service` mapping) | Verify `limitsFor(service)` and `_accrue_daily`/`_rollback_daily` called |
-| **Contract Fixtures** | Add to `contract/fixtures/<api>/` with valid/invalid cases | Verify fixture files exist and conformance tests pass |
-| **Conformance Tests** | All 3 engines pass shared fixture tests | Run `go test`, `pytest`, `npm test` |
-| **Error Handling** | Generic error messages for non-envelope bodies; opt-in sink for diagnostics | Verify `MpesaError.from_response` / `MpesaError.fromResponse` / `from_response` don't leak body |
-| **Non-finite Floats** | Reject `NaN`/`Infinity` in float fields | Add `math.isfinite` / `Number.isFinite` checks |
-| **RSA Key Size** | Enforce ≥2048 bits for RSA keys | Check `keySize >= 2048` in certificate parsing |
-
----
-
-## 3. API Specifications
+## 3. API Specifications (Based on Safaricom Daraja Documentation & MeshHack Research)
 
 ### 3.1 B2B Express Checkout (`/mpesa/b2b/v3/paymentrequest`)
 
-**Safaricom Spec:** Business-to-business payments between organizations.
-
-**Endpoint:** `POST /mpesa/b2b/v3/paymentrequest`
+**Confirmed Endpoint:** `POST /mpesa/b2b/v3/paymentrequest`
 
 **Request:**
 ```json
@@ -176,9 +111,7 @@ const (
 
 ### 3.2 Tax Remittance (`/mpesa/b2b/v1/remittax`)
 
-**Safaricom Spec:** Tax payments to KRA via M-Pesa.
-
-**Endpoint:** `POST /mpesa/b2b/v1/remittax`
+**Confirmed Endpoint:** `POST /mpesa/b2b/v1/remittax`
 
 **Request:**
 ```json
@@ -291,6 +224,21 @@ Safaricom may have a separate `/mpesa/buygoods/v1/...` endpoint for:
 ---
 
 ## 4. Implementation Plan
+
+### Phase 1: Foundation (Week 1)
+
+| Task | Owner | Deliverable |
+|------|-------|-------------|
+| Add new enum constants (`CommandBusinessPayBill`, `CommandBusinessBuyGoods`, `CommandTaxRemittance`) | Go | `enums.go` |
+| Add Python enums | Python | `enums.py` |
+| Add TypeScript enums | TypeScript | `enums.ts` |
+| Add contract fixtures for each new API | All | `contract/fixtures/` |
+| Update Go `CommandID` type to include new values | Go | `enums.go` |
+| Update Python/TS enums | Python/TS | `enums.py`, `enums.ts` |
+
+**Deliverable:** All enums + contract fixtures committed, CI green
+
+---
 
 ### Phase 1: Foundation (Week 1)
 
@@ -422,6 +370,75 @@ jobs:
       - name: Check PII redaction
         run: |
           # Verify PII fields redacted in logSafe/GoString/LogSafe
+```
+
+### Pre-Merge Security Checklist (Manual)
+
+- [ ] All secrets redacted in all 3 engines
+- [ ] All PII redacted in all structured logs
+- [ ] No `json.Marshal(req)` in logging paths
+- [ ] All callback/result URLs redacted
+- [ ] All PII (names, phones, PINs) redacted in logs
+- [ ] Contract fixtures added for new API
+- [ ] Conformance tests pass in all 3 engines
+- [ ] CHANGES.md updated
+- [ ] Documentation updated
+
+---
+
+## 6. Timeline & Milestones
+
+| Week | Focus | Deliverable |
+|------|-------|-------------|
+| 1 | Foundation | Enums, contract fixtures, CI green |
+| 2 | B2B Express Checkout | All 3 engines + conformance |
+| 3 | Tax Remittance | All 3 engines + conformance |
+| 4 | Bill Manager | All 4 endpoints, all 3 engines |
+| 5 | Buy Goods Manager (if API exists) | Research + implement or document |
+| 6 | Security audit, docs, CHANGES.md, release prep | v0.6.0 release |
+
+**Total: 6 weeks (1 engineer)**
+
+---
+
+## 5. Security Review Checklist (Per API)
+
+For **EACH** new API, before merge:
+
+| Check | Implementation |
+|-------|----------------|
+| Credential redaction | `GoString`/`Format`/`LogSafe`/`logSafe`/`toString`/`toJSON`/`logSafe` all redact secrets |
+| PII handling | Names, phones, PINs redacted in `LogSafe`/`logSafe`/`LogSafe` |
+| URL redaction | `callBackURL`, `ResultURL`, `QueueTimeOutURL`, `ValidationURL`, `ConfirmationURL` redacted |
+| Input validation | Amount > 0, enum validation, URL format, phone format, amount limits |
+| Limits enforcement | Use existing `limits` framework (`checkPerTransaction`, `_accrue_daily`) |
+| Contract fixtures | Add to `contract/fixtures/<api>/` with valid/invalid cases |
+| Conformance tests | All three engines pass shared fixture tests |
+| Documentation | Update `docs/apis/<api>.md` with request/response examples |
+| CHANGES.md | Add entry under Unreleased |
+
+---
+
+## 6. Security Review Gates
+
+### Per-PR Gate (Automated in CI)
+```yaml
+# .github/workflows/security-review.yml
+jobs:
+  security-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for new request types
+        run: |
+          # Scan for new request structs without LogSafe/GoString/logSafe
+          # grep -r "type.*Request struct" go/ python/ typescript/src/ | grep -v test
+      - name: Check credential redaction
+        run: |
+          # Verify all request types redact SecurityCredential, Passkey, Passkey
+      - name: Check PII redaction
+        run: |
+          # Verify PII fields redacted in logSafe/GoString/LogSafe
       - name: Check URL redaction
         run: |
           # Verify callback/result URLs redacted
@@ -522,10 +539,10 @@ If any API causes issues:
 
 1. **Create branch:** `feat/missing-apis-implementation` ✅
 2. **Week 1:** Add enums, contract fixtures, CI green
-3. **Week 2:** B2B Express Checkout
+2. **Week 2:** B2B Express Checkout
 3. **Week 3:** Tax Remittance
-4. **Week 4-5:** Bill Manager
+5. **Week 4-5:** Bill Manager
 5. **Week 5-6:** Buy Goods Manager (research first)
-6. **Week 6:** Security audit, docs, v0.6.0 release
+5. **Week 6:** Security audit, docs, v0.6.0 release
 
 **Note:** All fixes from v0.1.0→v0.5.1 have been codified as mandatory checklists above. No previous mistakes will be repeated.
