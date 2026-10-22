@@ -11,7 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mpesa.auth import TokenManager
-from mpesa.exceptions import MpesaError
+from mpesa.exceptions import MpesaError, RefreshRateLimitedError
 
 T0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -468,3 +468,212 @@ def test_adopted_token_identity_differs_from_pre_refresh():
     assert post != pre
     adopted = tm.refresh_after_invalid_token(tm.generation - 1)
     assert adopted == post and adopted != pre
+
+
+# ---- D10: the OAuth round-trip must not hold the token lock ---------------
+#
+# The refresh used to run the whole OAuth GET inside self._lock, so every
+# thread that needed a token (and every other user of that mutex) was
+# frozen for up to the full 30s OAuth timeout -- roughly once an hour, and
+# for the whole process if the OAuth endpoint hung. Go elects a leader and
+# refreshes OUTSIDE the mutex (go/client.go leadRefresh); the tests below
+# pin the same contract for Python.
+
+
+class BlockingSession(FakeSession):
+    """FakeSession whose OAuth GET can be held open on demand.
+
+    The hold is what makes the D10 defect OBSERVABLE: the OAuth leg stays
+    in flight while the test inspects the manager's lock, so a
+    lock-held-across-the-network implementation is caught in the act
+    rather than by timing.
+    """
+
+    def __init__(self, responses):
+        super().__init__(responses)
+        self.hold = False
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def get(self, url, **kwargs):
+        self.calls.append({"url": url, **kwargs})
+        if self.hold:
+            self.entered.set()
+            # Bounded so a failed assertion can never wedge the suite.
+            self.release.wait(timeout=10.0)
+        return self.responses.pop(0)
+
+
+class CountingCondition(threading.Condition):
+    """Condition that counts how many callers parked on it.
+
+    WHY: a test that wants to prove "one OAuth request, every waiter
+    woken with the same error" must KNOW that the waiters are parked
+    before the leader fails -- otherwise a caller that arrives late would
+    legitimately become the next leader and the assertion would be a
+    race, not a test.
+    """
+
+    def __init__(self, lock):
+        super().__init__(lock)
+        self.expected = 0
+        self.parked = threading.Event()
+        self.count = 0
+
+    def wait(self, timeout=None):
+        self.count += 1
+        if self.count >= self.expected:
+            self.parked.set()
+        return super().wait(timeout)
+
+
+def test_d10_oauth_leg_runs_without_the_token_lock_held():
+    """D10: the OAuth round-trip must NOT hold the token lock.
+
+    Before the fix the leader held self._lock across the whole OAuth
+    GET, so every other thread that needed the lock -- a cached-token
+    read, a generation read, the next refresh -- was frozen for up to
+    the full 30s OAuth timeout.
+    """
+    clock = Clock()
+    session = BlockingSession([ok(), ok()])
+    tm = TokenManager(session, "https://sandbox.safaricom.co.ke", "k", "s",
+                      now=clock)
+    tm.get_token()                     # prime the cache (one OAuth call)
+    clock.advance(3001)                # the cached token is stale now
+    session.hold = True
+
+    workers = 8
+    barrier = threading.Barrier(workers)
+    tokens: list[str] = []
+
+    def worker():
+        barrier.wait()
+        tokens.append(tm.get_token())
+
+    threads = [threading.Thread(target=worker) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    assert session.entered.wait(timeout=5.0), "the OAuth leg never started"
+
+    # THE PROBE: the token lock must be free while the OAuth leg is in
+    # flight. With the lock held across the network call this acquire
+    # times out -- which is the defect, observed directly.
+    acquired = tm._lock.acquire(timeout=0.5)
+    if acquired:
+        tm._lock.release()
+    assert acquired, "the OAuth round-trip held the token lock (D10)"
+
+    session.release.set()
+    for t in threads:
+        t.join(timeout=10.0)
+    assert not [t for t in threads if t.is_alive()], "a caller hung"
+    assert len(session.calls) == 2      # the prime + exactly ONE refresh
+    assert len(tokens) == workers
+    assert len(set(tokens)) == 1        # every caller got the SAME token
+
+
+def test_d10_failed_refresh_wakes_every_waiter_with_the_same_error():
+    """D10: a failed refresh wakes every waiter with the SAME error.
+
+    Before the fix each waiter woke up, found the token still stale and
+    ran its OWN OAuth round-trip: a failure stampede (one request and
+    one error object per waiter). Now the leader publishes its error and
+    the waiters re-raise it.
+    """
+    workers = 6
+    session = BlockingSession([
+        FakeResponse(status_code=500, body=b"boom") for _ in range(workers)])
+    tm = TokenManager(session, "https://sandbox.safaricom.co.ke", "k", "s")
+    cond = getattr(tm, "_cond", None)
+    assert cond is not None, (
+        "D10: the manager exposes no refresh condition -- the OAuth leg "
+        "still runs under the token mutex, so waiters cannot park (nor be "
+        "woken with the leader's error)")
+    counting = CountingCondition(tm._lock)
+    counting.expected = workers - 1
+    tm._cond = counting
+
+    session.hold = True
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(workers)
+
+    def worker():
+        barrier.wait()
+        try:
+            tm.get_token()
+        except Exception as exc:           # the point of the test
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    assert session.entered.wait(timeout=5.0), "the OAuth leg never started"
+    # Every caller but the leader is parked on the condition.
+    assert counting.parked.wait(timeout=5.0), "the waiters never parked"
+    session.release.set()                 # the leader now fails
+
+    for t in threads:
+        t.join(timeout=10.0)
+    assert not [t for t in threads if t.is_alive()], "a waiter hung"
+    assert len(errors) == workers
+    assert len(session.calls) == 1, "the waiters each ran their own request"
+    first = errors[0]
+    assert all(exc is first for exc in errors), "the waiters saw different errors"
+    assert isinstance(first, MpesaError)
+
+
+def test_d10_rate_limiter_still_trips_after_three_failures():
+    """D10: the rate-limit gate is unchanged by the leader/waiter split --
+    three consecutive failures refuse the fourth NON-forced refresh, and
+    the refused attempt never reaches the wire."""
+    session = FakeSession([FakeResponse(status_code=500, body=b"x")
+                           for _ in range(4)])
+    tm = TokenManager(session, "https://sandbox.safaricom.co.ke", "k", "s")
+    for _ in range(3):
+        with pytest.raises(MpesaError):
+            tm.get_token()
+    with pytest.raises(RefreshRateLimitedError):
+        tm.get_token()
+    assert len(session.calls) == 3
+
+
+def test_d10_forced_refresh_bypasses_the_rate_limit_gate():
+    """D10: a 401-triggered (forced) refresh bypasses the gate -- but it
+    still advances the attempt clock, so the next non-forced refresh
+    stays refused."""
+    session = FakeSession([FakeResponse(status_code=500, body=b"x")
+                           for _ in range(5)])
+    tm = TokenManager(session, "https://sandbox.safaricom.co.ke", "k", "s")
+    for _ in range(3):
+        with pytest.raises(MpesaError):
+            tm.get_token()
+    with pytest.raises(RefreshRateLimitedError):
+        tm.get_token()                    # the gate refuses the 4th attempt
+    # The FORCED refresh bypasses the gate and reaches the wire.
+    with pytest.raises(MpesaError):
+        tm.refresh_after_invalid_token(tm.generation)
+    assert len(session.calls) == 4
+    # The forced failure still advanced the attempt clock: the gate keeps
+    # refusing non-forced refreshes.
+    with pytest.raises(RefreshRateLimitedError):
+        tm.get_token()
+    assert len(session.calls) == 4
+
+
+def test_d10_invalid_token_path_yields_a_fresh_token():
+    """D10: the 401.003.01 path still produces a NEW token and bumps the
+    generation exactly once."""
+    session = FakeSession([
+        FakeResponse(payload={"access_token": "tok-first",
+                              "expires_in": "3599"}),
+        FakeResponse(payload={"access_token": "tok-second",
+                              "expires_in": "3599"}),
+    ])
+    tm = TokenManager(session, "https://sandbox.safaricom.co.ke", "k", "s")
+    first, gen = tm.get_token_with_gen()
+    assert first == "tok-first" and gen == 1
+    fresh = tm.refresh_after_invalid_token(gen)
+    assert fresh == "tok-second"
+    assert tm.generation == gen + 1
+    assert len(session.calls) == 2
