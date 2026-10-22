@@ -51,6 +51,7 @@ from mpesa.requests_sync import (
     C2BSimulateRequest,
     QRCodeRequest,
     STKPushRequest,
+    _service_limits,
 )
 
 PASSKEY = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919"
@@ -246,8 +247,8 @@ def test_config_validates_limits_and_track_daily_types():
     (lambda a: stk(amount=a), "stk", 250_000),
     (lambda a: c2b_simulate(amount=a), "c2b", 250_000),
     (lambda a: b2c(amount=a), "b2c", 250_000),
-    (lambda a: reversal(amount=a), "default", 250_000),
-    (lambda a: qr(amount=a), "default", 250_000),
+    (lambda a: reversal(amount=a), "reversal", 250_000),
+    (lambda a: qr(amount=a), "qr", 250_000),
 ])
 def test_default_ceiling_boundary_is_exact(build, service, ceiling):
     build(ceiling).validate()                          # boundary: accepted
@@ -300,13 +301,17 @@ def test_limits_raise_and_lower_a_ceiling():
 def test_service_falls_back_to_default_for_unknown_service_names():
     """A spelled service that does not exist inherits ``default``."""
     odd = TransactionLimits(default=ServiceLimits(1_000, 2_000))
-    # Reversal and QR are served by ``default``.
+    # Reversal and QR have their OWN buckets, so ``default`` no longer
+    # serves them: they stay on their inherited 250k baseline.
     reversal(amount=1_000).validate(odd)
-    with pytest.raises(ValueError, match="default service"):
-        reversal(amount=1_001).validate(odd)
+    with pytest.raises(ValueError, match="reversal service"):
+        reversal(amount=250_001).validate(odd)
     qr(amount=1_000).validate(odd)
-    with pytest.raises(ValueError):
-        qr(amount=1_001).validate(odd)
+    with pytest.raises(ValueError, match="qr service"):
+        qr(amount=250_001).validate(odd)
+    # An unknown service name still inherits ``default``.
+    assert _service_limits("nonesuch", odd) == odd.default
+    assert _service_limits("nonesuch", odd).max_per_transaction == 1_000
 
 
 def test_each_service_field_is_resolved_independently():
@@ -317,10 +322,36 @@ def test_each_service_field_is_resolved_independently():
     stk(amount=249_999).validate(only_default)
     with pytest.raises(ValueError, match="stk service"):
         stk(amount=250_001).validate(only_default)
-    # QR has no dedicated field: it reads ``default`` and is capped at 1k.
+    # QR has its own field: ``default``'s 1k never reaches it, so QR
+    # stays on its inherited 250k baseline.
     qr(amount=1_000).validate(only_default)
-    with pytest.raises(ValueError, match="per-transaction ceiling"):
-        qr(amount=1_001).validate(only_default)
+    with pytest.raises(ValueError, match="qr service"):
+        qr(amount=250_001).validate(only_default)
+
+
+def test_reversal_and_qr_spend_their_own_per_transaction_bucket():
+    """A raised ``reversal``/``qr`` tier must reach the PER-TRANSACTION check.
+
+    The DAILY path already spent the dedicated buckets (``"reversal"`` and
+    ``"qr"``), so a service resolving to TWO different ceilings inside one
+    engine meant a merchant who raised that tier to an approved Safaricom
+    level was silently ignored on the per-transaction check.
+    """
+    dedicated = TransactionLimits(
+        reversal=ServiceLimits(max_per_transaction=700_000),
+        qr=ServiceLimits(max_per_transaction=700_000),
+    )
+    reversal(amount=300_000).validate(dedicated)
+    qr(amount=300_000).validate(dedicated)
+
+    # A ``default``-only override must NOT reach these two services: they
+    # stay on their own (250k) baseline and the amount is still rejected.
+    only_default = TransactionLimits(
+        default=ServiceLimits(max_per_transaction=700_000))
+    with pytest.raises(ValueError, match="reversal service"):
+        reversal(amount=300_000).validate(only_default)
+    with pytest.raises(ValueError, match="qr service"):
+        qr(amount=300_000).validate(only_default)
 
 
 def test_explicit_zero_disables_only_that_ceiling():
@@ -328,6 +359,7 @@ def test_explicit_zero_disables_only_that_ceiling():
     unlimited = TransactionLimits(
         stk=ServiceLimits(max_per_transaction=0),        # explicit unlimited
         default=ServiceLimits(max_per_transaction=-5),   # non-positive too
+        reversal=ServiceLimits(max_per_transaction=-5),  # own bucket, same
     )
     # Past the old hardcoded ceiling, but under the magnitude guard.
     stk(amount=500_000_000).validate(unlimited)
@@ -742,7 +774,8 @@ def test_sync_and_async_agree_on_amount_bounds():
 def test_sync_and_async_agree_under_a_shared_override():
     """Both files resolve the same tier through the same helper."""
     shared = TransactionLimits(stk=ServiceLimits(700_000),
-                              default=ServiceLimits(700_000))
+                               reversal=ServiceLimits(700_000))
+
     for amount in (700_000, 700_001):
         sync_ok = async_ok = True
         try:

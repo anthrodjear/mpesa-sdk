@@ -687,9 +687,12 @@ class QRCodeRequest:
         _require("MerchantName", self.merchant_name)
         _require("RefNo", self.ref_no)
         _amount_int("QR Amount", self.amount)
-        # QR has no dedicated tier entry: it inherits ``default`` (same as
-        # Reversal and TransactionStatus) per mpesa.limits.
-        _check_transaction_limit("QR Amount", "default", self.amount, limits)
+        # QR spends its OWN tier bucket (mpesa.limits) -- the same bucket
+        # the daily path accrues into. Resolving it to ``default`` instead
+        # made one service answer to two ceilings inside one engine, so a
+        # raised QR tier was honoured on one of them and ignored on the
+        # other.
+        _check_transaction_limit("QR Amount", "qr", self.amount, limits)
         try:
             self.trx_code = QRTrxCode(_enum_value(self.trx_code))
         except ValueError:
