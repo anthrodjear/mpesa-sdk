@@ -125,3 +125,7 @@ A static capability analysis using [Google Capslock](https://github.com/google/c
 | REFLECT | 48 | JSON + FlexString/FlexInt64 coercion |
 
 **No capabilities indicate vulnerabilities or over-privilege.** The SDK implements defense-in-depth at every layer.
+
+---
+
+*Audited by: anthrodjear*
