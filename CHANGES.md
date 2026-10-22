@@ -1,3 +1,11 @@
+# Changes — 0.5.1 (2026-10-22)
+
+- **Go 1.26.10** — updated toolchain (fixes CVE GO-2026-6809 in crypto/x509); CI updated.
+- **npm audit vulnerabilities fixed** — 18 packages updated, 0 vulnerabilities remaining.
+- **TypeScript example fixed** — uses `TransactionType.PayBillOnline` (replaces deprecated `BillPayGoods`).
+- **Staticcheck fix** — `fmt.Sprint` → `fmt.Sprintf` in Go test to satisfy QF1010.
+- **Go toolchain** — updated to 1.26.10 in CI (was 1.26.9).
+
 # Changes — 0.5.0 (2026-10-22)
 
 - **Reversal and Dynamic QR get their own limit buckets** (`reversal`, `qr`) instead of sharing `default` — for BOTH the per-transaction ceiling and the per-day bucket. Only affects users who had overridden `default` limits — their Reversal/QR now inherit the Safaricom defaults unless explicitly configured.
