@@ -1614,6 +1614,73 @@ func TestRefreshWaitersHonorContextCancellation(t *testing.T) {
 	})
 }
 
+// Close() must WIN against a token refresh that was already in flight.
+//
+// The zeroing guarantee in SECURITY.md is absolute: a closed client holds
+// no bearer. A refresh that started BEFORE Close() and finishes after it
+// used to commit a fresh token into the closed client. No token was ever
+// SERVED (every entry point re-checks c.closed), so this was never a
+// credential-use defect — but the credential still sat in the closed
+// client's memory, which is exactly what Close() exists to prevent.
+func TestCloseWinsAgainstInFlightTokenRefresh(t *testing.T) {
+	// The server HOLDS the OAuth response until the test releases it, so
+	// the refresh is provably in flight when Close() runs — a channel
+	// handshake, not a sleep whose length has to be guessed.
+	oauthInFlight := make(chan struct{})
+	releaseOAuth := make(chan struct{})
+	var inFlightOnce, releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseOAuth) }) }
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/v1/generate", func(w http.ResponseWriter, r *http.Request) {
+		inFlightOnce.Do(func() { close(oauthInFlight) })
+		<-releaseOAuth
+		writeJSON(t, w, http.StatusOK, map[string]any{"access_token": "tok-after-close", "expires_in": "3599"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	// Unblock the handler whatever the outcome: defers run LIFO, so
+	// release() fires before srv.Close() waits on the outstanding request.
+	defer release()
+
+	c := testClient(t, srv.URL)
+
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, err := c.Token(context.Background())
+		refreshDone <- err
+	}()
+
+	select {
+	case <-oauthInFlight:
+	case <-time.After(10 * time.Second):
+		t.Fatal("oauth leg never reached the server")
+	}
+
+	// The refresh is now provably in flight: the server holds the request
+	// and has not answered it yet.
+	c.Close()
+	release()
+
+	select {
+	case err := <-refreshDone:
+		if !errors.Is(err, ErrClientClosed) {
+			t.Fatalf("Token() err = %v, want ErrClientClosed", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("in-flight refresh never finished")
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.tokenBytes) != 0 {
+		t.Fatalf("token bytes = %q, want empty: Close() must survive an in-flight refresh", c.tokenBytes)
+	}
+	if !c.tokenExpiry.IsZero() {
+		t.Fatalf("token expiry = %v, want zero: Close() must survive an in-flight refresh", c.tokenExpiry)
+	}
+}
+
 // TestRefreshCadenceOverflowGuard verifies that refreshCadence does not
 // overflow when expires_in is near math.MaxInt64, and that the result is
 // always within [minCadence, maxCadence].

@@ -417,6 +417,11 @@ func (c *Client) zeroTokenLocked() {
 
 // Close zeros the cached token and marks the client as closed. After Close
 // the client must not be reused.
+//
+// Close WINS over a refresh that was already in flight: the OAuth round-trip
+// runs lock-free, so it can start before Close() and land after it. The
+// commit phase refuses to write into a closed client, so a closed client
+// holds no bearer at all.
 func (c *Client) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -667,6 +672,18 @@ func (c *Client) refresh(ctx context.Context, force bool) (string, error) {
 	// also observe the token and expiry written before it.
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Close() wins over a refresh that was already in flight. The round-trip
+	// runs lock-free, so a refresh can START before Close() and land after
+	// it; committing here would resurrect a bearer inside a closed client
+	// and break the absolute zeroing guarantee Close() advertises. No token
+	// would be SERVED (every entry point re-checks c.closed), so this is
+	// memory hygiene, not credential use — but a closed client must hold no
+	// credential at all, so the commit is refused and the cache re-zeroed.
+	if c.closed {
+		c.zeroTokenLocked()
+		c.tokenExpiry = time.Time{}
+		return "", ErrClientClosed
+	}
 	now = c.cfg.Now()
 	c.setTokenLocked(tok.AccessToken)
 	c.tokenExpiry = now.Add(refreshCadence(tok.ExpiresIn))
