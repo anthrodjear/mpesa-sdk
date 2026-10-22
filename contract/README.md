@@ -15,6 +15,9 @@ never fired) and never grew the 2**53 balance gate Go and TypeScript
 already had. A fixture the three engines read cannot drift the same way
 twice — the second engine to disagree fails the build.
 
+Engine behaviour the corpus CANNOT express is tracked separately in
+[`known-divergences.md`](known-divergences.md).
+
 ## Schema
 
 ```json
@@ -30,17 +33,24 @@ twice — the second engine to disagree fails the build.
 }
 ```
 
+### Top-level fields
+
 | Field | Meaning |
 |---|---|
 | `id` | Unique, kebab-case. Used as the sub-test name in all three engines. |
 | `kind` | `stk_callback` \| `balance_segment` \| `error_envelope`. |
+| `statusCode` | For `error_envelope`: the HTTP status the harness FEEDS the engine. An INPUT, not an expectation — the harness never asserts on it, because asserting that the engine echoed back the status it was given can never fail. |
 | `body` | The raw wire body — see "The raw-body rule" below. For `balance_segment` it is `{"text": "<blob>"}`; for `error_envelope` it is the raw response body. |
+
+### Expectation fields (`expect`)
+
+| Field | Meaning |
+|---|---|
 | `expect.class` | `success` \| `failure` \| `indeterminate` (wire-level names, identical in all three engines). |
 | `expect.resultCode` | Normalised result code string. |
 | `expect.metadata` | Expected metadata map. Numbers compare numerically; everything else compares as a trimmed string. |
 | `expect.errorCode` | For `error_envelope`: the expected `errorCode`. `null` means "absent". |
 | `expect.errorMessage` | For `error_envelope`: the expected `errorMessage`, or `null`. |
-| `expect.statusCode` | For `error_envelope`: the HTTP status the harness feeds the engine. |
 | `expect.segments` | For `balance_segment`: expected number of parsed rows. |
 | `expect.skipped` | For `balance_segment`: expected number of skipped rows. |
 
@@ -88,8 +98,23 @@ this corpus.
 The VALUE comparison is type-tolerant on purpose. Safaricom encodes the same
 metadata differently from one capture to the next (`"Amount": 100` in one,
 `"Amount": "100"` in the next), and a harness that compared the JSON types
-would fail a correct engine. So: when BOTH sides parse as numbers they are
+would fail a correct engine. So: when BOTH sides are numeric they are
 compared NUMERICALLY; otherwise they are compared as trimmed strings.
+
+A value counts as numeric when it is a JSON number, or when it is a STRING
+whose trimmed text matches the plain-decimal grammar:
+
+```
+^-?\d+(\.\d+)?$
+```
+
+— optional sign, digits, optional fractional part. The grammar is
+deliberately plain-decimal-only: Go's `strconv.ParseFloat` also accepts
+`"Inf"`, `"NaN"` and `"0x1p-2"`, Python's `float()` also accepts `"inf"` and
+`"nan"`, and TypeScript's `Number()` also accepts `"0x10"` and `"1e3"`.
+Three permissive parsers would classify the same metadata text three
+different ways, so all three harnesses apply THIS grammar instead, and
+everything it rejects compares as a string.
 
 Duplicate metadata names resolve FIRST-WINS in all three engines (Go
 `MetadataMap`, Python `metadata()`, TypeScript `MetadataMap`), so a
@@ -114,7 +139,8 @@ reintroduce; a defect fixed WITH a fixture cannot be.
   `MerchantRequestID`, `CheckoutRequestID`, `ResultCode`, `ResultDesc` —
   because the Python and TypeScript parsers reject a callback that is
   missing any of them (Go tolerates an absent `ResultDesc`, so a body
-  without one would make the corpus engine-dependent).
+  without one would make the corpus engine-dependent — see
+  [`known-divergences.md`](known-divergences.md)).
 - `balance_segment` bodies are `{"text": "<blob>"}`; the blob is the
   `|`-separated row text the Account Balance result carries, with rows
   joined by `&`.

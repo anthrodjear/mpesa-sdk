@@ -11,8 +11,9 @@ not fix them:
 
 * ``error-envelope-numeric-code`` (**D1**) -- ``MpesaError.from_response``
   keeps only the envelope members that arrive as ``str``, so a numeric
-  ``errorCode`` erases the WHOLE envelope: the error code the 401 retry
-  probe in ``client.py`` keys on never arrives.
+  ``errorCode`` is DROPPED (the envelope's other members -- the
+  ``requestId``, the ``errorMessage`` -- still survive): the error code the
+  401 retry probe in ``client.py`` keys on never arrives.
 * ``balance-over-2p53`` (**D3**) -- ``parse_balance_segments`` has no
   2**53 gate, so a balance that cannot survive a float64 round-trip is
   returned with a silently rounded amount instead of being skipped and
@@ -26,6 +27,8 @@ these cases green by changing the ENGINE, never by weakening this file.
 from __future__ import annotations
 
 import json
+import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +41,16 @@ from mpesa.results import parse_balance_segments
 # The package directory is <repo>/python, so two parents up is the repo root
 # where the shared corpus lives.
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "contract" / "fixtures"
+
+#: Plain-decimal grammar: optional sign, digits, optional fractional part.
+#:
+#: Deliberately plain-decimal-only. ``float()`` also accepts ``"inf"`` and
+#: ``"nan"``, Go's ``strconv.ParseFloat`` also accepts ``"Inf"``, ``"NaN"``
+#: and ``"0x1p-2"``, and TypeScript's ``Number()`` also accepts ``"0x10"``
+#: and ``"1e3"`` -- three permissive parsers would classify the same
+#: metadata text three different ways. One grammar, applied identically in
+#: all three harnesses, removes that class of drift by construction.
+_NUMERIC_RE = re.compile(r"-?\d+(\.\d+)?")
 
 
 def _cases() -> list[dict[str, Any]]:
@@ -78,18 +91,28 @@ def _content_type(body: Any) -> str:
 def _number(value: Any) -> float | None:
     """A metadata value as a comparable number, or None when it is not one.
 
-    Booleans are NOT numbers here: ``True`` must never compare equal to
-    1, and a boolean metadata value is compared as a string instead.
+    A JSON number is numeric. A STRING is numeric only when its trimmed
+    text matches the plain-decimal grammar (``_NUMERIC_RE``). Everything
+    else compares as a string.
+
+    Booleans are NOT numbers here: ``True`` must never compare equal to 1,
+    and a boolean metadata value is compared as a string instead.
     """
     if isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
+    if isinstance(value, int):
         try:
-            return float(value.strip())
-        except ValueError:
+            return float(value)
+        except OverflowError:  # a JSON integer beyond the float64 range
             return None
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        text = value.strip()
+        if not _NUMERIC_RE.fullmatch(text):
+            return None
+        parsed = float(text)
+        return parsed if math.isfinite(parsed) else None
     return None
 
 
@@ -123,10 +146,14 @@ def test_contract_fixture(case: dict[str, Any]) -> None:
         assert skipped == expect["skipped"]
 
     elif kind == "error_envelope":
+        # statusCode is an INPUT -- the HTTP status the harness feeds the
+        # engine -- not an expectation, so it is never asserted on.
+        status = case.get("statusCode")
+        if status is None:
+            pytest.fail(f"fixture {case['id']!r} has no top-level statusCode")
         err = MpesaError.from_response(
-            expect["statusCode"], _raw_body(case["body"]),
+            status, _raw_body(case["body"]),
             _content_type(case["body"]))
-        assert err.status_code == expect["statusCode"]
         if expect.get("errorCode") is None:
             assert err.error_code is None
         else:

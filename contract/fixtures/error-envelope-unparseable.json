@@ -1,9 +1,9 @@
 {
   "id": "error-envelope-unparseable",
   "kind": "error_envelope",
+  "statusCode": 502,
   "body": "<html><body>WAF block page mentioning 254712345678</body></html>",
   "expect": {
-    "statusCode": 502,
     "errorCode": null,
     "errorMessage": "unexpected error response from gateway"
   }

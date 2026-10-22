@@ -37,6 +37,12 @@ const FIXTURE_DIR = join(HERE, "..", "..", "contract", "fixtures");
 interface ContractCase {
   id: string;
   kind: string;
+  /**
+   * An INPUT -- the HTTP status the harness feeds the engine -- not an
+   * expectation. Asserting that the engine echoed back the status it was
+   * given can never fail, so it is not asserted on.
+   */
+  statusCode?: number;
   body: unknown;
   expect: {
     class?: string;
@@ -44,7 +50,6 @@ interface ContractCase {
     metadata?: Record<string, unknown>;
     errorCode?: string | null;
     errorMessage?: string | null;
-    statusCode?: number;
     segments?: number;
     skipped?: number;
   };
@@ -70,7 +75,39 @@ function rawBody(body: unknown): string {
 }
 
 /**
+ * The content type the transport would have reported for the raw body.
+ *
+ * Derived from the raw text exactly as the Go harness derives it: a body
+ * that opens with a JSON object or array is `application/json`, anything
+ * else (a WAF page, an HTML error page) is `text/html`. The Python harness
+ * derives the same two answers from the fixture body's JSON type. The three
+ * engines must receive the SAME inputs for the same fixture, or the
+ * diagnostic text they produce cannot be compared.
+ */
+function contentType(raw: string): string {
+  const text = raw.trimStart();
+  return text.startsWith("{") || text.startsWith("[")
+    ? "application/json"
+    : "text/html";
+}
+
+/**
+ * Plain-decimal grammar: optional sign, digits, optional fractional part.
+ *
+ * Deliberately plain-decimal-only. `Number()` also accepts `"0x10"`, `"1e3"`,
+ * `"Infinity"` and `""`, Python's `float()` also accepts `"inf"` and
+ * `"nan"`, and Go's `strconv.ParseFloat` also accepts `"Inf"`, `"NaN"` and
+ * `"0x1p-2"` — three permissive parsers would classify the same metadata
+ * text three different ways. One grammar, applied identically in all three
+ * harnesses, removes that class of drift by construction.
+ */
+const NUMERIC_RE = /^-?\d+(\.\d+)?$/;
+
+/**
  * A metadata value as a comparable number, or null when it is not one.
+ *
+ * A JSON number is numeric. A STRING is numeric only when its trimmed text
+ * matches the plain-decimal grammar. Everything else compares as a string.
  *
  * Booleans are NOT numbers here: `true` must never compare equal to 1, and
  * a boolean metadata value is compared as a string instead.
@@ -79,8 +116,10 @@ function asNumber(value: unknown): number | null {
   if (typeof value === "boolean") return null;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (typeof value === "string") {
-    const parsed = Number(value.trim());
-    return value.trim() !== "" && Number.isFinite(parsed) ? parsed : null;
+    const text = value.trim();
+    if (!NUMERIC_RE.test(text)) return null;
+    const parsed = Number(text);
+    return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
 }
@@ -119,8 +158,14 @@ describe("contract fixtures", () => {
           break;
         }
         case "error_envelope": {
-          const err = MpesaError.fromResponse(c.expect.statusCode ?? 400, rawBody(c.body));
-          expect(err.statusCode).toBe(c.expect.statusCode);
+          // statusCode is an INPUT -- the HTTP status the harness feeds the
+          // engine -- not an expectation, so it is never asserted on.
+          const status = c.statusCode;
+          if (status === undefined) {
+            throw new Error(`fixture ${c.id} has no top-level statusCode`);
+          }
+          const raw = rawBody(c.body);
+          const err = MpesaError.fromResponse(status, raw, contentType(raw));
           expect(err.errorCode).toBe(c.expect.errorCode ?? null);
           expect(err.errorMessage).toBe(c.expect.errorMessage ?? null);
           break;

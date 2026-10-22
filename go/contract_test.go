@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,16 +29,19 @@ import (
 
 // contractCase is one shared wire fixture.
 type contractCase struct {
-	ID     string          `json:"id"`
-	Kind   string          `json:"kind"`
-	Body   json.RawMessage `json:"body"`
-	Expect struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+	// StatusCode is an INPUT -- the HTTP status the harness feeds the
+	// engine -- not an expectation. Asserting that the engine echoed back
+	// the status it was given can never fail, so it is not an assertion.
+	StatusCode int             `json:"statusCode"`
+	Body       json.RawMessage `json:"body"`
+	Expect     struct {
 		Class        string         `json:"class"`
 		ResultCode   string         `json:"resultCode"`
 		Metadata     map[string]any `json:"metadata"`
 		ErrorCode    *string        `json:"errorCode"`
 		ErrorMessage *string        `json:"errorMessage"`
-		StatusCode   int            `json:"statusCode"`
 		Segments     int            `json:"segments"`
 		Skipped      int            `json:"skipped"`
 	} `json:"expect"`
@@ -112,27 +117,46 @@ func contractContentType(raw []byte) string {
 	return "text/html"
 }
 
-// contractNumeric renders a metadata value as a comparable number, so the
-// numeric and the string encoding of the same money compare equal: the
-// gateway sends Amount as the number 100 in one capture and as "100" in
-// another, and both mean the same value. Values that are not numeric
-// (receipt numbers, dates, flags) report false and are compared as strings.
+// contractNumericRe is the plain-decimal grammar a metadata STRING must
+// match to count as numeric: optional sign, digits, optional fractional
+// part.
+//
+// Deliberately plain-decimal-only. strconv.ParseFloat also accepts "Inf",
+// "NaN" and "0x1p-2", Python's float() also accepts "inf" and "nan", and
+// TypeScript's Number() also accepts "0x10" and "1e3" -- three permissive
+// parsers would classify the same metadata text three different ways. One
+// grammar, applied identically in all three harnesses, removes that class
+// of drift by construction.
+var contractNumericRe = regexp.MustCompile(`^-?\d+(\.\d+)?$`)
+
+// contractNumeric reports whether a metadata value is numeric and, if so,
+// its numeric value.
+//
+// A JSON number is numeric. A STRING is numeric only when its trimmed text
+// matches the plain-decimal grammar above. Everything else (booleans, null,
+// objects, arrays, and any text the grammar rejects) compares as a string.
 func contractNumeric(v any) (float64, bool) {
 	switch t := v.(type) {
 	case int64:
 		return float64(t), true
-	case int:
-		return float64(t), true
 	case float64:
+		if math.IsNaN(t) || math.IsInf(t, 0) {
+			return 0, false
+		}
 		return t, true
-	case float32:
-		return float64(t), true
-	case json.Number:
-		f, err := t.Float64()
-		return f, err == nil
 	case string:
-		f, err := strconv.ParseFloat(strings.TrimSpace(t), 64)
-		return f, err == nil
+		text := strings.TrimSpace(t)
+		if !contractNumericRe.MatchString(text) {
+			return 0, false
+		}
+		f, err := strconv.ParseFloat(text, 64)
+		if err != nil || math.IsInf(f, 0) {
+			// A plain decimal beyond the float64 range is not a number
+			// this harness can compare numerically; Python and TypeScript
+			// treat it the same way.
+			return 0, false
+		}
+		return f, true
 	}
 	return 0, false
 }
@@ -195,14 +219,17 @@ func TestContractFixtures(t *testing.T) {
 				}
 			case "error_envelope":
 				raw := contractRawBody(t, c.Body)
-				status := c.Expect.StatusCode
+				status := c.StatusCode
+				if status == 0 {
+					// statusCode is an input, not an expectation, so a
+					// fixture that omits it would feed the engine a
+					// status no gateway ever sends.
+					t.Fatalf("fixture %q has no top-level statusCode", c.ID)
+				}
 				err := parseError(status, contractContentType(raw), raw, nil)
 				merr, ok := err.(*MpesaError)
 				if !ok {
 					t.Fatalf("parseError returned %T, want *MpesaError", err)
-				}
-				if merr.StatusCode != status {
-					t.Errorf("statusCode = %d, want %d", merr.StatusCode, status)
 				}
 				// A null expectation means "absent": the Go surface carries an
 				// empty string where Python and TypeScript carry None/null.
