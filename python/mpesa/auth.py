@@ -66,6 +66,31 @@ _TRUSTED_BASE_URLS = frozenset({
 _REFRESH_WAIT_SECONDS = 5.0
 
 
+def _fresh_error(exc: BaseException) -> BaseException:
+    """A FRESH exception instance carrying the same type and message.
+
+    WHY: the leader's exception was raised verbatim by every waiter, so N
+    threads raised ONE instance and each raise overwrote its
+    ``__traceback__`` -- a caller logging the traceback could see another
+    thread's stack. A copy keeps the two things callers branch on (the type
+    and the message) while giving every waiter its own object.
+
+    ``MpesaError`` survives the copy: its ``args`` are exactly the four
+    envelope members its constructor takes, so ``status_code``,
+    ``request_id``, ``error_code`` and ``error_message`` are all preserved.
+    The instance attributes are carried over as well, because
+    ``MpesaError.from_response`` substitutes the generic message AFTER
+    construction (an unparseable body): a copy built from ``args`` alone
+    would report a DIFFERENT message than the leader raised.
+    """
+    try:
+        fresh = type(exc)(*exc.args)
+    except Exception:  # an exotic exception type: keep the original
+        return exc
+    fresh.__dict__.update(exc.__dict__)
+    return fresh
+
+
 class _RefreshRound:
     """The outcome of ONE refresh attempt, shared with its waiters.
 
@@ -190,44 +215,17 @@ class TokenManager:
 
             token, gen = tm.get_token_with_gen()
         """
-        while True:
-            with self._lock:
-                now = self._now()
-                if self._token and self._expires_at and now < self._expires_at:
-                    return self._token, self._gen
-                if self._refreshing:
-                    # A leader is already refreshing: park on the
-                    # condition (which releases the lock while waiting)
-                    # instead of queueing behind the mutex for the whole
-                    # round-trip.
-                    round = self._round
-                    self._cond.wait(timeout=_REFRESH_WAIT_SECONDS)
-                    if round is not None and round.error is not None:
-                        # The leader failed: every waiter sees the SAME
-                        # error instead of stampeding the OAuth endpoint.
-                        raise round.error
-                    continue
-                # Leader: claim the round, then leave the lock. NON-FORCED:
-                # the rate-limit gate applies to this round, so a refusal is
-                # a legitimate outcome that this round's waiters inherit.
-                self._refreshing = True
-                round = _RefreshRound(forced=False)
-                self._round = round
-            break
+        def recheck() -> "tuple[str, int] | None":
+            # Fast path. INVARIANT: refresh_after_invalid_token nulls
+            # _token under this same lock BEFORE it claims its round, so
+            # the token the gateway just rejected can never be served
+            # here while the forced refresh is in flight.
+            now = self._now()
+            if self._token and self._expires_at and now < self._expires_at:
+                return self._token, self._gen
+            return None
 
-        try:
-            token = self._refresh(force=False)
-        except BaseException as exc:
-            with self._lock:
-                round.error = exc
-                self._refreshing = False
-                self._cond.notify_all()
-            raise
-        with self._lock:
-            self._refreshing = False
-            gen = self._gen
-            self._cond.notify_all()
-        return token, gen
+        return self._single_flight(forced=False, recheck=recheck)
 
     def refresh_after_invalid_token(self, my_gen: int) -> str:
         """Resolve a 401.003.01 under the generation guard.
@@ -261,57 +259,95 @@ class TokenManager:
 
             token = tm.refresh_after_invalid_token(gen)
         """
+        def recheck() -> "tuple[str, int] | None":
+            if self._gen != my_gen:
+                now = self._now()
+                if self._token and self._expires_at and now < self._expires_at:
+                    return self._token, self._gen
+            else:
+                # OUR view is current, so the cached token is the one
+                # the gateway rejected: it must not stay servable.
+                self._token = None
+            return None
+
+        token, _gen = self._single_flight(forced=True, recheck=recheck)
+        return token
+
+    def _single_flight(
+            self, forced: bool,
+            recheck: Callable[[], "tuple[str, int] | None"]) -> "tuple[str, int]":
+        """The ONE leader/waiter protocol both refresh entry points share.
+
+        Returns ``(token, gen)``. The caller supplies *recheck*, the
+        per-mode fast path: it is called UNDER THE LOCK before every
+        attempt and returns the ``(token, gen)`` to hand back, or None to
+        continue with the protocol. It may mutate the cache -- the forced
+        path drops the rejected token there, BEFORE any round is claimed,
+        which is what keeps the rejected-but-fresh token unservable.
+
+        The protocol (identical for both modes):
+
+        1. *recheck* -- adopt a usable token if there is one.
+        2. A refresh is in flight: park on the condition (which RELEASES
+           the lock while waiting) instead of queueing behind the mutex
+           for the whole round-trip. The wait is BOUNDED, so a lost
+           notification or a leader that never returns parks nobody
+           forever: the waiter re-checks and becomes the next leader.
+        3. Otherwise claim the round and leave the lock. The OAuth
+           round-trip runs with NO lock held.
+
+        FAILURE-SHARING RULE (the two modes are NOT symmetric): a round's
+        failure is shared with the waiters of THAT round -- one wire call,
+        one error, no stampede. A FORCED round's failure is therefore
+        inherited by a forced waiter, but a NON-forced round's failure is
+        NOT: the rate-limit gate refuses non-forced refreshes only, so a
+        forced refresher that inherited such a refusal would never reach
+        the wire at all -- the exact denial a forced refresh exists to
+        bypass. A forced waiter that observed a failed non-forced round
+        falls through and leads its OWN forced attempt (``force=True``
+        skips the gate).
+        """
         while True:
             with self._lock:
-                if self._gen != my_gen:
-                    now = self._now()
-                    if self._token and self._expires_at and now < self._expires_at:
-                        return self._token
-                else:
-                    # OUR view is current, so the cached token is the one
-                    # the gateway rejected: it must not stay servable.
-                    self._token = None
+                adopted = recheck()
+                if adopted is not None:
+                    return adopted
                 if self._refreshing:
-                    round = self._round
+                    # A leader is already refreshing: park on the
+                    # condition (which releases the lock while waiting)
+                    # instead of queueing behind the mutex for the whole
+                    # round-trip.
+                    refresh_round = self._round
                     self._cond.wait(timeout=_REFRESH_WAIT_SECONDS)
-                    if round is not None and round.error is not None:
-                        if round.forced:
-                            # A FORCED round's failure belongs to its OWN
-                            # waiters: re-raise it (one wire call, one
-                            # error -- the anti-stampede property).
-                            raise round.error
-                        # The observed round was NOT forced and it FAILED.
-                        # Its failure -- above all the rate-limit REFUSAL
-                        # the closed gate hands a non-forced refresh -- is
-                        # NOT ours to inherit: a forced refresh exists to
-                        # put a request on the wire, and inheriting the
-                        # refusal would deny it the very thing it is meant
-                        # to bypass (it would never reach the wire at all).
-                        # Fall through: re-evaluate and lead our OWN forced
-                        # attempt, which skips the gate (force=True).
+                    if refresh_round is not None and refresh_round.error is not None:
+                        if refresh_round.forced or not forced:
+                            # The leader failed: every waiter sees the
+                            # SAME error instead of stampeding the OAuth
+                            # endpoint. A forced waiter inherits ONLY a
+                            # forced round's failure (see the rule above).
+                            raise _fresh_error(refresh_round.error)
                     continue
-                # Leader: claim a FORCED round, then leave the lock. The
-                # forced mode is what makes the failure-sharing rule
-                # above symmetric: a forced round's waiters share its
-                # failure, a non-forced round's waiters do not inherit it
-                # into the forced path.
+                # Leader: claim the round, then leave the lock. The round
+                # records the mode it runs in, because the failure-sharing
+                # rule above is mode-dependent.
                 self._refreshing = True
-                round = _RefreshRound(forced=True)
-                self._round = round
+                refresh_round = _RefreshRound(forced=forced)
+                self._round = refresh_round
             break
 
         try:
-            token = self._refresh(force=True)
+            token = self._refresh(force=forced)
         except BaseException as exc:
             with self._lock:
-                round.error = exc
+                refresh_round.error = exc
                 self._refreshing = False
                 self._cond.notify_all()
             raise
         with self._lock:
             self._refreshing = False
+            gen = self._gen
             self._cond.notify_all()
-        return token
+        return token, gen
 
     @staticmethod
     def _cadence(expires_in_seconds: int | None) -> float:

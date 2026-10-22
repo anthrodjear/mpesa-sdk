@@ -519,10 +519,18 @@ class CountingCondition(threading.Condition):
         self.expected = 0
         self.parked = threading.Event()
         self.count = 0
+        # The counter is guarded by its own lock: a plain `count += 1` can
+        # lose an update when two threads interleave between the read and
+        # the write, and the lost update would leave the count below
+        # `expected` -- the parked event would never fire and the test would
+        # TIME OUT instead of failing cleanly.
+        self._count_lock = threading.Lock()
 
     def wait(self, timeout=None):
-        self.count += 1
-        if self.count >= self.expected:
+        with self._count_lock:
+            self.count += 1
+            seen = self.count
+        if seen >= self.expected:
             self.parked.set()
         return super().wait(timeout)
 
@@ -619,7 +627,12 @@ def test_d10_failed_refresh_wakes_every_waiter_with_the_same_error():
     assert len(errors) == workers
     assert len(session.calls) == 1, "the waiters each ran their own request"
     first = errors[0]
-    assert all(exc is first for exc in errors), "the waiters saw different errors"
+    # The waiters see the SAME error -- same type and message. Not the same
+    # OBJECT: the manager hands every waiter a fresh copy, because one
+    # shared instance would carry another thread's traceback (the reason
+    # the copy exists at all).
+    assert all(type(exc) is type(first) for exc in errors)
+    assert all(str(exc) == str(first) for exc in errors)
     assert isinstance(first, MpesaError)
 
 

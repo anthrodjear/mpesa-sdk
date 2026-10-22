@@ -410,9 +410,9 @@ func TestExplicitZeroDisablesOnlyThatCeiling(t *testing.T) {
 			if _, err := c.C2BSimulate(ctx, c2bAmount(300_000)); err == nil {
 				t.Error("disabling the STK ceiling also disabled the C2B ceiling")
 			}
-		if _, err := c.Reversal(ctx, reversalAmount(300_000)); err == nil {
-			t.Error("disabling the STK ceiling also disabled the Reversal ceiling")
-		}
+			if _, err := c.Reversal(ctx, reversalAmount(300_000)); err == nil {
+				t.Error("disabling the STK ceiling also disabled the Reversal ceiling")
+			}
 		})
 	}
 }
@@ -1001,7 +1001,7 @@ func TestTransportFailureRollsBackDailyBudget(t *testing.T) {
 	c, err := NewClient(Config{
 		ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox,
 		Shortcode: testShortcode, Passkey: testPasskey,
-		Now:        func() time.Time { return now },
+		Now: func() time.Time { return now },
 		Limits: &TransactionLimits{
 			B2C: ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(100_000)},
 		},
@@ -1046,7 +1046,7 @@ func TestTransportFailureRollsBackDailyBudget(t *testing.T) {
 	c2, err := NewClient(Config{
 		ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox,
 		Shortcode: testShortcode, Passkey: testPasskey,
-		Now:        func() time.Time { return now },
+		Now: func() time.Time { return now },
 		Limits: &TransactionLimits{
 			B2C: ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(100_000)},
 		},
@@ -1063,9 +1063,9 @@ func TestTransportFailureRollsBackDailyBudget(t *testing.T) {
 	if !errors.As(err, &me) {
 		t.Fatalf("gateway failure = %T (%v), want *MpesaError", err, err)
 	}
-		if got := c2.daily.used[ServiceB2C]; got != 60_000 {
-			t.Fatalf("used after gateway error = %d, want 60000 (gateway errors keep the spend)", got)
-		}
+	if got := c2.daily.used[ServiceB2C]; got != 60_000 {
+		t.Fatalf("used after gateway error = %d, want 60000 (gateway errors keep the spend)", got)
+	}
 }
 
 // dailyUsed reads the ledger's running total for service under the ledger's

@@ -85,12 +85,12 @@ func (s ServiceLimits) ceiling(max *int64) (int64, bool) {
 // the enforcement helpers treat nil as unlimited and must therefore never see
 // an unmerged config.
 type TransactionLimits struct {
-	STK       ServiceLimits
-	C2B       ServiceLimits
-	B2C       ServiceLimits
-	Reversal  ServiceLimits
-	QR        ServiceLimits
-	Default   ServiceLimits
+	STK      ServiceLimits
+	C2B      ServiceLimits
+	B2C      ServiceLimits
+	Reversal ServiceLimits
+	QR       ServiceLimits
+	Default  ServiceLimits
 }
 
 // DefaultTransactionLimits returns the Safaricom baseline (see docs). It is
@@ -103,12 +103,12 @@ type TransactionLimits struct {
 // merchants are raised explicitly via Config.Limits.
 func DefaultTransactionLimits() TransactionLimits {
 	return TransactionLimits{
-		STK:       ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
-		C2B:       ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
-		B2C:       ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
-		Reversal:  ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
-		QR:        ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
-		Default:   ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
+		STK:      ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
+		C2B:      ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
+		B2C:      ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
+		Reversal: ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
+		QR:       ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
+		Default:  ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
 	}
 }
 

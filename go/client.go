@@ -41,6 +41,10 @@ const (
 	maxResponseLen   = 1 << 20
 	refreshRateLimit = 5 * time.Second // minimum time between OAuth refresh attempts
 
+	// oversizeDrainLimit bounds how many leftover bytes are drained from an
+	// oversize response body before the connection is abandoned.
+	oversizeDrainLimit = 64 << 10
+
 	// Idle-connection budget of the transport the SDK owns (#14).
 	//
 	// http.DefaultTransport keeps only DefaultMaxIdleConnsPerHost (2) idle
@@ -50,6 +54,12 @@ const (
 	// extra round-trip plus certificate verification) and can exhaust
 	// the ephemeral port range. The SDK therefore owns its transport
 	// instead of inheriting that cap.
+	//
+	// Only the PER-HOST cap is raised (2 -> 32). The total (MaxIdleConns)
+	// and the idle timeout are set to the values http.DefaultTransport
+	// already uses (100 / 90s) and are pinned explicitly, so the SDK's
+	// budget cannot drift if a program mutates the package-level
+	// DefaultTransport before the SDK clones it.
 	idleConnsTotal   = 100
 	idleConnsPerHost = 32
 	idleConnTimeout  = 90 * time.Second
@@ -319,7 +329,9 @@ func transportDisablesVerification(rt http.RoundTripper) bool {
 // CLONING rather than building from scratch matters: http.DefaultTransport
 // is where the machine's proxy configuration, its dialer and its root CA
 // set live, and a hand-built transport would silently drop all three.
-// Only the idle-connection fields are raised.
+// Only the idle-connection fields are set: the PER-HOST cap is raised
+// (2 -> 32); the total and the idle timeout are pinned to the default
+// transport's own values.
 //
 // The fallback covers a program that replaced the package-level
 // http.DefaultTransport with something that is not an *http.Transport:
@@ -347,10 +359,6 @@ func tunedTransport() *http.Transport {
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 }
-
-// oversizeDrainLimit bounds how many leftover bytes are drained from an
-// oversize response body before the connection is abandoned.
-const oversizeDrainLimit = 64 << 10
 
 // drainOversize consumes the leftover bytes of an oversize response so
 // net/http can REUSE the connection.
@@ -409,7 +417,11 @@ func NewClient(cfg Config) (*Client, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	hc := &http.Client{Timeout: cfg.Timeout, Transport: tunedTransport()}
+	// The SDK-owned transport is built ONLY on the path that uses it: an
+	// injected HTTPClient replaces it wholesale, so cloning
+	// http.DefaultTransport first was pure waste (a clone allocates a
+	// transport, its TLS config and its connection pools).
+	var hc *http.Client
 	if cfg.HTTPClient != nil {
 		if transportDisablesVerification(cfg.HTTPClient.Transport) {
 			return nil, fmt.Errorf("mpesa: refusing HTTPClient with InsecureSkipVerify (would disable TLS verification)")
@@ -419,6 +431,8 @@ func NewClient(cfg Config) (*Client, error) {
 			cloned.Timeout = cfg.Timeout
 		}
 		hc = &cloned
+	} else {
+		hc = &http.Client{Timeout: cfg.Timeout, Transport: tunedTransport()}
 	}
 	if cfg.TLSPinningEnabled {
 		hostname := hostnameFromURL(cfg.Environment.BaseURL())
