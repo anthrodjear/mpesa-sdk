@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   try {
     // 3. Send the STK Push prompt.
     const resp = await client.stkPush({
-      transactionType: TransactionType.BillPayGoods,
+      transactionType: TransactionType.PayBillOnline,
       amount: 100,
       partyA: "254712345678",
       phoneNumber: "254712345678",
