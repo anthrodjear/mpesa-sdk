@@ -222,9 +222,11 @@ func TestContractFixtures(t *testing.T) {
 				status := c.StatusCode
 				if status == 0 {
 					// statusCode is an input, not an expectation, so a
-					// fixture that omits it would feed the engine a
-					// status no gateway ever sends.
-					t.Fatalf("fixture %q has no top-level statusCode", c.ID)
+					// fixture that omits it -- or sets 0, which is not a
+					// real HTTP status -- would feed the engine a status
+					// no gateway ever sends.
+					t.Fatalf("fixture %q has no valid top-level statusCode: %d",
+						c.ID, status)
 				}
 				err := parseError(status, contractContentType(raw), raw, nil)
 				merr, ok := err.(*MpesaError)

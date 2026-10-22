@@ -78,14 +78,23 @@ def _raw_body(body: Any) -> bytes:
     return json.dumps(body).encode("utf-8")
 
 
-def _content_type(body: Any) -> str:
-    """The content type the transport would have reported for the body.
+def _content_type(raw: bytes) -> str:
+    """The content type the transport would have reported for the raw body.
 
-    Diagnostics only -- it reaches the opt-in error logger, never the
-    exception text -- but keeping it honest documents which body shape a
-    fixture carries.
+    Derived from the RAW TEXT, exactly as the Go and TypeScript harnesses
+    derive it: a body that opens with a JSON object or array is
+    ``application/json``, anything else (a WAF page, an HTML error page, a
+    bare scalar) is ``text/html``.
+
+    The fixture's JSON TYPE must not decide this: a fixture ``body`` that
+    is the string ``"42"`` IS the raw wire text ``42``, which is not JSON.
+    Deriving from the type instead would have the Python engine receive a
+    different input than the other two for the same fixture.
     """
-    return "text/html" if isinstance(body, str) else "application/json"
+    text = raw.decode("utf-8", errors="replace").lstrip()
+    if text.startswith("{") or text.startswith("["):
+        return "application/json"
+    return "text/html"
 
 
 def _number(value: Any) -> float | None:
@@ -147,13 +156,16 @@ def test_contract_fixture(case: dict[str, Any]) -> None:
 
     elif kind == "error_envelope":
         # statusCode is an INPUT -- the HTTP status the harness feeds the
-        # engine -- not an expectation, so it is never asserted on.
+        # engine -- not an expectation, so it is never asserted on. 0 is not
+        # a real HTTP status, so an absent AND a zero value are both
+        # rejected: the three harnesses must agree on what a valid input is.
         status = case.get("statusCode")
-        if status is None:
-            pytest.fail(f"fixture {case['id']!r} has no top-level statusCode")
-        err = MpesaError.from_response(
-            status, _raw_body(case["body"]),
-            _content_type(case["body"]))
+        if status is None or status == 0:
+            pytest.fail(
+                f"fixture {case['id']!r} has no valid top-level statusCode: "
+                f"{status!r}")
+        raw = _raw_body(case["body"])
+        err = MpesaError.from_response(status, raw, _content_type(raw))
         if expect.get("errorCode") is None:
             assert err.error_code is None
         else:

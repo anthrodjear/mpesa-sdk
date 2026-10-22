@@ -74,6 +74,13 @@ string), TypeScript uses `JSON.stringify`. A body that is quoted JSON is a
 DIFFERENT wire body from the same JSON unquoted, and the corpus must be able
 to express both.
 
+The content type the transport would have reported is derived from that SAME
+raw text, by the same rule in all three harnesses: a body that opens with a
+JSON object or array is `application/json`, anything else is `text/html`.
+The fixture's JSON type must not decide it — a `body` that is the string
+`"42"` IS the raw wire text `42`, which is not JSON — because the three
+engines must receive identical inputs for the same fixture.
+
 ## Class names
 
 `expect.class` uses the wire-level names, which are identical in all three

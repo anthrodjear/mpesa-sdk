@@ -159,10 +159,15 @@ describe("contract fixtures", () => {
         }
         case "error_envelope": {
           // statusCode is an INPUT -- the HTTP status the harness feeds the
-          // engine -- not an expectation, so it is never asserted on.
+          // engine -- not an expectation, so it is never asserted on. 0 is
+          // not a real HTTP status, so an absent AND a zero value are both
+          // rejected: the three harnesses must agree on what a valid input
+          // is.
           const status = c.statusCode;
-          if (status === undefined) {
-            throw new Error(`fixture ${c.id} has no top-level statusCode`);
+          if (status === undefined || status === 0) {
+            throw new Error(
+              `fixture ${c.id} has no valid top-level statusCode: ${String(status)}`,
+            );
           }
           const raw = rawBody(c.body);
           const err = MpesaError.fromResponse(status, raw, contentType(raw));
