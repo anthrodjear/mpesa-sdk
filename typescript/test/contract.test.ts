@@ -5,7 +5,9 @@
  * `contract/README.md`) and asserts the TypeScript engine agrees with the
  * contract. The same files are read by `go/contract_test.go` and
  * `python/tests/test_contract.py`; a case that passes in one engine and
- * fails in another is a DRIFT BUG in the failing engine, not a bad fixture.
+ * fails in another is either an engine drift bug or a wrong expectation —
+ * decide which by checking the Daraja wire contract (`docs/apis/`), then
+ * fix whichever is wrong.
  *
  * ONE CASE IS RED ON PURPOSE -- it pins a live defect, and this phase does
  * not fix it:
@@ -74,6 +76,9 @@ function loadCases(): ContractCase[] {
       throw new Error(`decode ${f}: ${(err as Error).message}`);
     }
     const c = parsed as ContractCase;
+    if (!c.id) {
+      throw new Error(`fixture ${f} has no id`);
+    }
     const prev = seen.get(c.id);
     if (prev !== undefined) {
       throw new Error(`duplicate fixture id "${c.id}" in ${prev} and ${f}`);
@@ -102,6 +107,20 @@ function requireExpect<K extends keyof ContractCase["expect"]>(
 }
 
 /**
+ * The fixture body, or a loud failure naming the fixture.
+ *
+ * EVERY kind goes through this check, so a fixture with no body fails with
+ * the same message in all three engines — and never feeds an engine an
+ * empty body, an input no gateway ever sent.
+ */
+function requireBody(c: ContractCase): unknown {
+  if (c.body === undefined) {
+    throw new Error(`fixture ${c.id} has no body`);
+  }
+  return c.body;
+}
+
+/**
  * The text the engine must SEE for a fixture body.
  *
  * A JSON string body IS the raw body text (a WAF page, an HTML error
@@ -110,10 +129,8 @@ function requireExpect<K extends keyof ContractCase["expect"]>(
  * non-JSON gateway response.
  */
 function rawBody(c: ContractCase): string {
-  if (c.body === undefined) {
-    throw new Error(`fixture ${c.id} has no body`);
-  }
-  return typeof c.body === "string" ? c.body : JSON.stringify(c.body);
+  const body = requireBody(c);
+  return typeof body === "string" ? body : JSON.stringify(body);
 }
 
 /**
@@ -200,8 +217,11 @@ describe("contract fixtures", () => {
           break;
         }
         case "balance_segment": {
-          const body = c.body as { text?: string } | undefined;
-          if (body === undefined || typeof body.text !== "string") {
+          // Routed through the same body check as the other kinds, so a
+          // fixture with no body fails with the same message in all three
+          // engines.
+          const body = requireBody(c) as { text?: unknown };
+          if (typeof body.text !== "string") {
             throw new Error(`fixture ${c.id} has no body.text`);
           }
           const segments = parseBalanceSegments(body.text);
@@ -235,4 +255,22 @@ describe("contract fixtures", () => {
       }
     });
   }
+});
+
+it("numeric grammar rejects non-plain decimals", () => {
+  // The grammar is a LOCAL helper, so it needs its own test: a future
+  // swap for Number() -- which also accepts "0x10", "1e3" and
+  // "Infinity" -- would silently re-open the cross-engine divergence the
+  // grammar exists to close, with TypeScript calling "1e3" a number
+  // while Go and Python do not.
+  for (const text of ["1e3", "0x10", "Inf", "NaN", "1_000"]) {
+    expect(asNumber(text), text).toBeNull();
+  }
+  expect(asNumber("100")).toBe(100);
+  expect(asNumber("-100")).toBe(-100);
+  expect(asNumber("100.50")).toBe(100.5);
+  // A JSON number is numeric by construction, whatever its magnitude.
+  expect(asNumber(100)).toBe(100);
+  // Booleans are not numbers: true must never compare equal to 1.
+  expect(asNumber(true)).toBeNull();
 });

@@ -94,6 +94,9 @@ func loadContractCases(t *testing.T) []contractCase {
 		if err := json.Unmarshal(raw, &c); err != nil {
 			t.Fatalf("decode %s: %v", p, err)
 		}
+		if c.ID == "" {
+			t.Fatalf("fixture %s has no id", p)
+		}
 		if prev, dup := seen[c.ID]; dup {
 			t.Fatalf("duplicate fixture id %q in %s and %s", c.ID, prev, p)
 		}
@@ -255,6 +258,39 @@ func contractMetadataEqual(got, want any) bool {
 	return strings.TrimSpace(fmt.Sprint(got)) == strings.TrimSpace(fmt.Sprint(want))
 }
 
+// TestContractNumericGrammar pins the plain-decimal grammar the metadata
+// comparison relies on.
+//
+// The grammar is a LOCAL helper, so it needs its own test: a future swap
+// for strconv.ParseFloat -- which also accepts "Inf", "NaN" and "0x1p-2" --
+// would silently re-open the cross-engine divergence the grammar exists to
+// close, with Go calling "1e3" a number while Python and TypeScript do not.
+func TestContractNumericGrammar(t *testing.T) {
+	for _, s := range []string{"1e3", "0x10", "Inf", "NaN", "1_000"} {
+		if _, ok := contractNumeric(s); ok {
+			t.Errorf("contractNumeric(%q) = numeric, want rejected", s)
+		}
+	}
+	for s, want := range map[string]float64{"100": 100, "-100": -100, "100.50": 100.5} {
+		got, ok := contractNumeric(s)
+		if !ok {
+			t.Errorf("contractNumeric(%q) = not numeric, want accepted", s)
+			continue
+		}
+		if got != want {
+			t.Errorf("contractNumeric(%q) = %v, want %v", s, got, want)
+		}
+	}
+	// A JSON number is numeric by construction, whatever its magnitude.
+	if got, ok := contractNumeric(int64(100)); !ok || got != 100 {
+		t.Errorf("contractNumeric(int64(100)) = %v, %v, want 100, true", got, ok)
+	}
+	// Booleans are not numbers: true must never compare equal to 1.
+	if _, ok := contractNumeric(true); ok {
+		t.Error("contractNumeric(true) = numeric, want rejected")
+	}
+}
+
 // TestContractFixtures runs every shared fixture through the Go engine.
 func TestContractFixtures(t *testing.T) {
 	for _, c := range loadContractCases(t) {
@@ -287,10 +323,14 @@ func TestContractFixtures(t *testing.T) {
 					}
 				}
 			case "balance_segment":
+				// Routed through the same body check as the other kinds, so
+				// a fixture with no body fails with the same message in
+				// all three engines.
+				raw := contractRawBody(t, c)
 				var body struct {
 					Text string `json:"text"`
 				}
-				if err := json.Unmarshal(c.Body, &body); err != nil {
+				if err := json.Unmarshal(raw, &body); err != nil {
 					t.Fatalf("decode balance body: %v", err)
 				}
 				segments, skipped := ParseBalanceSegments(body.Text)

@@ -4,7 +4,9 @@ Reads the shared fixtures in ``contract/fixtures`` (schema:
 ``contract/README.md``) and asserts the Python engine agrees with the
 contract. The same files are read by ``go/contract_test.go`` and
 ``typescript/test/contract.test.ts``; a case that passes in one engine and
-fails in another is a DRIFT BUG in the failing engine, not a bad fixture.
+fails in another is either an engine drift bug or a wrong expectation --
+decide which by checking the Daraja wire contract (``docs/apis/``), then
+fix whichever is wrong.
 
 TWO CASES ARE RED ON PURPOSE -- they pin live defects, and this phase does
 not fix them:
@@ -63,13 +65,16 @@ _NUMERIC_RE = re.compile(r"^-?\d+(\.\d+)?$")
 #: All three harnesses skip exactly this set, so the three engines receive
 #: the same input for the same fixture.
 _ASCII_SPACE = " \t\r\n"
+
+
 def _cases() -> list[dict[str, Any]]:
     """Every shared fixture, in file-name order for a stable test order.
 
-    Fixture ids must be UNIQUE: a duplicate would produce two identically
-    named tests, and only one of them would be read as the case the author
-    meant. A fixture that does not decode names ITSELF in the failure --
-    a bare JSONDecodeError would point at nothing.
+    Fixture ids must be UNIQUE and NON-EMPTY: a duplicate would produce
+    two identically named tests, and only one of them would be read as the
+    case the author meant; an empty id would produce an unnamed test. A
+    fixture that does not decode names ITSELF in the failure -- a bare
+    JSONDecodeError would point at nothing.
     """
     if not FIXTURE_DIR.is_dir():
         pytest.fail(f"contract fixture dir missing: {FIXTURE_DIR}")
@@ -81,6 +86,8 @@ def _cases() -> list[dict[str, Any]]:
         except ValueError as exc:
             pytest.fail(f"decode {path.name}: {exc}")
         case_id = case.get("id", "")
+        if not case_id:
+            pytest.fail(f"fixture {path.name} has no id")
         prev = seen.get(case_id)
         if prev is not None:
             pytest.fail(
@@ -103,6 +110,31 @@ def _require(expect: dict[str, Any], key: str, case_id: str) -> Any:
     return expect[key]
 
 
+def _require_body(case: dict[str, Any]) -> Any:
+    """The fixture body, or a loud failure naming the fixture.
+
+    EVERY kind goes through this check, so a fixture with no body fails
+    with the same message in all three engines -- and never feeds an
+    engine an empty body, an input no gateway ever sent.
+    """
+    if "body" not in case:
+        pytest.fail(f"fixture {case.get('id', '?')!r} has no body")
+    return case["body"]
+
+
+def _balance_text(case: dict[str, Any]) -> str:
+    """The balance blob of a ``balance_segment`` fixture.
+
+    Routed through the same body check as the other kinds, so a fixture
+    with no body fails with the same message everywhere.
+    """
+    body = _require_body(case)
+    text = body.get("text") if isinstance(body, dict) else None
+    if not isinstance(text, str):
+        pytest.fail(f"fixture {case.get('id', '?')!r} has no body.text")
+    return text
+
+
 def _raw_body(case: dict[str, Any]) -> bytes:
     """The bytes the engine must SEE for a fixture body.
 
@@ -110,14 +142,8 @@ def _raw_body(case: dict[str, Any]) -> bytes:
     page); an object body is the raw JSON document. Go and TypeScript
     apply the same rule, so one corpus can express both a JSON envelope
     and a non-JSON gateway response.
-
-    A fixture with no body is a BROKEN fixture: it would feed the engine
-    an empty body -- an input no gateway ever sent -- and hide the broken
-    fixture behind whatever the engine made of it.
     """
-    if "body" not in case:
-        pytest.fail(f"fixture {case.get('id', '?')!r} has no body")
-    body = case["body"]
+    body = _require_body(case)
     if isinstance(body, str):
         return body.encode("utf-8")
     return json.dumps(body).encode("utf-8")
@@ -196,7 +222,7 @@ def test_contract_fixture(case: dict[str, Any]) -> None:
                     f"metadata[{key!r}] = {got!r}, want {want!r}")
 
     elif kind == "balance_segment":
-        segments, skipped = parse_balance_segments(case["body"]["text"])
+        segments, skipped = parse_balance_segments(_balance_text(case))
         assert len(segments) == _require(expect, "segments", case["id"])
         assert skipped == _require(expect, "skipped", case["id"])
 
@@ -225,3 +251,22 @@ def test_contract_fixture(case: dict[str, Any]) -> None:
 
     else:
         pytest.fail(f"unknown fixture kind {kind!r}")
+
+
+def test_numeric_grammar_rejects_non_plain_decimals():
+    """The plain-decimal grammar is a LOCAL helper, so it needs its own
+    test: a future swap for ``float()`` -- which accepts ``"inf"``,
+    ``"nan"`` and ``"1_000"``-style spellings of other numbers -- would
+    silently re-open the cross-engine divergence the grammar exists to
+    close, with Python calling ``"1e3"`` a number while Go and
+    TypeScript do not.
+    """
+    for text in ("1e3", "0x10", "Inf", "NaN", "1_000"):
+        assert _number(text) is None, f"{text!r} must not be numeric"
+    assert _number("100") == 100.0
+    assert _number("-100") == -100.0
+    assert _number("100.50") == 100.5
+    # A JSON number is numeric by construction, whatever its magnitude.
+    assert _number(100) == 100.0
+    # Booleans are not numbers: True must never compare equal to 1.
+    assert _number(True) is None

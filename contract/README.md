@@ -162,7 +162,7 @@ duplicate-key fixture expects the FIRST value.
 | `stk-callback-indeterminate` | `stk_callback` | An unknown code stays INDETERMINATE — never auto-failed, never auto-refunded | green everywhere |
 | `stk-callback-duplicate-metadata` | `stk_callback` | Duplicate metadata names resolve FIRST-WINS | green everywhere |
 | `stk-callback-amount-as-string` | `stk_callback` | A numeric metadata STRING is the same money as the number ("100" vs 100) | green everywhere |
-| `stk-callback-amount-not-plain-decimal` | `stk_callback` | A metadata string the plain-decimal grammar REJECTS ("1e3") compares as a STRING, not as 1000 | green everywhere |
+| `stk-callback-amount-not-plain-decimal` | `stk_callback` | The metadata value stays the string `"1e3"` — a value the plain-decimal grammar rejects — and matches the expectation textually | green everywhere |
 | `balance-over-2p53` | `balance_segment` | A balance beyond 2**53 is SKIPPED and counted, never returned rounded | **red in Python (D3)** |
 | `error-envelope-numeric-code` | `error_envelope` | A numeric `errorCode` is coerced to its wire string form | **red in Python (D1)** |
 | `error-envelope-unparseable` | `error_envelope` | A non-JSON body yields the generic message and NO error code | **red in TypeScript (D7)** |
