@@ -22,8 +22,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import { parseSTKCallback } from "../src/callbacks.js";
 import { parseBalanceSegments } from "../src/types.js";
@@ -31,8 +30,7 @@ import { MpesaError } from "../src/errors.js";
 
 // The test directory is <repo>/typescript/test, so two levels up is the
 // repository root where the shared corpus lives.
-const HERE = dirname(fileURLToPath(import.meta.url));
-const FIXTURE_DIR = join(HERE, "..", "..", "contract", "fixtures");
+const FIXTURE_DIR = join(import.meta.dirname, "..", "..", "contract", "fixtures");
 
 interface ContractCase {
   id: string;
@@ -55,11 +53,52 @@ interface ContractCase {
   };
 }
 
+/**
+ * Read the corpus.
+ *
+ * A fixture that does not decode names ITSELF in the failure -- a bare
+ * SyntaxError would point at nothing. Fixture ids must be UNIQUE: a
+ * duplicate would produce two identically named tests, and only one of them
+ * would be read as the case the author meant.
+ */
 function loadCases(): ContractCase[] {
   const files = readdirSync(FIXTURE_DIR).filter((f) => f.endsWith(".json")).sort();
   if (files.length === 0) throw new Error(`no contract fixtures in ${FIXTURE_DIR}`);
-  return files.map((f) =>
-    JSON.parse(readFileSync(join(FIXTURE_DIR, f), "utf-8")) as ContractCase);
+  const cases: ContractCase[] = [];
+  const seen = new Map<string, string>();
+  for (const f of files) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(join(FIXTURE_DIR, f), "utf-8"));
+    } catch (err) {
+      throw new Error(`decode ${f}: ${(err as Error).message}`);
+    }
+    const c = parsed as ContractCase;
+    const prev = seen.get(c.id);
+    if (prev !== undefined) {
+      throw new Error(`duplicate fixture id "${c.id}" in ${prev} and ${f}`);
+    }
+    seen.set(c.id, f);
+    cases.push(c);
+  }
+  return cases;
+}
+
+/**
+ * A required expectation, or a loud failure naming the fixture.
+ *
+ * A fixture that forgets an expectation is a BROKEN fixture: reading it as
+ * `undefined` would let the case pass while asserting nothing.
+ */
+function requireExpect<K extends keyof ContractCase["expect"]>(
+  c: ContractCase,
+  key: K,
+): Exclude<ContractCase["expect"][K], undefined> {
+  const value = c.expect[key];
+  if (value === undefined) {
+    throw new Error(`fixture ${c.id} has no expect.${key}`);
+  }
+  return value as Exclude<ContractCase["expect"][K], undefined>;
 }
 
 /**
@@ -70,22 +109,35 @@ function loadCases(): ContractCase[] {
  * same rule, so one corpus can express both a JSON envelope and a
  * non-JSON gateway response.
  */
-function rawBody(body: unknown): string {
-  return typeof body === "string" ? body : JSON.stringify(body);
+function rawBody(c: ContractCase): string {
+  if (c.body === undefined) {
+    throw new Error(`fixture ${c.id} has no body`);
+  }
+  return typeof c.body === "string" ? c.body : JSON.stringify(c.body);
 }
 
 /**
  * The content type the transport would have reported for the raw body.
  *
- * Derived from the raw text exactly as the Go harness derives it: a body
- * that opens with a JSON object or array is `application/json`, anything
- * else (a WAF page, an HTML error page) is `text/html`. The Python harness
- * derives the same two answers from the fixture body's JSON type. The three
- * engines must receive the SAME inputs for the same fixture, or the
- * diagnostic text they produce cannot be compared.
+ * Derived from the RAW TEXT, exactly as the Go and Python harnesses derive
+ * it: skip the leading ASCII whitespace, then look at the first byte. A
+ * body that opens with a JSON object or array is `application/json`;
+ * anything else (a WAF page, an HTML error page, a bare scalar) is
+ * `text/html`.
+ *
+ * The fixture's JSON TYPE must not decide this: a fixture `body` that is
+ * the string `"42"` IS the raw wire text `42`, which is not JSON.
+ * Deriving from the type instead would have the TypeScript engine receive
+ * a different input than the other two for the same fixture.
  */
 function contentType(raw: string): string {
-  const text = raw.trimStart();
+  let i = 0;
+  while (i < raw.length) {
+    const ch = raw[i];
+    if (ch !== " " && ch !== "\t" && ch !== "\r" && ch !== "\n") break;
+    i += 1;
+  }
+  const text = raw.slice(i);
   return text.startsWith("{") || text.startsWith("[")
     ? "application/json"
     : "text/html";
@@ -129,9 +181,9 @@ describe("contract fixtures", () => {
     it(c.id, () => {
       switch (c.kind) {
         case "stk_callback": {
-          const res = parseSTKCallback(rawBody(c.body));
-          expect(String(res.classify())).toBe(c.expect.class);
-          expect(res.ResultCode).toBe(c.expect.resultCode);
+          const res = parseSTKCallback(rawBody(c));
+          expect(String(res.classify())).toBe(requireExpect(c, "class"));
+          expect(res.ResultCode).toBe(requireExpect(c, "resultCode"));
           for (const [key, want] of Object.entries(c.expect.metadata ?? {})) {
             const got = res.metadata().get(key);
             expect(got, `metadata[${key}] missing`).toBeDefined();
@@ -148,9 +200,12 @@ describe("contract fixtures", () => {
           break;
         }
         case "balance_segment": {
-          const text = (c.body as { text: string }).text;
-          const segments = parseBalanceSegments(text);
-          expect(segments.length).toBe(c.expect.segments);
+          const body = c.body as { text?: string } | undefined;
+          if (body === undefined || typeof body.text !== "string") {
+            throw new Error(`fixture ${c.id} has no body.text`);
+          }
+          const segments = parseBalanceSegments(body.text);
+          expect(segments.length).toBe(requireExpect(c, "segments"));
           // The skipped counter is Go/Python-only: parseBalanceSegments
           // returns ONLY the kept rows, so "skipped" is not observable
           // here. A regression that dropped every row would still satisfy
@@ -169,10 +224,10 @@ describe("contract fixtures", () => {
               `fixture ${c.id} has no valid top-level statusCode: ${String(status)}`,
             );
           }
-          const raw = rawBody(c.body);
+          const raw = rawBody(c);
           const err = MpesaError.fromResponse(status, raw, contentType(raw));
-          expect(err.errorCode).toBe(c.expect.errorCode ?? null);
-          expect(err.errorMessage).toBe(c.expect.errorMessage ?? null);
+          expect(err.errorCode).toBe(requireExpect(c, "errorCode") ?? null);
+          expect(err.errorMessage).toBe(requireExpect(c, "errorMessage") ?? null);
           break;
         }
         default:

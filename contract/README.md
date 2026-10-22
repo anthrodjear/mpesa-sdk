@@ -2,18 +2,23 @@
 
 The shared wire contract for the M-Pesa Daraja SDK, in one place.
 
-`README.md:8` promises "identical wire behaviour, identical test vectors"
-across Go, Python and TypeScript. This directory is where that promise is
-ENFORCED: every file below is read by all three test suites
+The repository README promises "identical wire behaviour, identical test
+vectors" across Go, Python and TypeScript. This directory is where that
+promise is ENFORCED: every file below is read by all three test suites
 (`go/contract_test.go`, `python/tests/test_contract.py`,
 `typescript/test/contract.test.ts`), and CI fails if any engine disagrees.
 
 The corpus is deliberately small and deliberately SHARED. Each engine
 hand-writes its own payloads, and that is exactly how the engines drifted:
-the Python engine dropped numeric error-envelope members (so its 401 retry
-never fired) and never grew the 2**53 balance gate Go and TypeScript
-already had. A fixture the three engines read cannot drift the same way
-twice — the second engine to disagree fails the build.
+the Python engine DROPPED a numeric error-envelope member, so the typed
+error a caller received lost the gateway's error code (`error_code` was
+`None` instead of `"401"`) while the envelope's other members survived.
+(The 401 retry probe is NOT affected: it keys on the DOTTED code
+`401.003.01`, which a numeric member would never have matched anyway, so
+Go and Python behave identically there.) The Python engine also never grew
+the 2**53 balance gate Go and TypeScript already had. A fixture the three
+engines read cannot drift the same way twice — the second engine to
+disagree fails the build.
 
 Engine behaviour the corpus CANNOT express is tracked separately in
 [`known-divergences.md`](known-divergences.md).
@@ -37,9 +42,9 @@ Engine behaviour the corpus CANNOT express is tracked separately in
 
 | Field | Meaning |
 |---|---|
-| `id` | Unique, kebab-case. Used as the sub-test name in all three engines. |
+| `id` | Unique, kebab-case. Used as the sub-test name in all three engines. A duplicate id is a hard failure in all three harnesses: two identically named sub-tests would mean one of them is not the case the author meant. |
 | `kind` | `stk_callback` \| `balance_segment` \| `error_envelope`. |
-| `statusCode` | For `error_envelope`: the HTTP status the harness FEEDS the engine. An INPUT, not an expectation — the harness never asserts on it, because asserting that the engine echoed back the status it was given can never fail. |
+| `statusCode` | For `error_envelope`: the HTTP status the harness FEEDS the engine. An INPUT, not an expectation — the harness never asserts on it, because asserting that the engine echoed back the status it was given can never fail. `0` is not a real HTTP status and is rejected by all three harnesses. |
 | `body` | The raw wire body — see "The raw-body rule" below. For `balance_segment` it is `{"text": "<blob>"}`; for `error_envelope` it is the raw response body. |
 
 ### Expectation fields (`expect`)
@@ -55,7 +60,11 @@ Engine behaviour the corpus CANNOT express is tracked separately in
 | `expect.skipped` | For `balance_segment`: expected number of skipped rows. |
 
 Only the fields the `kind` uses are asserted; the others are ignored, so a
-case never asserts a value it does not care about.
+case never asserts a value it does not care about. Every field a kind
+REQUIRES is presence-checked: a fixture that forgets one is a BROKEN
+fixture, and all three harnesses fail loudly on it (naming the fixture and
+the missing field) rather than decoding it into a zero that would let the
+case pass while asserting nothing.
 
 ## The raw-body rule
 
@@ -74,12 +83,24 @@ string), TypeScript uses `JSON.stringify`. A body that is quoted JSON is a
 DIFFERENT wire body from the same JSON unquoted, and the corpus must be able
 to express both.
 
+## The content-type rule
+
 The content type the transport would have reported is derived from that SAME
-raw text, by the same rule in all three harnesses: a body that opens with a
-JSON object or array is `application/json`, anything else is `text/html`.
-The fixture's JSON type must not decide it — a `body` that is the string
-`"42"` IS the raw wire text `42`, which is not JSON — because the three
-engines must receive identical inputs for the same fixture.
+raw text, by the same rule in all three harnesses: **skip the leading ASCII
+whitespace — space, tab, CR, LF, and nothing else — then look at the first
+byte.** `{` or `[` means `application/json`; anything else (a WAF page, an
+HTML error page, a bare scalar) means `text/html`.
+
+The leading set is ASCII-only on purpose. Unicode whitespace (NBSP) and a
+UTF-8 BOM are NOT whitespace here: the rule describes the ASCII framing of
+an HTTP body, and a body that starts with a BOM is a DIFFERENT wire body.
+All three harnesses skip exactly this set, so the three engines receive
+identical inputs for the same fixture.
+
+The fixture's JSON type must not decide the content type either — a `body`
+that is the string `"42"` IS the raw wire text `42`, which is not JSON —
+because the three engines must receive identical inputs for the same
+fixture.
 
 ## Class names
 
@@ -123,16 +144,56 @@ Three permissive parsers would classify the same metadata text three
 different ways, so all three harnesses apply THIS grammar instead, and
 everything it rejects compares as a string.
 
+Booleans, objects and null are OUT OF SCOPE for metadata comparison: they
+compare as strings, and the three engines render them differently (Go
+prints `map[...]`, Python prints `{'a': 1}`, TypeScript prints
+`[object Object]`), so no shared expectation could hold for all three. A
+fixture must not use them.
+
 Duplicate metadata names resolve FIRST-WINS in all three engines (Go
 `MetadataMap`, Python `metadata()`, TypeScript `MetadataMap`), so a
 duplicate-key fixture expects the FIRST value.
+
+## The corpus
+
+| Fixture id | Kind | What it pins | State |
+|---|---|---|---|
+| `stk-callback-success` | `stk_callback` | Success class; an **integer** `ResultCode` (the documented STK Push encoding, `docs/apis/stk-push.md`); the metadata map, including `TransactionDate` | green everywhere |
+| `stk-callback-indeterminate` | `stk_callback` | An unknown code stays INDETERMINATE — never auto-failed, never auto-refunded | green everywhere |
+| `stk-callback-duplicate-metadata` | `stk_callback` | Duplicate metadata names resolve FIRST-WINS | green everywhere |
+| `stk-callback-amount-as-string` | `stk_callback` | A numeric metadata STRING is the same money as the number ("100" vs 100) | green everywhere |
+| `stk-callback-amount-not-plain-decimal` | `stk_callback` | A metadata string the plain-decimal grammar REJECTS ("1e3") compares as a STRING, not as 1000 | green everywhere |
+| `balance-over-2p53` | `balance_segment` | A balance beyond 2**53 is SKIPPED and counted, never returned rounded | **red in Python (D3)** |
+| `error-envelope-numeric-code` | `error_envelope` | A numeric `errorCode` is coerced to its wire string form | **red in Python (D1)** |
+| `error-envelope-unparseable` | `error_envelope` | A non-JSON body yields the generic message and NO error code | **red in TypeScript (D7)** |
+
+## Expected red state
+
+The corpus is RED in two engines until the corresponding defects are fixed,
+and that redness is the point: it is the visible proof that the defect is
+still there.
+
+| Case | Red in | Defect |
+|---|---|---|
+| `error-envelope-numeric-code` | Python | D1 — a numeric envelope member is dropped, so the typed error loses the gateway's error code |
+| `balance-over-2p53` | Python | D3 — no 2**53 gate, so an unrepresentable balance is returned rounded |
+| `error-envelope-unparseable` | TypeScript | D7 — the raw upstream body is embedded in the exception text |
+
+Those cases are NOT marked `xfail` and NOT skipped: they must keep failing
+loudly, so the moment the fix lands the case turns green and the change is
+visible in the diff. **The branch carrying them is therefore EXPECTED TO
+FAIL CI until the fixes land.**
+
+Everything else in the corpus is green in all three engines.
 
 ## Adding a case
 
 1. Add the JSON file here.
 2. Add a row to each engine's dispatch table if it needs a new `kind`.
 3. Run all three suites. A case that passes in one engine and fails in
-   another is a **drift bug**, not a bad fixture — fix the engine.
+   another is either an engine drift bug or a wrong expectation — decide
+   which by checking the Daraja wire contract (`docs/apis/`), then fix
+   whichever is wrong.
 4. Every behavioural fix in the release must land with its fixture case, so
    the fix is pinned in all three engines at once.
 
@@ -154,3 +215,5 @@ reintroduce; a defect fixed WITH a fixture cannot be.
 - TypeScript's `parseBalanceSegments` returns ONLY the kept rows — it has
   no skipped counter (Go and Python do) — so `expect.skipped` is asserted
   by Go and Python alone.
+- Fixture ids must be unique: all three harnesses fail loudly on a
+  duplicate.

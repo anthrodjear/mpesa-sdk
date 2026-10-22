@@ -171,8 +171,14 @@ describe("StkCallback hostile shapes", () => {
     // by engine, and tracked in contract/known-divergences.md.
     const raw =
       '{"Body":{"stkCallback":{"MerchantRequestID":"m","CheckoutRequestID":"ws_CO_1","ResultCode":"0"}}}';
-    expect(() => parseSTKCallback(raw)).toThrow(MpesaDecodeError);
-    expect(() => parseSTKCallback(raw)).toThrow(/ResultDesc/);
+    let caught: unknown;
+    try {
+      parseSTKCallback(raw);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MpesaDecodeError);
+    expect((caught as Error).message).toMatch(/ResultDesc/);
   });
 
   it("non-object Body keeps the malformed phrasing (Python test_non_object_body_malformed_phrasing)", () => {

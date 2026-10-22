@@ -35,3 +35,41 @@ then the only executable pin is an engine-specific test outside the shared
 corpus (`go/callbacks_test.go`, `python/tests/test_callbacks.py`,
 `typescript/test/callbacks.test.ts`), and that pin must be kept in step
 with this list.
+
+## Error envelope with a non-scalar member
+
+**The divergence.** An error body whose `errorCode` (or `requestId`, or
+`errorMessage`) is a JSON ARRAY or OBJECT:
+
+- **Go** — `go/errors.go`: `parseError` decodes the body into the
+  `errorEnvelope` struct, and `FlexString.UnmarshalJSON` rejects an array
+  or an object as a HARD error. The `json.Unmarshal` therefore fails for
+  the WHOLE body, so every member is lost — the `requestId` and the
+  `errorMessage` are dropped along with the offending `errorCode` — and
+  the caller sees the generic "unexpected error response from gateway".
+- **Python** — `python/mpesa/exceptions.py`: `from_response` copies only
+  the members that arrive as `str`, so a non-scalar member counts as
+  absent and the OTHER members survive.
+- **TypeScript** — `typescript/src/errors.ts`: `coerceEnvelopeField` turns
+  anything that is not a string or a number into `""`, so a non-scalar
+  member counts as absent and the OTHER members survive.
+
+**Why it is not a fixture.** The body has two different outcomes — Go loses
+the whole envelope, Python and TypeScript keep the survivors — and the
+corpus asserts ONE expected error code and error message for a body.
+Asserting "Go loses the requestId too" is an engine-specific claim, not a
+wire contract.
+
+**What would close it.** Align the three engines on one envelope rule —
+either Go decodes the members independently (decoding each envelope
+member on its own, so one mistyped member cannot erase the others) or
+Python and TypeScript abort the whole envelope as Go does — and express
+the agreed behaviour as an ordinary fixture.
+
+Today only the Go side is pinned: `go/errors_test.go`
+(`TestParseErrorArrayFieldFallsBackToGeneric`) asserts that an array
+`errorCode` costs the caller the whole envelope. The Python and
+TypeScript sides of the same body have no pin yet, and the files that
+would carry one (`python/tests/test_exceptions.py`,
+`typescript/test/errors.test.ts`) are outside the scope of the contract
+harness. Add them when the divergence is next touched.

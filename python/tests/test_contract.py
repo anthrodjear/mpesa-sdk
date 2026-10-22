@@ -11,9 +11,13 @@ not fix them:
 
 * ``error-envelope-numeric-code`` (**D1**) -- ``MpesaError.from_response``
   keeps only the envelope members that arrive as ``str``, so a numeric
-  ``errorCode`` is DROPPED (the envelope's other members -- the
-  ``requestId``, the ``errorMessage`` -- still survive): the error code the
-  401 retry probe in ``client.py`` keys on never arrives.
+  ``errorCode`` is DROPPED: the typed error a caller receives loses the
+  gateway's error code (``error_code`` is ``None`` instead of ``"401"``)
+  while the envelope's other members -- the ``requestId``, the
+  ``errorMessage`` -- survive. The 401 retry probe is NOT affected: it keys
+  on the DOTTED code ``"401.003.01"`` (``mpesa/client.py``), which a
+  numeric member would never have matched anyway, so Go and Python behave
+  identically there.
 * ``balance-over-2p53`` (**D3**) -- ``parse_balance_segments`` has no
   2**53 gate, so a balance that cannot survive a float64 round-trip is
   returned with a silently rounded amount instead of being skipped and
@@ -50,29 +54,70 @@ FIXTURE_DIR = Path(__file__).resolve().parents[2] / "contract" / "fixtures"
 #: and ``"1e3"`` -- three permissive parsers would classify the same
 #: metadata text three different ways. One grammar, applied identically in
 #: all three harnesses, removes that class of drift by construction.
-_NUMERIC_RE = re.compile(r"-?\d+(\.\d+)?")
+_NUMERIC_RE = re.compile(r"^-?\d+(\.\d+)?$")
 
-
+#: Leading whitespace the content-type rule skips: ASCII space, tab, CR
+#: and LF -- and nothing else. Unicode whitespace (NBSP) and a UTF-8 BOM
+#: are NOT whitespace here: the rule describes the ASCII framing of an
+#: HTTP body, and a body that starts with a BOM is a DIFFERENT wire body.
+#: All three harnesses skip exactly this set, so the three engines receive
+#: the same input for the same fixture.
+_ASCII_SPACE = " \t\r\n"
 def _cases() -> list[dict[str, Any]]:
-    """Every shared fixture, in file-name order for a stable test order."""
+    """Every shared fixture, in file-name order for a stable test order.
+
+    Fixture ids must be UNIQUE: a duplicate would produce two identically
+    named tests, and only one of them would be read as the case the author
+    meant. A fixture that does not decode names ITSELF in the failure --
+    a bare JSONDecodeError would point at nothing.
+    """
     if not FIXTURE_DIR.is_dir():
         pytest.fail(f"contract fixture dir missing: {FIXTURE_DIR}")
     cases: list[dict[str, Any]] = []
+    seen: dict[str, str] = {}
     for path in sorted(FIXTURE_DIR.glob("*.json")):
-        cases.append(json.loads(path.read_text(encoding="utf-8")))
+        try:
+            case = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            pytest.fail(f"decode {path.name}: {exc}")
+        case_id = case.get("id", "")
+        prev = seen.get(case_id)
+        if prev is not None:
+            pytest.fail(
+                f"duplicate fixture id {case_id!r} in {prev} and {path.name}")
+        seen[case_id] = path.name
+        cases.append(case)
     if not cases:
         pytest.fail(f"no contract fixtures found in {FIXTURE_DIR}")
     return cases
 
 
-def _raw_body(body: Any) -> bytes:
+def _require(expect: dict[str, Any], key: str, case_id: str) -> Any:
+    """A required expectation, or a loud failure naming the fixture.
+
+    A fixture that forgets an expectation is a BROKEN fixture: reading it
+    as a default would let the case pass while asserting nothing.
+    """
+    if key not in expect:
+        pytest.fail(f"fixture {case_id!r} has no expect.{key}")
+    return expect[key]
+
+
+def _raw_body(case: dict[str, Any]) -> bytes:
     """The bytes the engine must SEE for a fixture body.
 
     A JSON string body IS the raw body text (a WAF page, an HTML error
     page); an object body is the raw JSON document. Go and TypeScript
     apply the same rule, so one corpus can express both a JSON envelope
     and a non-JSON gateway response.
+
+    A fixture with no body is a BROKEN fixture: it would feed the engine
+    an empty body -- an input no gateway ever sent -- and hide the broken
+    fixture behind whatever the engine made of it.
     """
+    if "body" not in case:
+        pytest.fail(f"fixture {case.get('id', '?')!r} has no body")
+    body = case["body"]
     if isinstance(body, str):
         return body.encode("utf-8")
     return json.dumps(body).encode("utf-8")
@@ -82,8 +127,9 @@ def _content_type(raw: bytes) -> str:
     """The content type the transport would have reported for the raw body.
 
     Derived from the RAW TEXT, exactly as the Go and TypeScript harnesses
-    derive it: a body that opens with a JSON object or array is
-    ``application/json``, anything else (a WAF page, an HTML error page, a
+    derive it: skip the leading ASCII whitespace, then look at the first
+    byte. A body that opens with a JSON object or array is
+    ``application/json``; anything else (a WAF page, an HTML error page, a
     bare scalar) is ``text/html``.
 
     The fixture's JSON TYPE must not decide this: a fixture ``body`` that
@@ -91,7 +137,7 @@ def _content_type(raw: bytes) -> str:
     Deriving from the type instead would have the Python engine receive a
     different input than the other two for the same fixture.
     """
-    text = raw.decode("utf-8", errors="replace").lstrip()
+    text = raw.decode("utf-8", errors="replace").lstrip(_ASCII_SPACE)
     if text.startswith("{") or text.startswith("["):
         return "application/json"
     return "text/html"
@@ -132,9 +178,9 @@ def test_contract_fixture(case: dict[str, Any]) -> None:
     expect = case["expect"]
 
     if kind == "stk_callback":
-        result = StkCallbackResult.from_json(_raw_body(case["body"]))
-        assert result.classify().value == expect["class"]
-        assert result.result_code == expect["resultCode"]
+        result = StkCallbackResult.from_json(_raw_body(case))
+        assert result.classify().value == _require(expect, "class", case["id"])
+        assert result.result_code == _require(expect, "resultCode", case["id"])
         meta = result.metadata()
         for key, want in expect.get("metadata", {}).items():
             assert key in meta, f"metadata[{key!r}] missing"
@@ -151,8 +197,8 @@ def test_contract_fixture(case: dict[str, Any]) -> None:
 
     elif kind == "balance_segment":
         segments, skipped = parse_balance_segments(case["body"]["text"])
-        assert len(segments) == expect["segments"]
-        assert skipped == expect["skipped"]
+        assert len(segments) == _require(expect, "segments", case["id"])
+        assert skipped == _require(expect, "skipped", case["id"])
 
     elif kind == "error_envelope":
         # statusCode is an INPUT -- the HTTP status the harness feeds the
@@ -164,16 +210,18 @@ def test_contract_fixture(case: dict[str, Any]) -> None:
             pytest.fail(
                 f"fixture {case['id']!r} has no valid top-level statusCode: "
                 f"{status!r}")
-        raw = _raw_body(case["body"])
+        raw = _raw_body(case)
         err = MpesaError.from_response(status, raw, _content_type(raw))
-        if expect.get("errorCode") is None:
+        want_code = _require(expect, "errorCode", case["id"])
+        if want_code is None:
             assert err.error_code is None
         else:
-            assert err.error_code == expect["errorCode"]
-        if expect.get("errorMessage") is None:
+            assert err.error_code == want_code
+        want_message = _require(expect, "errorMessage", case["id"])
+        if want_message is None:
             assert err.error_message is None
         else:
-            assert err.error_message == expect["errorMessage"]
+            assert err.error_message == want_message
 
     else:
         pytest.fail(f"unknown fixture kind {kind!r}")
