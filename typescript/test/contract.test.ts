@@ -9,18 +9,33 @@
  * decide which by checking the Daraja wire contract (`docs/apis/`), then
  * fix whichever is wrong.
  *
- * ONE CASE IS RED ON PURPOSE -- it pins a live defect, and this phase does
- * not fix it:
+ * THREE CASES WERE RED — they pinned live defects, and each fix corrected
+ * the ENGINE, not the assertion. All are GREEN here now:
  *
- * - `error-envelope-unparseable` (**D7**) -- `MpesaError.fromResponse`
- *   embeds a 200-character snippet of the raw upstream body in the
- *   exception text. Go (`go/errors.go`) and Python
+ * - `error-envelope-numeric-code` (**D1**) — red in the PYTHON engine:
+ *   `MpesaError.from_response` kept only the envelope members that arrive
+ *   as `str`, so a numeric `errorCode` was DROPPED and the typed error a
+ *   caller received lost the gateway's error code (`error_code` was `None`
+ *   instead of `"401"`). The 401 retry probe is NOT affected: it keys on
+ *   the DOTTED code `"401.003.01"`, which a numeric member would never
+ *   have matched anyway. Fixed in Phase 1.
+ * - `balance-over-2p53` (**D3**) — red in the PYTHON engine:
+ *   `parse_balance_segments` had no 2**53 gate, so a balance that cannot
+ *   survive a float64 round-trip was returned with a silently rounded
+ *   amount instead of being skipped and counted. Fixed in Phase 1.
+ * - `error-envelope-unparseable` (**D7**) — red in THIS engine:
+ *   `MpesaError.fromResponse` embeds a 200-character snippet of the raw
+ *   upstream body in the exception text. Go (`go/errors.go`) and Python
  *   (`mpesa/exceptions.py`) deliberately DISCARD that body: an exception
  *   object is logged by every `logger.exception` on the call path, so
  *   embedding upstream bytes ships raw gateway payloads (customer MSISDNs,
  *   WAF internals) to whatever log sink happens to be configured. The
  *   contract expects the generic "unexpected error response from gateway"
- *   message instead.
+ *   message instead. Fixed in Phase 2.
+ *
+ * The assertions were never weakened: every case turned green because the
+ * ENGINE changed. The harness assertions are never weakened to make a case
+ * pass.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";

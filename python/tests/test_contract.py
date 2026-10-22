@@ -8,8 +8,8 @@ fails in another is either an engine drift bug or a wrong expectation --
 decide which by checking the Daraja wire contract (``docs/apis/``), then
 fix whichever is wrong.
 
-TWO CASES WERE RED -- they pinned live defects, and the Phase 1 fix
-corrected the ENGINE, not the assertion. Both are GREEN here now:
+THREE CASES WERE RED -- they pinned live defects, and each fix
+corrected the ENGINE, not the assertion. All are GREEN here now:
 
 * ``error-envelope-numeric-code`` (**D1**) -- ``MpesaError.from_response``
   used to keep only the envelope members that arrive as ``str``, so a
@@ -20,20 +20,21 @@ corrected the ENGINE, not the assertion. Both are GREEN here now:
   on the DOTTED code ``"401.003.01"`` (``mpesa/client.py``), which a
   numeric member would never have matched anyway, so Go and Python behaved
   identically there. The engine now coerces numbers and booleans to their
-  JSON text, so the case is green in all three engines.
+  JSON text, so the case is green in all three engines. (Phase 1)
 * ``balance-over-2p53`` (**D3**) -- ``parse_balance_segments`` had no
   2**53 gate, so a balance that cannot survive a float64 round-trip was
   returned with a silently rounded amount instead of being skipped and
   counted (Go ``exceedsSafeBalance`` and the TypeScript parity already
   skipped it). The engine now skips and counts such rows exactly like the
-  other two, so the case is green in all three engines.
+  other two, so the case is green in all three engines. (Phase 1)
+* ``error-envelope-unparseable`` (**D7**) -- red in the TYPESCRIPT engine
+  only: ``MpesaError.fromResponse`` embedded a 200-character snippet of the
+  raw upstream body in the exception text, while Go (``go/errors.go``) and
+  Python (``mpesa/exceptions.py``) deliberately DISCARD that body. The
+  Phase 2 fix stopped the embedding, so the case is green in all three
+  engines.
 
-One case is still red elsewhere: ``error-envelope-unparseable`` fails in
-the TypeScript engine only (defect D7 -- the raw upstream body is embedded
-in the exception text). It is scheduled for a later phase and does not
-affect this suite.
-
-The assertions were never weakened: both cases turned green because the
+The assertions were never weakened: every case turned green because the
 ENGINE changed. The harness assertions are never weakened to make a case
 pass.
 """

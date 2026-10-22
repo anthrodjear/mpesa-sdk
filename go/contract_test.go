@@ -16,16 +16,21 @@ import (
 //
 // The Go, Python and TypeScript engines are hand-written copies of ONE wire
 // contract, and hand-written copies drift: the Python engine DROPPED a
-// numeric error-envelope member, so the typed error a caller received lost
-// the gateway's error code (error_code was None instead of "401") while the
-// envelope's other members survived. (The 401 retry probe is NOT affected:
-// it keys on the DOTTED code "401.003.01", which a numeric member would
-// never have matched anyway -- Go and Python behave identically there.) The
-// Python engine also never grew the 2**53 balance gate Go and TypeScript
-// already had. Every case below is read from the SHARED corpus in
-// contract/fixtures (schema: contract/README.md), which the Python and
-// TypeScript harnesses read too -- so a divergence is a failing test in the
-// drifting engine rather than a difference nobody notices.
+// numeric error-envelope member (D1), so the typed error a caller received
+// lost the gateway's error code (error_code was None instead of "401") while
+// the envelope's other members survived. (The 401 retry probe is NOT
+// affected: it keys on the DOTTED code "401.003.01", which a numeric member
+// would never have matched anyway -- Go and Python behave identically
+// there.) The Python engine also never grew the 2**53 balance gate Go and
+// TypeScript already had (D3), and the TypeScript engine embedded the raw
+// upstream body in its exception text (D7). All three are FIXED now: the
+// corpus caught them, the ENGINE changed, and every case is green in all
+// three engines.
+//
+// Every case below is read from the SHARED corpus in contract/fixtures
+// (schema: contract/README.md), which the Python and TypeScript harnesses
+// read too -- so a divergence is a failing test in the drifting engine
+// rather than a difference nobody notices.
 //
 // This file is the Go half of that net. The corpus is the source of truth
 // for the schema, not this struct: keep them in step.

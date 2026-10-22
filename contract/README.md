@@ -10,18 +10,19 @@ promise is ENFORCED: every file below is read by all three test suites
 
 The corpus is deliberately small and deliberately SHARED. Each engine
 hand-writes its own payloads, and that is exactly how the engines drifted:
-the Python engine DROPPED a numeric error-envelope member, so the typed
+the Python engine DROPPED a numeric error-envelope member (D1), so the typed
 error a caller received lost the gateway's error code (`error_code` was
 `None` instead of `"401"`) while the envelope's other members survived.
 (The 401 retry probe is NOT affected: it keys on the DOTTED code
 `401.003.01`, which a numeric member would never have matched anyway, so
 Go and Python behaved identically there.) The Python engine also had never
-grown the 2**53 balance gate Go and TypeScript already had.
+grown the 2**53 balance gate Go and TypeScript already had (D3), and the
+TypeScript engine embedded the raw upstream body in its exception text (D7).
 
-Both of those defects are FIXED now: the corpus caught them, the Python
-ENGINE changed, and the cases are green in all three engines. A fixture
-the three engines read cannot drift the same way twice — the second engine
-to disagree fails the build.
+All three defects are FIXED now: the corpus caught them, the ENGINE
+changed, and every case is green in all three engines. A fixture the three
+engines read cannot drift the same way twice — the second engine to
+disagree fails the build.
 
 Engine behaviour the corpus CANNOT express is tracked separately in
 [`known-divergences.md`](known-divergences.md).
@@ -168,24 +169,29 @@ duplicate-key fixture expects the FIRST value.
 | `stk-callback-amount-not-plain-decimal` | `stk_callback` | The metadata value stays the string `"1e3"` — a value the plain-decimal grammar rejects — and matches the expectation textually | green everywhere |
 | `balance-over-2p53` | `balance_segment` | A balance beyond 2**53 is SKIPPED and counted, never returned rounded | green everywhere |
 | `error-envelope-numeric-code` | `error_envelope` | A numeric `errorCode` is coerced to its wire string form | green everywhere |
-| `error-envelope-unparseable` | `error_envelope` | A non-JSON body yields the generic message and NO error code | **red in TypeScript (D7)** |
+| `error-envelope-unparseable` | `error_envelope` | A non-JSON body yields the generic message and NO error code | green everywhere |
 
-## Expected red state
+## Red state: none — and that is not the same as "never red"
 
-The corpus is RED in ONE engine until the corresponding defect is fixed,
-and that redness is the point: it is the visible proof that the defect is
-still there.
+The corpus is GREEN in all three engines. It was NOT always: three cases
+were red until the corresponding defect was fixed, and that redness was the
+point — it is the visible proof that the defect was still there.
 
-| Case | Red in | Defect |
-|---|---|---|
-| `error-envelope-unparseable` | TypeScript | D7 — the raw upstream body is embedded in the exception text |
+| Case | Was red in | Defect | Fixed in |
+|---|---|---|---|
+| `error-envelope-numeric-code` | Python | D1 — a numeric error-envelope member was DROPPED, so the typed error a caller received lost the gateway's error code | Phase 1 |
+| `balance-over-2p53` | Python | D3 — the 2**53 balance gate was missing, so an unsafe balance was returned rounded instead of being skipped and counted | Phase 1 |
+| `error-envelope-unparseable` | TypeScript | D7 — the raw upstream body was embedded in the exception text | Phase 2 |
 
-That case is NOT marked `xfail` and NOT skipped: it must keep failing
-loudly, so the moment the fix lands the case turns green and the change is
-visible in the diff. **The TypeScript CI job is therefore EXPECTED TO FAIL
-until that fix lands** — the Go and Python suites are green.
+The POLICY is unchanged, and it is what the table above exists to protect:
+**a red case is never marked `xfail` and never skipped.** It must keep
+failing loudly, so the moment the fix lands the case turns green and the
+change is visible in the diff. A corpus that quietly excuses its own
+failures cannot catch the next drift.
 
-Everything else in the corpus is green in all three engines.
+Every fix corrected the ENGINE, never the assertion: the harness assertions
+were never weakened to make a case pass. That is what makes "green" mean
+"the three engines agree" rather than "the test stopped checking".
 
 ## Adding a case
 
