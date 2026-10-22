@@ -1717,7 +1717,7 @@ func TestClientRenderingNeverLeaksCredentials(t *testing.T) {
 	c.mu.Unlock()
 
 	// The token bytes as fmt renders them inside a struct ("[98 101 ...]").
-	tokenBytesDecimal := fmt.Sprint(c.tokenBytes)
+	tokenBytesDecimal := fmt.Sprintf("%v", c.tokenBytes)
 
 	var logBuf bytes.Buffer
 	slog.New(slog.NewTextHandler(&logBuf, nil)).Info("client", "client", slog.Any("client", c))
