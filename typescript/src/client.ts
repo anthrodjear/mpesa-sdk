@@ -1471,6 +1471,29 @@ export class MpesaClient {
 // ─── Factory functions ────────────────────────────────────────────────────────
 
 /**
+ * `util.inspect` hook — the TypeScript equivalent of Python's
+ * `MpesaClient.__repr__` (python/mpesa/client.py) and Go's
+ * `Client.Format` (go/client.go).
+ *
+ * `util.inspect` does NOT consult `toString()`/`toJSON()`: left to its own
+ * devices it walks the own enumerable properties, so it printed the
+ * nested `_tokens` TokenManager — and with it the consumer key and the
+ * consumer secret — in cleartext, which is exactly what `console.log(client)`
+ * does. SECURITY.md forbids cleartext credentials in logs, so the hook
+ * routes `inspect` (and therefore `console.log`) through the
+ * credential-safe {@link MpesaClient.toString} form.
+ *
+ * Installed with `Symbol.for("nodejs.util.inspect.custom")` rather than an
+ * import of `node:util`, so this module keeps no Node-only import. The
+ * hook is NOT writable: a redaction hook must not be replaceable at
+ * runtime.
+ */
+Object.defineProperty(MpesaClient.prototype, Symbol.for("nodejs.util.inspect.custom"), {
+  value(this: MpesaClient): string { return this.toString(); },
+  enumerable: false, configurable: true, writable: false,
+});
+
+/**
  * Create a MpesaClient from a validated Config.
  *
  * @example

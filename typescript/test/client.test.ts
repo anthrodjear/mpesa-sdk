@@ -6,6 +6,7 @@
  * with exact parity on retry, generation-guard, and validation semantics.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { inspect } from "node:util";
 import { MpesaClient, createClient, createClientFromEnv, sharedTokenCacheKey } from "../src/client.js";
 import { Config, ConfigError, Environment } from "../src/config.js";
 import { MpesaError, MpesaDecodeError } from "../src/errors.js";
@@ -190,6 +191,29 @@ describe("MpesaClient construction", () => {
     expect(json).not.toContain(CONSUMER_KEY);
     expect(json).not.toContain(CONSUMER_SECRET);
     expect(json.environment).toBe("sandbox");
+  });
+
+  it("util.inspect prints neither the consumer key nor the consumer secret", () => {
+    // util.inspect does NOT consult toString()/toJSON(): without the
+    // inspect hook it walks the own enumerable properties, so it printed
+    // the nested _tokens TokenManager -- and with it the consumer key and
+    // the consumer secret -- in cleartext. That is exactly what
+    // `console.log(client)` does.
+    const client = new MpesaClient({
+      config: new Config({
+        consumerKey: "0123456789abcdef",
+        consumerSecret: "SUPERSECRET",
+        shortcode: SHORTCODE,
+        passkey: PASSKEY,
+      }),
+      timeoutMs: 5000,
+      now: () => nowMs,
+    });
+    const out = inspect(client);
+    expect(out).not.toContain("SUPERSECRET");
+    expect(out).not.toContain("0123456789abcdef");
+    // The rendering is still the credential-safe toString() form.
+    expect(out).toContain(client.toString());
   });
 });
 
