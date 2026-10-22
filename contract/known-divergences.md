@@ -56,8 +56,8 @@ with this list.
   member counts as absent and the OTHER members survive.
 
 On the ARRAY/OBJECT member this entry is about, Python and TypeScript
-agree. They differ about a BOOLEAN member — see "Error envelope with a
-boolean member" below.
+agree. A BOOLEAN member is no longer a divergence between them — see
+"Error envelope with a boolean member — CLOSED" below.
 
 **Why it is not a fixture.** The body has two different outcomes — Go loses
 the whole envelope, Python and TypeScript keep the survivors — and the
@@ -82,10 +82,15 @@ yet — `typescript/test/errors.test.ts` does not cover it, and that file is
 outside the scope of the contract harness. That pin is still to be
 written; add it the next time this divergence is touched.
 
-## Error envelope with a boolean member
+## Error envelope with a boolean member — CLOSED
 
-**The divergence.** An error body whose `errorCode` (or `requestId`, or
-`errorMessage`) is a JSON BOOLEAN:
+**Status: CLOSED.** All three engines now render a boolean envelope member
+as its JSON text, so this body has ONE outcome across the SDKs. The entry
+stays here because the executable pin is still an engine-specific test
+rather than a corpus fixture (see the last paragraph).
+
+An error body whose `errorCode` (or `requestId`, or `errorMessage`) is a
+JSON BOOLEAN:
 
 - **Go** — `go/coercion.go`: `FlexString.UnmarshalJSON` falls through the
   string and number branches to the raw text, so `true` is rendered as the
@@ -93,31 +98,29 @@ written; add it the next time this divergence is touched.
 - **Python** — `python/mpesa/exceptions.py`: `_envelope_value` renders a
   boolean as its JSON text (`"true"` / `"false"`), which is the same
   rendering Go produces.
-- **TypeScript** — `typescript/src/errors.ts`: `coerceEnvelopeField`
-  accepts only a string or a number, so a boolean counts as ABSENT and the
-  member is dropped.
+- **TypeScript** — `typescript/src/errors.ts`: `coerceEnvelopeField` renders
+  a boolean as its JSON text (`"true"` / `"false"`), the same rendering Go
+  and Python produce.
 
-This divergence was INTRODUCED by the D1 fix. Before it, Python dropped a
-boolean member too, so Python and TypeScript agreed; Python now agrees
-with Go, and the two engines disagree.
+**History.** The divergence was INTRODUCED by the D1 fix. Before it,
+Python dropped a boolean member too, so Python and TypeScript agreed;
+Python then moved to Go's rendering and the two engines disagreed. The
+TypeScript D7 fix closed it by giving `coerceEnvelopeField` the boolean
+branch — a boolean is a value the gateway SENT, not an absent member, and
+dropping it could lose the `requestId` the 401 retry probe keys on.
 
-**Why it is not a fixture.** A shared fixture carries ONE expectation for
-one body, and the two behaviours are both defensible: the corpus cannot
-assert "the code is `true`" for an engine that renders it absent, nor "the
-code is absent" for an engine that renders it `"true"`. Asserting either
-way is an engine-specific claim, not a wire contract.
-
-**What would close it.** Align TypeScript's `coerceEnvelopeField` with Go
-and Python — accept a boolean and render it as its JSON text — and express
-the agreed behaviour as an ordinary fixture. The alternative is to make Go
-and Python drop booleans as well.
-
-Go's side is pinned by `go/coercion_test.go` (`TestFlexStringBranches`
-covers `true`; `false` is covered by the `kept` list in
-`TestFlexStringRejectsArraysAndObjects`), and Python's by
+**The pins.** Go's side is pinned by `go/coercion_test.go`
+(`TestFlexStringBranches` covers `true`; `false` is covered by the `kept`
+list in `TestFlexStringRejectsArraysAndObjects`), Python's by
 `python/tests/test_exceptions.py`
-(`test_boolean_envelope_member_becomes_its_json_text`). TypeScript has no
-equivalent pin for the boolean member.
+(`test_boolean_envelope_member_becomes_its_json_text`), and TypeScript's by
+`typescript/test/errors.test.ts`
+(`renders a BOOLEAN envelope member as its JSON text (go/py parity)`).
+
+**Why it is still not a fixture.** Now that the three engines agree, the
+body COULD be expressed as an ordinary corpus fixture — that fixture is
+not added in this phase (the shared corpus is frozen here), so the
+executable pin remains the engine-specific test above.
 
 ## Error envelope with a non-finite number member
 

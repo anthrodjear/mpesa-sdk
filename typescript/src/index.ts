@@ -62,6 +62,10 @@
  *   `consumerSecret` and `passkey` entirely, while `consumerKey` renders
  *   MASKED (first-4/last-4, e.g. `abcd...wxyz`). Never log the raw
  *   {@link Config} object.
+ * - **Gateway error bodies never ride along in exceptions.** A non-2xx
+ *   response whose body is not a Daraja error envelope yields the generic
+ *   "unexpected error response from gateway"; the raw bytes reach you ONLY
+ *   through the opt-in `errorLogger` option on {@link MpesaClientOptions}.
  *
  * @packageDocumentation
  */
@@ -93,6 +97,7 @@ export type { MpesaClientOptions } from "./client.js";
 
 // ── Errors ──────────────────────────────────────────────────────────────
 export { MpesaError, MpesaDecodeError } from "./errors.js";
+export type { ErrorLogger } from "./errors.js";
 
 // ── Callbacks (STK Push ingestion) ──────────────────────────────────────
 export { StkCallback, parseSTKCallback } from "./callbacks.js";

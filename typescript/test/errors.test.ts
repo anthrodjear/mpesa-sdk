@@ -28,12 +28,34 @@ describe("MpesaError.fromResponse — envelope parsing", () => {
   });
 
   it("coerces numeric envelope fields to strings; other non-strings stay absent", () => {
-    // Documented TS-spec rule: string|number accepted (number -> String()).
+    // Wire rule (go FlexString / py `_envelope_value` parity): a string or a
+    // number is coerced; null, arrays and objects count as absent.
     const err = MpesaError.fromResponse(400, '{"requestId": 123, "errorCode": null}');
     expect(err.requestId).toBe("123");
     expect(err.errorCode).toBeNull();
     expect(err.errorMessage).toBeNull();
-    expect(err.message).not.toContain("unparseable");
+    expect(err.message).not.toContain("unexpected error response from gateway");
+  });
+
+  it("renders a BOOLEAN envelope member as its JSON text (go/py parity)", () => {
+    // Go `FlexString` (go/coercion.go) falls through to the raw JSON text, so
+    // `true` becomes "true"; Python `_envelope_value` does the same. A
+    // boolean is a value the gateway SENT, not an absent member — dropping
+    // it would lose the requestId the 401 retry probe keys on.
+    const err = MpesaError.fromResponse(400, '{"requestId": true, "errorCode": false}');
+    expect(err.requestId).toBe("true");
+    expect(err.errorCode).toBe("false");
+    expect(err.errorMessage).toBeNull();
+    // A boolean member IS an envelope member, so the body is not treated as
+    // a non-envelope diagnostic.
+    expect(err.errorMessage).not.toBe("unexpected error response from gateway");
+  });
+
+  it("still counts an ARRAY or OBJECT member as absent while the others survive", () => {
+    const err = MpesaError.fromResponse(400, '{"requestId": "rid-1", "errorCode": {"a": 1}}');
+    expect(err.requestId).toBe("rid-1");
+    expect(err.errorCode).toBeNull();
+    expect(err.errorMessage).toBeNull();
   });
 });
 
@@ -52,17 +74,72 @@ describe("MpesaError.fromResponse — hostile inputs", () => {
     }
   });
 
-  it("HTML page yields a diagnostic carrying contentType, byte length and snippet", () => {
+  it("HTML page yields the generic message and leaks NO part of the body", () => {
     const page = "<html><body>Request blocked by WAF</body></html>";
-    const byteLen = new TextEncoder().encode(page).length;
     const err = MpesaError.fromResponse(502, page, "text/html; charset=utf-8");
     expect(err.requestId).toBeNull();
     expect(err.errorCode).toBeNull();
-    const msg = err.errorMessage ?? "";
-    expect(msg).toContain("text/html; charset=utf-8");
-    expect(msg).toContain(`${byteLen} bytes`);
-    expect(msg).toContain("Request blocked by WAF");
-    expect(err.message.startsWith("mpesa: HTTP 502 unparseable error body")).toBe(true);
+    expect(err.errorMessage).toBe("unexpected error response from gateway");
+    // The upstream body must not survive anywhere in the rendered message:
+    // an exception object is logged by every logger on the call path.
+    expect(err.message).not.toContain("Request blocked by WAF");
+    expect(err.message).not.toContain("html");
+    expect(err.message).toBe("mpesa: HTTP 502 unexpected error response from gateway");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Non-envelope body isolation (D7) — go `ErrorLogger` / py `error_logger`
+// ---------------------------------------------------------------------------
+
+describe("MpesaError.fromResponse — non-envelope body isolation", () => {
+  const WAF_PAGE = "<html><body>WAF block page mentioning 254712345678</body></html>";
+
+  it("hands the raw body to the opt-in sink with status and content type", () => {
+    const seen: Array<{ status: number; contentType: string; body: string | Uint8Array }> = [];
+    MpesaError.fromResponse(502, WAF_PAGE, "text/html", (status, contentType, body) => {
+      seen.push({ status, contentType, body });
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.status).toBe(502);
+    expect(seen[0]!.contentType).toBe("text/html");
+    expect(seen[0]!.body).toBe(WAF_PAGE);
+  });
+
+  it("passes a binary body through to the sink untouched", () => {
+    const bytes = new Uint8Array([0xff, 0xfe, 0x00, 0x67, 0x61, 0x72, 0x62]);
+    let seenBody: string | Uint8Array | undefined;
+    MpesaError.fromResponse(400, bytes, "application/octet-stream", (_s, _c, body) => {
+      seenBody = body;
+    });
+    expect(seenBody).toBe(bytes);
+  });
+
+  it("swallows a sink that throws — a broken sink must never mask the error", () => {
+    const err = MpesaError.fromResponse(502, WAF_PAGE, "text/html", () => {
+      throw new Error("sink exploded");
+    });
+    expect(err).toBeInstanceOf(MpesaError);
+    expect(err.statusCode).toBe(502);
+    expect(err.errorMessage).toBe("unexpected error response from gateway");
+  });
+
+  it("does NOT invoke the sink for a parseable envelope", () => {
+    let called = false;
+    const err = MpesaError.fromResponse(400, ENVELOPE, "application/json", () => {
+      called = true;
+    });
+    expect(called).toBe(false);
+    expect(err.errorCode).toBe("500.001.1001");
+    expect(err.errorMessage).toBe("[MerchantValidate] - Wrong credentials");
+  });
+
+  it("invokes the sink exactly once, and only for the non-envelope branch", () => {
+    let calls = 0;
+    MpesaError.fromResponse(500, ENVELOPE, "application/json", () => { calls += 1; });
+    expect(calls).toBe(0);
+    MpesaError.fromResponse(500, '{"other": "field"}', "application/json", () => { calls += 1; });
+    expect(calls).toBe(1);
   });
 });
 
@@ -88,10 +165,10 @@ describe("MpesaError.fromResponse — never throws on garbage", () => {
     });
   });
 
-  it("BOM-prefixed JSON fails parsing like python, yielding the diagnostic", () => {
+  it("BOM-prefixed JSON fails parsing like python, yielding the generic message", () => {
     const err = MpesaError.fromResponse(418, '\ufeff{"requestId":"bom-prefixed"}');
     expect(err.requestId).toBeNull();
-    expect(err.errorMessage).toContain("unparseable error body");
+    expect(err.errorMessage).toBe("unexpected error response from gateway");
   });
 });
 

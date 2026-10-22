@@ -1144,7 +1144,7 @@ describe("Error envelope", () => {
     }
   });
 
-  it("handles unparseable body with diagnostic", async () => {
+  it("handles unparseable body with the generic message, never the body", async () => {
     fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
       const path = new URL(url).pathname;
       if (path === "/oauth/v1/generate") {
@@ -1170,10 +1170,148 @@ describe("Error envelope", () => {
       expect.fail("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(MpesaError);
-      const msg = (err as MpesaError).message;
-      expect(msg).toContain("text/html");
-      expect(msg).toContain("bytes");
-      expect(msg).toContain("blocked by WAF");
+      const mpesaErr = err as MpesaError;
+      expect(mpesaErr.errorMessage).toBe("unexpected error response from gateway");
+      // The upstream body never reaches the exception text (D7).
+      expect(mpesaErr.message).not.toContain("blocked by WAF");
+      expect(mpesaErr.message).not.toContain("text/html");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Opt-in error diagnostics (D7) — the client's errorLogger option
+// ---------------------------------------------------------------------------
+
+describe("MpesaClient errorLogger option", () => {
+  it("receives the raw body of a non-2xx response with a non-envelope body", async () => {
+    const seen: Array<{ status: number; contentType: string; body: string | Uint8Array }> = [];
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      return new Response("<html>blocked by WAF</html>", {
+        status: 403,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
+    });
+
+    const client = new MpesaClient({
+      config: new Config({
+        consumerKey: CONSUMER_KEY,
+        consumerSecret: CONSUMER_SECRET,
+        shortcode: SHORTCODE,
+        passkey: PASSKEY,
+        environment: Environment.SANDBOX,
+      }),
+      timeoutMs: 5000,
+      now: () => nowMs,
+      errorLogger: (status, contentType, body) => {
+        seen.push({ status, contentType, body });
+      },
+    });
+
+    await expect(
+      client.accountBalance({
+        initiator: "testapi",
+        securityCredential: "cred",
+        partyA: "600992",
+        remarks: "eod",
+        resultURL: "https://a.com/r",
+        queueTimeOutURL: "https://a.com/t",
+      }),
+    ).rejects.toBeInstanceOf(MpesaError);
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.status).toBe(403);
+    expect(seen[0]!.contentType).toBe("text/html; charset=utf-8");
+    expect(String(seen[0]!.body)).toContain("blocked by WAF");
+  });
+
+  it("is NOT invoked for a standard error envelope", async () => {
+    let called = false;
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      return errorResponse(400, {
+        requestId: "27504-4b64-1",
+        errorCode: "400.002.02",
+        errorMessage: "Bad Request - Invalid BusinessShortCode",
+      });
+    });
+
+    const client = new MpesaClient({
+      config: new Config({
+        consumerKey: CONSUMER_KEY,
+        consumerSecret: CONSUMER_SECRET,
+        shortcode: SHORTCODE,
+        passkey: PASSKEY,
+        environment: Environment.SANDBOX,
+      }),
+      timeoutMs: 5000,
+      now: () => nowMs,
+      errorLogger: () => {
+        called = true;
+      },
+    });
+
+    await expect(
+      client.accountBalance({
+        initiator: "testapi",
+        securityCredential: "cred",
+        partyA: "600992",
+        remarks: "eod",
+        resultURL: "https://a.com/r",
+        queueTimeOutURL: "https://a.com/t",
+      }),
+    ).rejects.toBeInstanceOf(MpesaError);
+
+    expect(called).toBe(false);
+  });
+
+  it("a throwing sink never masks the gateway error", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      return new Response("<html>blocked by WAF</html>", {
+        status: 403,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
+    });
+
+    const client = new MpesaClient({
+      config: new Config({
+        consumerKey: CONSUMER_KEY,
+        consumerSecret: CONSUMER_SECRET,
+        shortcode: SHORTCODE,
+        passkey: PASSKEY,
+        environment: Environment.SANDBOX,
+      }),
+      timeoutMs: 5000,
+      now: () => nowMs,
+      errorLogger: () => {
+        throw new Error("sink exploded");
+      },
+    });
+
+    try {
+      await client.accountBalance({
+        initiator: "testapi",
+        securityCredential: "cred",
+        partyA: "600992",
+        remarks: "eod",
+        resultURL: "https://a.com/r",
+        queueTimeOutURL: "https://a.com/t",
+      });
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(MpesaError);
+      expect((err as MpesaError).errorMessage).toBe("unexpected error response from gateway");
     }
   });
 });
@@ -2450,7 +2588,7 @@ describe("Typed decode errors", () => {
     }
     expect(caught).toBeInstanceOf(MpesaError);
     expect(caught).not.toBeInstanceOf(TypeError);
-    expect((caught as MpesaError).message).toContain("unparseable error body");
+    expect((caught as MpesaError).message).toContain("unexpected error response from gateway");
     // No retry was attempted on the malformed body.
     expect(fetchMock).toHaveBeenCalledTimes(2); // oauth + one business attempt
   });

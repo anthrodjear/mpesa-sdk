@@ -40,7 +40,12 @@
  */
 
 import { Config, ConfigError, Environment } from "./config.js";
-import { MpesaError, decodeJsonObject, tryDecodeJsonObject } from "./errors.js";
+import {
+  MpesaError,
+  decodeJsonObject,
+  tryDecodeJsonObject,
+  type ErrorLogger,
+} from "./errors.js";
 import {
   checkDailyLimit,
   enforcePerTransactionLimit,
@@ -421,6 +426,16 @@ function sharedTokenManager(
  *   `false` to surface the 401 immediately with NO second fetch and NO
  *   forced token refresh (callers that mint their own credentials per
  *   request, or that must not invalidate sibling tokens, opt out).
+ * @property errorLogger - OPT-IN diagnostic sink for the RAW body of a
+ *   non-2xx response whose body is NOT a Daraja error envelope (a WAF page,
+ *   an HTML error page, a truncated body). The exception text itself stays
+ *   generic — "unexpected error response from gateway" — because an
+ *   exception object is logged by every logger on the call path and must
+ *   never carry a raw gateway payload (customer MSISDNs, WAF internals)
+ *   off-box. A sink that throws is swallowed: it can never mask the gateway
+ *   error. Parity: go `Config.ErrorLogger` (go/errors.go), python
+ *   `error_logger` (python/mpesa/exceptions.py). The OAuth leg is minted by
+ *   `TokenManager` (src/auth.ts) and therefore does NOT reach this sink.
  */
 export interface MpesaClientOptions {
   readonly config: Config;
@@ -428,6 +443,7 @@ export interface MpesaClientOptions {
   readonly now?: () => number;
   readonly fetch?: typeof globalThis.fetch;
   readonly retryOnUnauthorized?: boolean;
+  readonly errorLogger?: ErrorLogger;
 }
 
 /**
@@ -458,6 +474,8 @@ export class MpesaClient {
   private readonly _fetch: typeof globalThis.fetch;
   /** Whether a 401.003.01 triggers the retry-once + forced refresh. */
   private readonly _retryOnUnauthorized: boolean;
+  /** Opt-in diagnostic sink for raw non-envelope error bodies (never secrets). */
+  private readonly _errorLogger: ErrorLogger | undefined;
   /** Token manager with generation-guarded caching. */
   private readonly _tokens: TokenManager;
   /**
@@ -493,6 +511,7 @@ export class MpesaClient {
     this._now = opts.now ?? (() => Date.now());
     this._fetch = opts.fetch ?? globalThis.fetch.bind(globalThis);
     this._retryOnUnauthorized = opts.retryOnUnauthorized ?? true;
+    this._errorLogger = opts.errorLogger;
     this._limits = opts.config.limits;
     this._trackDaily = opts.config.trackDaily;
     // Pure-default clients share one process-wide TokenManager per
@@ -776,7 +795,11 @@ export class MpesaClient {
     }
 
     if (result.status < 200 || result.status > 299) {
-      throw MpesaError.fromResponse(result.status, result.body, result.contentType);
+      // The raw body reaches the caller ONLY through the opt-in sink — the
+      // exception text stays generic (D7 / go `parseError` parity).
+      throw MpesaError.fromResponse(
+        result.status, result.body, result.contentType, this._errorLogger,
+      );
     }
 
     return out(result.body);
