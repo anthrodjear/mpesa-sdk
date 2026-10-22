@@ -302,8 +302,14 @@ class MpesaClient:
 
     # ---- transaction limits ---------------------------------------------------
 
-    def _accrue_daily(self, service: str, amount: int) -> None:
+    def _accrue_daily(self, service: str, amount: int) -> "str | None":
         """Check then consume *amount* against the service's daily ceiling.
+
+        Returns the Africa/Nairobi day the amount was charged on, or
+        ``None`` when nothing was charged (tracking off, an unlimited
+        ceiling, or a non-positive amount). The caller hands that day
+        back to :meth:`_rollback_daily`: a refund may only credit the
+        bucket it was charged against.
 
         No-op unless ``Config.track_daily`` is on. The whole
         read-check-increment sequence runs under one lock so two threads
@@ -336,10 +342,10 @@ class MpesaClient:
                 so a rejected payment costs no OAuth token and no request.
         """
         if not self._cfg.track_daily:
-            return
+            return None
         ceiling = self._daily_ceiling(service)
         if ceiling is None or amount <= 0:
-            return
+            return None
         with self._daily_lock:
             day = _daily_boundary(self._now())
             if self._daily_day is None or day > self._daily_day:
@@ -361,8 +367,10 @@ class MpesaClient:
                     f"the field unset (None) to keep the Safaricom default, "
                     f"or set it to 0 to disable the daily ceiling")
             self._daily_used[service] = used + amount
+            return day
 
-    def _rollback_daily(self, service: str, amount: int) -> None:
+    def _rollback_daily(self, service: str, amount: int,
+                        accrual_day: "str | None") -> None:
         """Return *amount* to *service*'s daily quota after a transport error.
 
         Called only on ``requests.exceptions.RequestException`` (Go
@@ -372,10 +380,23 @@ class MpesaClient:
         request WAS sent and the gateway's verdict is authoritative.
         Clamped at zero: concurrent accruals and clock skew can make the
         running total smaller than *amount*; we never drive it negative.
+
+        *accrual_day* is the Nairobi day the reservation was charged on.
+        A refund that lands on a DIFFERENT day is skipped: the amount was
+        never counted against that day's bucket, so crediting it there
+        would hand back quota the payment never consumed (Go
+        ``limits.go`` rollback and the TypeScript rollback thunk both
+        no-op the refund once the day key has moved on). *accrual_day* of
+        ``None`` means nothing was reserved, so there is nothing to give
+        back.
         """
         if not self._cfg.track_daily:
             return
+        if accrual_day is None:
+            return
         with self._daily_lock:
+            if _daily_boundary(self._now()) != accrual_day:
+                return
             current = self._daily_used.get(service, 0)
             self._daily_used[service] = max(0, current - amount)
 
@@ -484,7 +505,7 @@ class MpesaClient:
         if not req.party_b:
             req.party_b = req.business_short_code
         req.validate(self._limits)
-        self._accrue_daily("stk", req.amount)
+        accrual_day = self._accrue_daily("stk", req.amount)
         password, timestamp = generate_password(
             req.business_short_code, self._cfg.passkey, self._now())
         payload = {**req.to_payload(), "Password": password,
@@ -492,7 +513,7 @@ class MpesaClient:
         try:
             return self._post_model(STK_PUSH_PATH, payload, STKPushResponse)
         except requests.exceptions.RequestException:
-            self._rollback_daily("stk", req.amount)
+            self._rollback_daily("stk", req.amount, accrual_day)
             raise
 
     def stk_query(self, req: STKQueryRequest) -> STKQueryResponse:
@@ -538,11 +559,11 @@ class MpesaClient:
         if not req.party_a:
             req.party_a = self._cfg.shortcode
         req.validate(self._limits)
-        self._accrue_daily("b2c", req.amount)
+        accrual_day = self._accrue_daily("b2c", req.amount)
         try:
             return self._post_model(B2C_PATH, req.to_payload(), B2CResponse)
         except requests.exceptions.RequestException:
-            self._rollback_daily("b2c", req.amount)
+            self._rollback_daily("b2c", req.amount, accrual_day)
             raise
 
     def transaction_status(
@@ -580,12 +601,12 @@ class MpesaClient:
         if not req.command_id:
             req.command_id = CommandID.REVERSAL
         req.validate(self._limits)
-        self._accrue_daily("reversal", req.amount)
+        accrual_day = self._accrue_daily("reversal", req.amount)
         try:
             return self._post_model(REVERSAL_PATH, req.to_payload(),
                                     ConversationResponse)
         except requests.exceptions.RequestException:
-            self._rollback_daily("reversal", req.amount)
+            self._rollback_daily("reversal", req.amount, accrual_day)
             raise
 
     def account_balance(
@@ -633,12 +654,12 @@ class MpesaClient:
         if not req.short_code:
             req.short_code = self._cfg.shortcode
         req.validate(self._limits)
-        self._accrue_daily("c2b", req.amount)
+        accrual_day = self._accrue_daily("c2b", req.amount)
         try:
             return self._post_model(C2B_SIMULATE_PATH, req.to_payload(),
                                     C2BAckResponse)
         except requests.exceptions.RequestException:
-            self._rollback_daily("c2b", req.amount)
+            self._rollback_daily("c2b", req.amount, accrual_day)
             raise
 
     def generate_qr_code(self, req: QRCodeRequest) -> QRCodeResponse:
@@ -660,10 +681,10 @@ class MpesaClient:
         """
         req = dataclasses.replace(req)
         req.validate(self._limits)
-        self._accrue_daily("qr", req.amount)
+        accrual_day = self._accrue_daily("qr", req.amount)
         try:
             return self._post_model(QR_CODE_PATH, req.to_payload(),
                                     QRCodeResponse)
         except requests.exceptions.RequestException:
-            self._rollback_daily("qr", req.amount)
+            self._rollback_daily("qr", req.amount, accrual_day)
             raise

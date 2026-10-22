@@ -815,3 +815,95 @@ def test_client_daily_guard_is_bypassed_when_tracking_is_off():
     client.stk_push(stk(amount=900))
     client.stk_push(stk(amount=900))
     assert client.daily_spend == {}
+
+
+# ---------------------------------------------------------------------------
+# D9: the daily refund must respect the Africa/Nairobi day boundary
+# ---------------------------------------------------------------------------
+
+
+def test_d9_rollback_does_not_refund_the_new_nairobi_day():
+    """A refund that lands after Nairobi midnight must be SKIPPED.
+
+    Go (limits.go rollback) and TypeScript (client.ts rollback thunk)
+    both no-op the refund once the day key has moved on: the amount was
+    charged against the OLD day's bucket, so crediting the NEW day's
+    bucket hands back quota the payment never consumed.
+    """
+    limits = TransactionLimits(b2c=ServiceLimits(1_000_000, 10_000))
+    clock = Clock()          # 2026-01-01 12:00 UTC == 15:00 EAT
+    client, _ = make_client(B2C_OK, limits=limits, track_daily=True,
+                             clock=clock)
+
+    accrual_day = client._accrue_daily("b2c", 5_000)
+    assert accrual_day == "2026-01-01"
+    assert client.daily_spend == {"b2c": 5_000}
+
+    # 2026-01-01 21:00 UTC == 2026-01-02 00:00 EAT: a NEW Nairobi day.
+    clock.set(datetime(2026, 1, 1, 21, 0, tzinfo=timezone.utc))
+    client._rollback_daily("b2c", 5_000, accrual_day)
+    # The refund is a no-op: the new day's bucket is untouched.
+    assert client.daily_spend == {"b2c": 5_000}
+
+    # The SAME-day rollback still refunds.
+    same_day = client._accrue_daily("b2c", 1_000)
+    assert same_day == "2026-01-02"
+    client._rollback_daily("b2c", 1_000, same_day)
+    assert client.daily_spend == {"b2c": 0}
+
+
+def test_d9_rollback_never_credits_another_days_bucket():
+    """The extra-quota scenario: a refund must not wipe the new day's spend.
+
+    Old day D1 spends 5k; the clock crosses midnight; a payment lands on
+    the new day D2 and spends 1k; THEN the D1 transport failure arrives.
+    The refund belongs to D1, so D2's 1k must survive it -- otherwise the
+    merchant silently regains a day's worth of quota.
+    """
+    limits = TransactionLimits(b2c=ServiceLimits(1_000_000, 10_000))
+    clock = Clock()
+    client, _ = make_client(B2C_OK, limits=limits, track_daily=True,
+                             clock=clock)
+
+    day_one = client._accrue_daily("b2c", 5_000)
+    assert client.daily_spend == {"b2c": 5_000}
+
+    clock.set(datetime(2026, 1, 1, 21, 0, tzinfo=timezone.utc))
+    day_two = client._accrue_daily("b2c", 1_000)
+    assert day_two == "2026-01-02"
+    assert client.daily_spend == {"b2c": 1_000}     # the new day starts fresh
+
+    # The old day's transport failure lands now.
+    client._rollback_daily("b2c", 5_000, day_one)
+    assert client.daily_spend == {"b2c": 1_000}     # D2's spend survived
+
+
+def test_d9_transport_error_across_nairobi_midnight_keeps_the_reservation():
+    """End-to-end: the endpoint's transport-error branch must thread the
+    accrual day through to the rollback."""
+    limits = TransactionLimits(b2c=ServiceLimits(1_000_000, 10_000))
+    clock = Clock()          # 2026-01-01 12:00 UTC == 15:00 EAT
+
+    class MidnightBlipSession(FakeSession):
+        """Raises ConnectionError AFTER crossing Nairobi midnight."""
+
+        def request(self, method, url, json=None, params=None, timeout=None,
+                    allow_redirects=True, headers=None, stream=False):
+            self.calls.append({"kind": method, "url": url, "json": json})
+            if method == "POST":
+                # 2026-01-02 00:00 UTC == 03:00 EAT -> a NEW Nairobi day.
+                clock.set(datetime(2026, 1, 2, 0, 0, tzinfo=timezone.utc))
+                raise requests.exceptions.ConnectionError("simulated blip")
+            return self.queue.pop(0)
+
+    session = MidnightBlipSession([OAUTH_OK])
+    cfg = Config(consumer_key="k", consumer_secret="s", shortcode="174379",
+                 passkey=PASSKEY, now=clock, http_client=session,
+                 limits=limits, track_daily=True)
+    client = MpesaClient(cfg)
+
+    with pytest.raises(requests.exceptions.ConnectionError):
+        client.b2c_payout(b2c(amount=5_000))
+    # The reservation was charged on 2026-01-01 and the failure landed on
+    # 2026-01-02, so the refund must NOT have run.
+    assert client.daily_spend.get("b2c", 0) == 5_000
