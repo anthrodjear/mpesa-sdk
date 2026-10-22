@@ -143,6 +143,72 @@ describe("MpesaError.fromResponse — non-envelope body isolation", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// A sink that REJECTS must not become an unhandled rejection.
+//
+// `ErrorLogger` is assignable from an `async` function, so a sink may return
+// a promise. The try/catch around the sink call only catches a SYNCHRONOUS
+// throw — a rejected promise used to escape as an unhandled rejection, which
+// TERMINATES the Node process (Node >= 15). That broke the documented
+// guarantee that a broken sink can never mask the gateway error.
+// ---------------------------------------------------------------------------
+
+describe("MpesaError.fromResponse — a rejecting sink is swallowed", () => {
+  const WAF_PAGE = "<html><body>WAF block page mentioning 254712345678</body></html>";
+
+  it("swallows a REJECTED sink promise: no unhandled rejection, same error", async () => {
+    const rejections: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      let sinkCalls = 0;
+      const err = MpesaError.fromResponse(502, WAF_PAGE, "text/html", async () => {
+        sinkCalls += 1;
+        throw new Error("sink exploded asynchronously");
+      });
+      expect(sinkCalls).toBe(1);
+
+      // The caller still receives the generic gateway error — the sink's
+      // failure never masks it.
+      expect(err).toBeInstanceOf(MpesaError);
+      expect(err.statusCode).toBe(502);
+      expect(err.errorMessage).toBe("unexpected error response from gateway");
+      expect(err.message).not.toContain("sink exploded");
+
+      // Give the event loop a tick (and a second one): an unhandled
+      // rejection is reported after the microtask queue drains, so a sink
+      // that was NOT guarded would have fired the listener by now.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(rejections).toHaveLength(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("still swallows a sink that throws SYNCHRONOUSLY", () => {
+    const err = MpesaError.fromResponse(502, WAF_PAGE, "text/html", () => {
+      throw new Error("sink exploded");
+    });
+    expect(err).toBeInstanceOf(MpesaError);
+    expect(err.statusCode).toBe(502);
+    expect(err.errorMessage).toBe("unexpected error response from gateway");
+    expect(err.message).not.toContain("sink exploded");
+  });
+
+  it("swallows a sink that RESOLVES normally — the promise is not left dangling", async () => {
+    let seen: string | undefined;
+    const err = MpesaError.fromResponse(502, WAF_PAGE, "text/html", async () => {
+      seen = "called";
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(seen).toBe("called");
+    expect(err.errorMessage).toBe("unexpected error response from gateway");
+  });
+});
+
 describe("MpesaError.fromResponse — never throws on garbage", () => {
   it("returns an MpesaError with a string message for every garbage shape", () => {
     const enc = new TextEncoder();

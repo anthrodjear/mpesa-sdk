@@ -39,8 +39,12 @@ const UNPARSEABLE_MESSAGE = "unexpected error response from gateway";
  * invoked ONLY when the body was not a Daraja error envelope, so this sink is
  * the single place upstream bytes can surface.
  *
- * A sink that throws is swallowed: it must never mask the gateway error the
- * caller has to handle.
+ * A sink that THROWS (synchronously) or whose returned PROMISE REJECTS is
+ * swallowed: it must never mask the gateway error the caller has to handle.
+ * The promise case matters as much as the throw case — an `async` sink is
+ * assignable to this type, and an unhandled rejection TERMINATES the Node
+ * process (Node >= 15), so a rejected sink promise is caught and discarded
+ * rather than left to the runtime.
  *
  * @example
  * ```ts
@@ -56,7 +60,7 @@ export type ErrorLogger = (
   statusCode: number,
   contentType: string,
   body: string | Uint8Array,
-) => void;
+) => void | Promise<void>;
 
 /**
  * Control/format detector: Unicode General_Category `Cc` (control) or `Cf`
@@ -241,8 +245,9 @@ export class MpesaError extends Error {
  * @param body - Raw response body; NEVER interpolated into the error.
  * @param contentType - Response `Content-Type` (diagnostics only).
  * @param errorLogger - OPT-IN sink for the raw upstream body, invoked ONLY
- *   when the body was not a Daraja error envelope. A sink that throws is
- *   swallowed — it must never mask the gateway error.
+ *   when the body was not a Daraja error envelope. A sink that THROWS
+ *   (synchronously) or whose returned PROMISE REJECTS is swallowed — it
+ *   must never mask the gateway error.
  * @returns The typed error; never throws.
  *
  * @example Hostile gateway body → generic message, body only via the sink:
@@ -274,7 +279,21 @@ export class MpesaError extends Error {
     // Not an envelope: the upstream bytes leave ONLY through the opt-in sink.
     if (errorLogger !== undefined) {
       try {
-        errorLogger(statusCode, contentType, body);
+        const outcome: unknown = errorLogger(statusCode, contentType, body);
+        // An ASYNC sink returns a promise. The try/catch above only catches
+        // a SYNCHRONOUS throw, so a rejected sink promise would otherwise
+        // become an unhandled rejection -- which TERMINATES the Node
+        // process (Node >= 15). Attach a rejection handler so the promise
+        // is swallowed exactly like a synchronous throw is.
+        if (
+          outcome !== null && outcome !== undefined &&
+          typeof (outcome as { then?: unknown }).then === "function"
+        ) {
+          Promise.resolve(outcome).catch(() => {
+            // A rejected sink promise must never mask the gateway error the
+            // caller has to handle.
+          });
+        }
       } catch {
         // A broken sink must never mask the error the caller has to handle.
       }
