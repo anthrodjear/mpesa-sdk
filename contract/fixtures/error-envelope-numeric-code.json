@@ -1,0 +1,14 @@
+{
+  "id": "error-envelope-numeric-code",
+  "kind": "error_envelope",
+  "body": {
+    "requestId": "r-1",
+    "errorCode": 401,
+    "errorMessage": "Invalid token"
+  },
+  "expect": {
+    "statusCode": 401,
+    "errorCode": "401",
+    "errorMessage": "Invalid token"
+  }
+}
