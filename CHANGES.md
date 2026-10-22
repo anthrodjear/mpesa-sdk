@@ -1,4 +1,4 @@
-# Changes — Unreleased (main)
+# Changes — 0.5.0 (2026-10-22)
 
 - **Reversal and Dynamic QR get their own limit buckets** (`reversal`, `qr`) instead of sharing `default` — for BOTH the per-transaction ceiling and the per-day bucket. Only affects users who had overridden `default` limits — their Reversal/QR now inherit the Safaricom defaults unless explicitly configured.
 - **A numeric `errorCode` survives** — a gateway that sends `"errorCode": 401` as a number now yields `error_code == "401"` instead of `None`, and the generic "unexpected error response from gateway" message no longer replaces the envelope.
