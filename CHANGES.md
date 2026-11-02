@@ -1,3 +1,113 @@
+# Changes — 0.6.0 (2026-11-02)
+
+All three engines ship `0.6.0` together. A **minor** bump, per the 0.x rule
+0.4.0 already stated: under SemVer 0.x breaking changes increment the minor
+version, so existing `^0.5.1` / `~=0.5.1` ranges will **not** auto-upgrade
+into it — pin `0.6.0` explicitly. Two TypeScript public APIs changed their
+observable behaviour, and one Go security fix changed when a daily
+reservation is refunded; everything else is a bug fix toward the documented
+contract.
+
+## BREAKING
+
+- **TypeScript `coerceAmount` accepts at most TWO fraction digits**
+  (`coercion.ts`): `"10.123"` used to return `10.123` and now returns
+  `null`, matching Python's `coerce_amount` (pinned there since 0.5.0). The
+  3–6dp acceptance was a cross-engine drift that let the same wire body
+  settle in one engine and be dropped in the other; `amount()` accessors on
+  STK callbacks and async `Result` envelopes now report `null` for sub-cent
+  values instead of a silently wrong number. This helper had no TypeScript
+  test coverage at all before this release — it has some now.
+- **TypeScript `Config` no longer requires a non-empty `passkey` at
+  construction** (`config.ts`): a B2C-only merchant — who never calls STK
+  Push/Query — can build a client without one. The requirement moved to
+  where the passkey is actually used: `stkPush`/`stkQuery` throw
+  `mpesa: Config.passkey is required for STK Push/Query (it is bound into
+  the request Password)` before any network I/O. Go and Python already
+  behaved this way, so this closes the "one contract" gap. Code that caught
+  the construction-time `ConfigError` for a missing passkey must now handle
+  the STK-path error (or set the passkey).
+
+## Behavior changes
+
+- **TypeScript `stkPush` validates `BusinessShortCode`/`PartyB` shape**
+  (5–10 ASCII digits) before any network I/O — `stkQuery`, Go and Python
+  already did, so a malformed shortcode used to reach the gateway and fail
+  there as `500.001.1001`.
+- **SSRF outcomes (TypeScript)**: trailing-dot hosts
+  (`https://127.0.0.1../cb`) are rejected like every other engine;
+  signed/malformed numeric hosts (`-1`, `+1`, `0xzz`) fail closed instead
+  of being handed to the resolver as DNS names; and **IPv4-mapped IPv6
+  hosts with a public tail (`https://[::ffff:8.8.8.8]/cb`) are now
+  accepted** — the old first-hextet classifier refused every mapped host.
+  Go/Python parity restored, and `SECURITY.md`'s "identical blocked set"
+  claim is now true.
+- **Go callback/result URLs with an out-of-range port** (`:99999`, `:0`,
+  `:-1`) are rejected at validation instead of failing at dial time
+  (Python parity).
+- **Python `retry_on_unauthorized`** — added on `Config`, defaulting to
+  `true`; `Config(retry_on_unauthorized=False)` surfaces the first
+  `401.003.01` without the forced refresh and retry. Go spells it
+  `Config.DisableRetryOnUnauthorized` (inverted) and TypeScript
+  `MpesaClientOptions.retryOnUnauthorized`. The 0.5.0 changelog documented
+  this option prematurely — it exists as of this release.
+- **Python refuses a whitespace-only passkey**, matching Go
+  (`strings.TrimSpace`) and TypeScript (`.trim()`).
+
+## Security
+
+- **TypeScript SSRF bypass closed**: appending one trailing DNS-root label
+  to a numeric callback host (`http://127.0.0.1../cb`) bypassed both the
+  numeric-literal normalization and the blocklist and reached `fetch` —
+  confirmed pre-fix. The dot-strip now runs before every host guard,
+  matching Go/Python ordering.
+- **Go `stkQueryPayload` renders redacted**: it was the one
+  credential-carrying type without `GoString`/`Format` hooks, so a
+  `%v`/`%+v`/`%#v` render of the dispatched payload exposed the `Password`
+  — base64(shortcode + passkey + timestamp), from which the long-lived
+  `Config.Passkey` is directly recoverable.
+- **Go daily-ledger rollback no longer refunds requests the gateway
+  answered**: the classifier was "roll back unless the error is
+  `*MpesaError`", so an oversize 2xx body and an undecodable 2xx both handed
+  the reservation back — real day-spend could exceed `MaxPerDay` without
+  bound. The rollback now fires only on the new `ErrNotDispatched`
+  sentinel (a request that provably never got a gateway answer), which is
+  Python's `RequestException` rule and fails closed for every future error
+  type.
+- **TypeScript `logSafeRequest(req)`**: request objects are plain
+  interfaces, so `JSON.stringify(req)` used to print the live
+  `securityCredential`; the new helper masks it and drops callback-token
+  query strings (Go `LogSafe()` / Python redacting `repr()` parity).
+
+## Docs
+
+- README uses the canonical TypeScript enum names (`PayBillOnline`, not the
+  deprecated `BillPayGoods` the SDK itself marks `@deprecated`); the enum
+  cross-reference gains `ResponseType` and C2B `CommandID` rows, including
+  the `c2bRegisterURL` trap that rejects TS's deprecated `Success`/`Fail`
+  aliases.
+- New **docs/testing.md**: the base URL is a two-entry allowlist by design,
+  so the transport/clock injection seams (`Config.HTTPClient`/`Now`,
+  `Config.http_client`/`now`, `MpesaClientOptions.fetch`/`.now`) are now
+  documented as the mock-testing recipe.
+- A "Choosing the environment" section replaces the overloaded
+  `MPESA_ENVIRONMENT` table cell (the one knob whose accepted values differ
+  per engine); the timeout placement note moves out of the config preamble;
+  README snippets compile again (missing `import os`, undeclared
+  `certBytes`, a `parseInt(res.ResultCode, 10)` type error).
+- `contract/known-divergences.md` records the validation-strictness and
+  typed-error divergences that shared fixtures cannot express;
+  `docs/apis/oauth.md` no longer documents SDK methods that do not exist.
+
+## CI
+
+- The `python` job now checks that the five version literals
+  (`go/version.go`, `python/setup.py`, `python/mpesa/__init__.py`,
+  `typescript/package.json`, `typescript/src/index.ts`) agree, so one
+  engine can no longer ship a stale version silently.
+
+---
+
 # Changes — 0.5.1 (2026-10-22)
 
 - **Go 1.26.10** — updated toolchain (fixes CVE GO-2026-6809 in crypto/x509); CI updated.
