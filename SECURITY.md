@@ -71,8 +71,12 @@ bearer from memory. Any user needing token erasure on shutdown should scope the 
 short-lived process or container.
 
 **On the callback-URL guard:** the blocked set (loopback, private, link-local, multicast,
-unique-local, unspecified, IPv6 and `::ffff:`-embedded IPv4 tails, bare `localhost`, and embedded
-`user:pass@` credentials) is identical across engines, and all three enforce it. But it guards the
+unique-local, unspecified, IPv6 and `::ffff:`-embedded IPv4 tails, bare `localhost`, embedded
+`user:pass@` credentials, and every `inet_aton` alias — `0x7f000001`, `017700000001`,
+`2130706433`, `127.1`, including one appended with a trailing DNS root label) is identical
+across engines, and all three enforce it — verified identical by a ~22,500-case programmatic
+comparison in the 0.6.0 re-review (0.4.0's TypeScript divergences, including the trailing-dot
+bypass and the over-broad refusal of public IPv4-mapped hosts, are closed). But it guards the
 host **literal** only — a DNS name resolving to a private address passes in all three. It is not a
 DNS-rebinding filter, and should not be audited as one.
 
@@ -84,7 +88,12 @@ cannot move under it. Daily accumulation is opt-in and off by default (`Config.T
 `Config(track_daily=True)` / `Config.trackDaily`): one process cannot observe the replicas sharing
 its shortcode, so a per-process total under-counts a platform-wide cap. Treat it as a circuit breaker
 for the single worst-case process, not as an enforced quota. The day rolls at Africa/Nairobi (UTC+3,
-no DST) midnight in all three engines.
+no DST) midnight in all three engines, and a reservation is refunded **only when the request
+provably never reached a gateway answer** — a transport failure or a failed token acquisition (Go:
+`ErrNotDispatched`; Python: `requests.exceptions.RequestException`; TypeScript: the
+`onTransportError` hook). A gateway rejection, an oversize response or an undecodable 2xx all prove
+the gateway answered, so they keep the spend: refunding those let real day-spend exceed `MaxPerDay`
+without bound (fixed in Go for 0.6.0; the three engines now share one rule).
 
 **On the body caps:** the bound is 1 MiB measured in BYTES (UTF-8), applied before any decode, so a
 multi-byte payload cannot slip past a character count. Every engine caps the STK callback body inside
@@ -104,7 +113,7 @@ Brief guidance when integrating this SDK:
   4. **Defense-in-depth — IP allowlisting.** Restrict ingress to Safaricom's published gateway ranges (maintained by you; they can change without notice). Never the primary control.
 
   Sign callback bodies yourself **only if you run your own signing relay** between Daraja and your service — Daraja signs nothing. Include a timestamp or nonce in signed payloads and reject stale signatures.
-- **Never log credentials.** Consumer Key, Consumer Secret, Passkey, and Security Credential must never appear in application logs, log aggregation systems, APM traces, or debug output. The SDK's redaction helpers (`repr()`/`log_safe()` in Python, `GoString`/`Format` in Go, `toString()`/`toJSON()`/`logSafe()` in TypeScript) mask these values automatically — always use them when serializing `Config` or request objects for logging. Logging raw credentials — even at debug level — creates a persistent record that outlives the process and may be shipped to centralized log stores.
+- **Never log credentials.** Consumer Key, Consumer Secret, Passkey, and Security Credential must never appear in application logs, log aggregation systems, APM traces, or debug output. The SDK's redaction helpers (`repr()`/`log_safe()` in Python, `GoString`/`Format` in Go — including the STK Query dispatch payload, whose `Password` would otherwise expose the passkey — `toString()`/`toJSON()`/`logSafe()` in TypeScript) mask these values automatically — always use them when serializing `Config` or request objects for logging. TypeScript request objects are plain interfaces with no render hook, so pass them through `logSafeRequest(req)`: it masks `SecurityCredential`/`passkey` and drops callback-token query strings, matching Go's `LogSafe()` and Python's redacting `repr()`. Logging raw credentials — even at debug level — creates a persistent record that outlives the process and may be shipped to centralized log stores.
 - **Consumer Keys are secrets, not identifiers.** Treat `MPESA_CONSUMER_KEY` and `MPESA_CONSUMER_SECRET` with the same care as database passwords. They authenticate every OAuth token request and grant full access to your Daraja app. Never embed them in client-side code, commit them to source control, or expose them in error messages. Rotate them immediately if you suspect leakage.
 - **Indeterminate results must not auto-fail.** Timeouts or ambiguous Daraja responses should be recorded as *pending* and reconciled via the transaction status query — auto-marking them as failed risks double-charging customers.
 
