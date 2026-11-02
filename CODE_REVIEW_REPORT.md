@@ -1,3 +1,82 @@
+# M-Pesa Daraja SDK — Re-Review Report (2026-11-02 · 0.5.1 → 0.6.0)
+
+**Version reviewed:** 0.5.1 as shipped, then 0.6.0 with the fixes below applied.
+**Scope:** `go/`, `python/mpesa/`, `typescript/src/`, `contract/`, `docs/`, `.github/`, packaging manifests.
+**Method:** every source file re-read in full across all three engines; six specialized review
+passes (per-engine, security, DX/usability, API completeness, duplication/drift) plus independent
+reproduction of each claimed defect from freshly compiled current source (temp builds OUTSIDE the
+repo — no repo files touched by the reviewers); every fix re-verified by the maintainer with fresh
+full-suite runs, including a red/green check on each regression test.
+
+**Verdict:** the 0.4.0 report's six confirmed defects are **genuinely fixed** — each was re-verified
+line-by-line rather than taken on trust. This re-review found **9 new findings (2 HIGH on money and
+SSRF paths)**, all fixed and test-pinned in this branch, plus a documentation-truth class (the 0.5.0
+changelog claimed features that did not exist in two of three engines). What remains is the
+roadmap-shaped completeness/flexibility set already tracked in
+`docs/IMPLEMENTATION_PLAN_MISSING_APIS*.md`. With these changes this is a clean 0.6.0.
+
+## Empirical baseline (commands actually run — final state)
+
+| Check | Result |
+|---|---|
+| `cd go && go vet ./... && go test -race -count=1 ./...` | **PASS** — the race detector is green here (the 0.4.0 report could not run it locally; this machine can, so that claim is now owned rather than inherited from CI) |
+| `cd python && python -m pytest tests -q` | **772 passed** (768 before; +4) · `ruff check .` clean |
+| `cd typescript && npm run typecheck && npx vitest run && npm run typecheck:examples` | **typecheck clean · 616 passed** (605 before; +11) |
+| Version parity across the five literals | all `0.6.0`, now gated by a CI step |
+
+## 1. The 0.4.0 defects — re-verified fixed (evidence, not trust)
+
+D1 numeric `errorCode` (`exceptions.py:77-120`) · D2 reversal/qr buckets (`requests_async.py:268`,
+`requests_sync.py:699`, accrual `client.py:604/684`) · D3 2⁵³ gate (`results.py:53-78`) ·
+D4 `BillRefNumber` (`requests_sync.py:651-658`) · D5 Go 8-rune mask (`config.go:113`) · D6 TS
+`util.inspect` hooks (`config.ts:434`, `client.ts:1506`, `auth.ts:530`) · D7 generic message
+(`errors.ts:31`) · **D8 — was only half-true:** the 0.5.0 changelog advertised Python's
+`retry_on_unauthorized` but the option did not exist anywhere in `python/`; it is now implemented
+(`config.py` field + `client.py:492` gate, 3 tests) and the changelog's TypeScript location is
+corrected (`MpesaClientOptions`, not `Config`) · D9 day-boundary rollback (`client.py:398`) ·
+D10 leader/waiter refresh (`auth.py` Condition; two now-stale docstrings corrected) · #11 SHA-256
+cache key (`client.ts:426`) · #12 `Close()` commit race (`client.go:864`) · #13 oversize drain
+(`client.go:377`) · #14 idle-conn budget (`client.go:343`) · #16 RSA ≥ 2048 floor (all three) ·
+#17 request redaction (`logSafeRequest`) · #19–#21, #23–#25 documentation items.
+
+Cross-engine equivalence verified identical by programmatic comparison (≈22.5k-case SSRF sweep +
+live execution of each engine's validators): terminal-failure catalogs (19 codes), limit defaults
+(6 buckets × 250k/500k), 60 s refresh-cadence floor, 1 MiB caps, inet_aton normalization table,
+phone normalization, balance 2⁵³ textual gate, consumer-key masking.
+
+## 2. New defects found — ALL FIXED (R1–R7) / DOCUMENTED (R8–R9)
+
+| ID | Sev | Finding | Fix |
+|---|---|---|---|
+| R1 | **HIGH** | TS SSRF bypass: one trailing DNS-root label on a numeric host (`http://127.0.0.1../cb`) defeated both the numeric-literal normalization and the blocklist and reached `fetch` — reproduced from a fresh `tsc` build of current source | dot-strip moved before every guard (`client.ts`) + 11-row regression table, red-green verified |
+| R2 | **HIGH** | TS `coerceAmount` accepted 3–6 fraction digits where Python rejects >2dp (pinned there since 0.5.0): the same wire body settled in one engine and returned `null` in the other. The helper had **zero** test coverage | regex `{1,2}`; full test block added (Python parity) |
+| R3 | MEDIUM | Go daily-ledger refunded quota for requests the gateway **answered** (oversize 2xx, undecodable 2xx): the negative classifier `!errors.As(err, &me)` handed the reservation back, so day-spend could exceed `MaxPerDay` without bound | new `ErrNotDispatched` sentinel; all 5 call sites flipped to `errors.Is`; 4-case test. All three engines now refund only on "never answered" (Python `RequestException`, TS `onTransportError`) |
+| R4 | MEDIUM | Go `stkQueryPayload` was the one credential carrier without `GoString`/`Format` hooks — a `%v` render exposed `Password` = base64(shortcode+passkey+timestamp), i.e. the long-lived `Config.Passkey` recoverable | hooks added + every-verb test |
+| R5 | MEDIUM | TS accepted malformed `businessShortCode`/`partyB` and shipped them to the gateway (`500.001.1001`) | 5–10-digit shape gate in `stkPush` (Go/Python parity) + repro test |
+| R6 | MEDIUM | TS `JSON.stringify(req)` printed the live `securityCredential` while the README claimed request redaction parity that did not exist | `logSafeRequest()` + 6 tests + README correction |
+| R7 | LOW | TS refused public IPv4-mapped hosts (`::ffff:8.8.8.8`) that Go/Python accept; TS resolved `-1`/`+1`/`0xzz` as DNS names; Go shipped `:99999`/`:0` ports to the transport | all aligned: mapped-tail judged on its own merits, fail-closed numeric shapes, port bounds |
+| R8 | LOW | Cross-engine validation-strictness drift (PartyB, B2C PartyA, C2B ShortCode, identifier caps, QR Size) and untyped transport-error paths | documented in `contract/known-divergences.md` — the repo's own plan decision is "document, do not silently change" for these |
+| R9 | — | Docs truth: TS `passkey` required at construction (broke B2C-only integrators), deprecated enum names in README/TS docstrings, missing `ResponseType`/C2B `CommandID` rows, non-compiling snippets, phantom `oauth.md` methods, `setup.py` metadata, no version-parity gate | all fixed in 0.6.0 (see CHANGES.md) |
+
+## 3. Scorecard — post-0.6.0
+
+| Dimension | Score | One-line basis |
+|---|---:|---|
+| Security | **9.5/10** | SSRF bypass closed, ledger accounting fixed, redaction now total (incl. `stkQueryPayload` + TS requests); transport-error typing remains engine-specific (documented) |
+| Correctness | **9.5/10** | Money-path coercion unified (2dp), validation parity enforced where the contract is unambiguous; remaining strictness drift documented, not silently changed |
+| Documentation | **8.5/10** | Doc-vs-code contradictions fixed; `docs/testing.md` added; divergence register maintained; a snippet-compiling CI job is still the right next step |
+| Test coverage | **8/10** | All fixes pinned; `coerceAmount` had zero coverage and now has a block; Python/TS coverage still unmeasured (tooling gap, unchanged) |
+| Completeness | **6/10** | Unchanged in kind: B2B/Tax/Bill Manager/C2B parsers/STK poll/publish workflow still absent (planned, tracked) — 9 endpoints + OAuth are complete |
+| Maintainability | **7.5/10** | Version-parity gate added; central divergence register; bus factor still 1 |
+
+## 4. Remaining gaps (roadmap, unchanged in kind)
+
+B2B, Tax Remittance, Bill Manager (planned — deliberately **not** merged to `main` yet),
+C2B validation/confirmation parsers (deferred since 0.2.0), STK poll helper, publish workflow,
+transport-level retry/backoff, no async client. See `docs/IMPLEMENTATION_PLAN_MISSING_APIS*.md`.
+
+---
+
 # M-Pesa Daraja SDK — Codebase Review Report
 
 **Repo:** `C:\Users\user\Desktop\Shared\mpesa-sdk` · **Version:** 0.4.0 (all three engines) · **Date:** 2026-10-22

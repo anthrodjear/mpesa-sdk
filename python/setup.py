@@ -66,6 +66,11 @@ setup(
     extras_require={
         "dev": [
             "pytest>=8",
+            # Coverage measurement (the 0.4.0 review's open item: Python
+            # statement coverage was unmeasurable, so a regression in test
+            # depth was invisible to CI). Run with
+            #   python -m pytest tests --cov=mpesa --cov-report=term-missing
+            "pytest-cov>=6",
         ],
     },
     classifiers=[
