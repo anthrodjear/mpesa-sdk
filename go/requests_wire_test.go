@@ -237,6 +237,11 @@ func TestRequireURL(t *testing.T) {
 		{name: "valid https", input: "https://example.com/callback", wantErr: false},
 		{name: "valid http", input: "http://example.com/path", wantErr: false},
 		{name: "valid with port", input: "https://example.com:8443/hook", wantErr: false},
+		// Port bounds (Python parity): url.Parse accepts ":99999" and ":0",
+		// and http.Client only fails at dial time — after validation said yes.
+		{name: "port out of range", input: "https://example.com:99999/hook", wantErr: true},
+		{name: "port zero", input: "https://example.com:0/hook", wantErr: true},
+		{name: "port negative", input: "https://example.com:-1/hook", wantErr: true},
 		{name: "valid with path and query", input: "https://api.example.com/v1/cb?token=abc", wantErr: false},
 
 		// Embedded credentials

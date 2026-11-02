@@ -463,10 +463,21 @@ class MpesaClient:
                     model: type[_ModelT]) -> _ModelT:
         """Authenticated POST -> parsed sync-response model, consuming the
         ``(status_code, content_type, body)`` tuple from :meth:`_send`,
-        with the documented retry-once on 401.003.01. Every size cap is
-        enforced inside :meth:`_send` (the tuple body can never exceed
+        with the documented retry-once on 401.003.01 (see
+        :attr:`~mpesa.config.Config.retry_on_unauthorized`). Every size cap
+        is enforced inside :meth:`_send` (the tuple body can never exceed
         the accumulation bound), so the 401 probe and final parse are
         size-capped by construction.
+
+        OPT-OUT: with ``retry_on_unauthorized=False`` the 401 branch below
+        is skipped ENTIRELY -- the first ``401.003.01`` falls straight
+        through to the generic non-2xx raise, so the caller sees the
+        gateway's verdict with NO forced token refresh and NO second
+        request (Go ``DisableRetryOnUnauthorized`` parity). The probe is
+        built only when the retry is enabled: on the opt-out path the
+        error text must come from the envelope the gateway actually sent,
+        never from a probe whose construction could itself fail on a body
+        the retry would never have examined.
 
         ACCOUNTING: callers accrue the daily quota BEFORE this dispatch
         (see :meth:`_accrue_daily`); failures raised here -- gateway
@@ -478,7 +489,7 @@ class MpesaClient:
         token, gen = self._tokens.get_token_with_gen()
         status_code, content_type, body = self._send(
             token, "POST", path, payload, None)
-        if status_code == 401:
+        if status_code == 401 and self._cfg.retry_on_unauthorized:
             probe = MpesaError.from_response(401, body, content_type)
             if probe.error_code == _ERR_INVALID_TOKEN:
                 fresh = self._tokens.refresh_after_invalid_token(gen)

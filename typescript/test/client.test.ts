@@ -2448,6 +2448,90 @@ describe("Empty-shortcode config", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Lazy passkey check — construction allows empty; STK Push/Query enforce it
+// where the passkey is bound into the request Password (Go/Python parity)
+// ---------------------------------------------------------------------------
+
+describe("Lazy passkey check (Go/Python parity)", () => {
+  function emptyPasskeyClient(): MpesaClient {
+    return new MpesaClient({
+      config: new Config({
+        consumerKey: CONSUMER_KEY,
+        consumerSecret: CONSUMER_SECRET,
+        shortcode: SHORTCODE,
+        passkey: "",
+        environment: Environment.SANDBOX,
+      }),
+      timeoutMs: 5000,
+      now: () => nowMs,
+    });
+  }
+
+  function validB2CRequest() {
+    return {
+      initiatorName: "testapi",
+      securityCredential: "cred",
+      commandID: CommandID.BusinessPayment,
+      amount: 100,
+      partyA: "",
+      partyB: "254705912645",
+      remarks: "refund",
+      queueTimeOutURL: "https://a.com/t",
+      resultURL: "https://a.com/r",
+    };
+  }
+
+  it("construction with an empty passkey succeeds (B2C-only merchant)", () => {
+    expect(() => emptyPasskeyClient()).not.toThrow();
+  });
+
+  it("stkPush rejects an empty passkey before any fetch", async () => {
+    const client = emptyPasskeyClient();
+    await expect(client.stkPush(validSTKPushRequest())).rejects.toThrow(
+      "mpesa: Config.passkey is required for STK Push (it is bound into the request Password)",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("stkQuery rejects an empty passkey before any fetch", async () => {
+    const client = emptyPasskeyClient();
+    await expect(
+      client.stkQuery({ checkoutRequestID: "ws_CO_1" }),
+    ).rejects.toThrow(
+      "mpesa: Config.passkey is required for STK Query (it is bound into the request Password)",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("b2cPayout still works with an empty passkey", async () => {
+    let capturedBody: Record<string, unknown> = {};
+
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse(VALID_TOKEN_RESPONSE);
+      }
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return jsonResponse({
+        OriginatorConversationID: "o",
+        ConversationID: "AG_1",
+        ResponseCode: "0",
+        ResponseDescription: "ok",
+      });
+    });
+
+    const resp = await emptyPasskeyClient().b2cPayout(validB2CRequest());
+
+    expect(resp.ConversationID).toBe("AG_1");
+    expect(capturedBody["PartyA"]).toBe(SHORTCODE);
+    // The B2C payload never carries a Password field at all.
+    expect(capturedBody["Password"]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // C2B Register URL — wire-correct Completed/Cancelled values
 // ---------------------------------------------------------------------------
 
@@ -2656,6 +2740,28 @@ describe("Callback URL host blocklist (SSRF table)", () => {
     "224.0.0.1",
     "ff02::1",
     "0x0a000001",
+    // Trailing DNS root labels: the root label is optional in DNS, so the
+    // dot-strip must run BEFORE every guard, not only the localhost name
+    // check. "127.0.0.1.." once passed looksNumericIPv4 AND isBlockedIPv4
+    // (a trailing dot is not an octet) and reached fetch — one dot
+    // appended to any of these is a bypass (confirmed pre-fix).
+    "127.0.0.1.",
+    "127.0.0.1..",
+    "127.1..",
+    "10.0.0.1.",
+    "192.168.0.1..",
+    "169.254.169.254..",
+    "172.16.0.1..",
+    "0.0.0.0..",
+    "224.0.0.1..",
+    "2130706433.",
+    "0x7f000001..",
+    // Signed / malformed numeric host shapes: Go's normalizeNumericHost and
+    // Python's _BadNumericHost both fail closed on these; TS used to hand
+    // them to the resolver as DNS names ("http://0xzz/" reached fetch).
+    "-1",
+    "+1",
+    "0xzz",
   ];
 
   const ACCEPT_HOSTS = [
@@ -2665,6 +2771,11 @@ describe("Callback URL host blocklist (SSRF table)", () => {
     "8.8.8.8",
     "hook.example.com",
     "user-facing-brand.com",
+    // IPv4-mapped IPv6 with a PUBLIC tail is allowed — Go (IP.To4()) and
+    // Python (_ip_literals unwrap) judge the embedded address on its own
+    // merits. TS used to classify the whole string by its first hextet
+    // ("ffff" reads as ff00::/8 multicast) and refused every mapped host.
+    "::ffff:8.8.8.8",
   ];
 
   function ssrfClient(): MpesaClient {
@@ -2827,6 +2938,25 @@ describe("STK Query payload shape", () => {
     await expect(
       client.stkQuery({ checkoutRequestID: "ws_CO_1", businessShortCode: "1".repeat(11) }),
     ).rejects.toThrow("mpesa: BusinessShortCode must be 5-10 ASCII digits (got 11 characters)");
+  });
+
+  it("STK Push: rejects a malformed businessShortCode/partyB pre-fetch (Go/Python parity)", async () => {
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    // stkQuery already enforced the 5-10 digit shape; stkPush used to accept
+    // "abc", "12", 11 digits and 300 chars and shipped them to the gateway
+    // (500.001.1001) — confirmed pre-fix. Both fields take the shortcode
+    // shape, never the MSISDN shape (stk-push.md).
+    for (const bad of ["abc", "12", "12345678901", "x".repeat(300)]) {
+      await expect(
+        client.stkPush({ ...validSTKPushRequest(), businessShortCode: bad }),
+        `businessShortCode ${bad.slice(0, 12)}`,
+      ).rejects.toThrow(/^mpesa: BusinessShortCode must be 5-10 ASCII digits/);
+      await expect(
+        client.stkPush({ ...validSTKPushRequest(), partyB: bad }),
+        `partyB ${bad.slice(0, 12)}`,
+      ).rejects.toThrow(/^mpesa: PartyB must be 5-10 ASCII digits/);
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

@@ -24,7 +24,8 @@ async function main(): Promise<void> {
   });
 
   // 2. Create a concurrency-safe client (share across calls).
-  const client = new MpesaClient({ config: cfg });
+  //    TS keeps its only timeout knob on the client options, not on Config.
+  const client = new MpesaClient({ config: cfg, timeoutMs: 15_000 });
 
   try {
     // 3. Send the STK Push prompt.

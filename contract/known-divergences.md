@@ -9,6 +9,65 @@ nothing would be worse than no fixture at all.
 Each item below is therefore tracked here instead, and pinned by
 engine-specific tests OUTSIDE the shared corpus.
 
+## Validation strictness: shortcode/identifier shape enforcement is not uniform
+
+**The divergence.** The same wire field is shape-checked in a different
+subset of engines:
+
+| Field | Shape enforced by | Rule |
+|---|---|---|
+| STK Push `BusinessShortCode` | Go, Python, TypeScript (0.5.1 patch: TS `stkPush` gained the check) | 5–10 ASCII digits |
+| STK Push `PartyB` | Go, TypeScript — **not Python** (`STKPushRequest.validate()` never calls `_shortcode` for `party_b`) | 5–10 ASCII digits |
+| STK Query `BusinessShortCode` | Go, Python, TypeScript | 5–10 digits; Go's model layer treats an EMPTY value as optional, Python's and TS's `validate()` require it (both clients inject the config shortcode first, so the difference is invisible on the client path and visible only to a direct `validate()` call) |
+| B2C `PartyA` | Python only | 5–10 ASCII digits (Go/TS: non-empty only) |
+| C2B Register/Simulate `ShortCode` | Python only | 5–10 ASCII digits (Go/TS: injected, unchecked) |
+| TxStatus/Reversal identifier length caps | Python only | ≤ 64 printable chars, identifier types ≤ 12 |
+| QR `Size` digit-length cap | Python only | ≤ 12 ASCII digits (Go/TS: numeric parse only) |
+| URL port bounds | Go (0.5.1 patch), Python | `0 < port ≤ 65535`; TypeScript rejects `> 65535` via `new URL` but still accepts port `0` |
+
+Consequence: an over-long or malformed value that is a *local* error in the
+strict engine is a **gateway `500.001.1001` / `500.002.1001` rejection** in
+the lenient ones. Nothing here is a correctness bug in any single engine —
+each engine is self-consistent — but identical integration code fails at a
+different layer depending on the language chosen.
+
+**Why it is not a fixture.** A corpus fixture asserts one outcome per body;
+this is a per-engine *policy* difference, not a wire value.
+
+**What would close it.** Pick one rule per field and enforce it everywhere
+(the Python shape is the strictest and the natural candidate), then express
+it as an ordinary request-rejection fixture. Until then the divergences are
+pinned by each engine's own validation tests.
+
+## Typed error surface: transport/timeout/throttle paths are not typed
+
+**The divergence.** The documented contract — *one typed error carrying
+`status_code`/`error_code`/`error_message`/`request_id`* — holds for every
+non-2xx gateway response in all three engines. It does NOT hold for:
+
+- **Transport failures / timeouts** — Go wraps (`fmt.Errorf(... %w)`,
+  `go/client.go` `post`), Python lets `requests.exceptions.RequestException`
+  propagate untouched, TypeScript throws a plain `Error`. None is an
+  `MpesaError`/`*MpesaError`/`MpesaError` subclass, so `errors.As` /
+  `except MpesaError` / `instanceof MpesaError` cannot classify a
+  `context.DeadlineExceeded` or a `Timeout` as an SDK error.
+- **OAuth decode failure** — Go: bare `fmt.Errorf`; Python: `ValueError`;
+  TypeScript: typed `MpesaDecodeError` (TS is the only typed one).
+- **Refresh-rate-limited** — Go: bare `fmt.Errorf`; Python: typed
+  `RefreshRateLimitedError` but without the four envelope fields;
+  TypeScript: `MpesaError(429)` with the envelope fields null.
+- **Oversize response** — Go: `*OversizeError` (typed but not `MpesaError`,
+  and carries only `Path`); Python/TS: `MpesaError(413)` with the full shape.
+
+**Why it is not a fixture.** These are *exception types on client-internal
+paths*, not gateway wire values; the corpus asserts the error a caller
+receives for a response body.
+
+**What would close it.** Give every failure mode one carrier per engine —
+either a typed SDK error with the four fields (null where meaningless) or a
+documented exception-type contract in `docs/apis/` stating exactly which
+type each path raises so callers can write one catch clause per engine.
+
 ## STK callback without `ResultDesc`
 
 **The divergence.** A callback body that omits `ResultDesc`:

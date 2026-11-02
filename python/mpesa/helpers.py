@@ -64,7 +64,9 @@ def generate_password(shortcode: str, passkey: str, at: datetime) -> tuple[str, 
     """
     if at.tzinfo is None:
         raise ValueError("mpesa: timestamp must be timezone-aware")
-    if not passkey:
+    # Go's TrimSpace / TS's .trim() parity: a whitespace-only passkey is a
+    # misconfigured one, and all three engines now refuse it identically.
+    if not (passkey or "").strip():
         raise ValueError("mpesa: passkey must not be empty")
     timestamp = at.astimezone(EAT).strftime("%Y%m%d%H%M%S")
     password = base64.b64encode((shortcode + passkey + timestamp).encode()).decode()

@@ -85,6 +85,34 @@ jobs:
           ruff check .
         working-directory: python
 
+      - name: Version parity (the five literals agree)
+        # The version string lives in five files with no build-time link
+        # between them (go/version.go, python/setup.py, python/mpesa/__init__.py,
+        # typescript/package.json, typescript/src/index.ts), so one engine can
+        # ship a stale version silently and a consumer's `--version` output
+        # starts lying. This is the mechanical check for that drift: one engine
+        # bumped, four forgotten now fails the job that can see all five.
+        # Folded into the `python` job rather than adding a fifth job so the
+        # `required` gate's EXPECTED_CHECKS list keeps its four entries.
+        run: |
+          set -euo pipefail
+          versions=(
+            "$(grep -oP 'Version = "\K[^"]+' ../go/version.go)"
+            "$(grep -oP 'version="\K[^"]+' setup.py)"
+            "$(grep -oP '__version__ = "\K[^"]+' mpesa/__init__.py)"
+            "$(grep -oP '"version": "\K[^"]+' ../typescript/package.json)"
+            "$(grep -oP 'VERSION = "\K[^"]+' ../typescript/src/index.ts)"
+          )
+          first="${versions[0]}"
+          for v in "${versions[@]}"; do
+            if [ "$v" != "$first" ]; then
+              echo "::error::version literal drift: expected all five to be $first, got $v"
+              exit 1
+            fi
+          done
+          echo "All five version literals agree: $first"
+        working-directory: python
+
   typescript:
     runs-on: ubuntu-latest
     steps:
@@ -165,7 +193,7 @@ jobs:
         # Pinned, not `@latest`. `@latest` resolved mutable upstream content at
         # run time, so the scanner's behaviour could change without a commit
         # here. v1.1.4 declares `go 1.22.0`, so it builds under the pinned
-        # 1.26.9 toolchain without any download.
+        # 1.26.10 toolchain without any download.
         #
         # GOTOOLCHAIN=local, not `auto`: `auto` lets the go command silently
         # fetch a newer toolchain when a module needs one, which is precisely
