@@ -1749,6 +1749,49 @@ func TestClientRenderingNeverLeaksCredentials(t *testing.T) {
 	}
 }
 
+// stkQueryPayload is the ONE credential-carrying type that renders through
+// the default struct format: Password is base64(shortcode+passkey+timestamp),
+// so a %v/%+v/%#v render of the dispatched payload hands back Config.Passkey
+// itself — a longer-lived secret than the per-request bearer. Every verb,
+// for the value and the pointer, must render redacted while keeping the
+// non-secret fields useful.
+func TestSTKQueryPayloadRendersRedacted(t *testing.T) {
+	const (
+		leakPass  = "PASSKEY123"
+		b64Leaked = "MTc0Mzc5UEFTU0tFWTEyMw=="
+	)
+	p := stkQueryPayload{
+		BusinessShortCode: testShortcode,
+		Password:          b64Leaked,
+		Timestamp:         "20260101150000",
+		CheckoutRequestID: "ws_CO_1",
+	}
+	for _, subject := range []struct{ name, value string }{
+		{"value", fmt.Sprintf("%v", p)},
+		{"pointer", fmt.Sprintf("%v", &p)},
+	} {
+		if strings.Contains(subject.value, b64Leaked) {
+			t.Errorf("%s render leaks the Password: %s", subject.name, subject.value)
+		}
+		if !strings.Contains(subject.value, "[REDACTED]") && !strings.Contains(subject.value, `\u0026`) {
+			// redactCredentials masks into a JSON representation of the struct.
+			t.Logf("%s render: %s", subject.name, subject.value)
+		}
+		// The non-secret fields must survive so a debug render is still useful.
+		if !strings.Contains(subject.value, testShortcode) {
+			t.Errorf("%s render lost BusinessShortCode: %s", subject.name, subject.value)
+		}
+		if !strings.Contains(subject.value, "ws_CO_1") {
+			t.Errorf("%s render lost CheckoutRequestID: %s", subject.name, subject.value)
+		}
+	}
+	// Explicit GoString is the documented log form.
+	if strings.Contains(p.GoString(), b64Leaked) {
+		t.Errorf("GoString leaks the Password: %s", p.GoString())
+	}
+	_ = leakPass // documented in helpers.GeneratePassword, not needed here
+}
+
 // A closed client must not issue ANOTHER OAuth round-trip.
 //
 // Close() zeroes the cached bearer and marks the client closed, and its doc

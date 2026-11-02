@@ -1,6 +1,6 @@
 # M-Pesa Daraja SDK
 
-[![Go](https://img.shields.io/badge/Go-1.26.9+-00ADD8?logo=go&logoColor=white)](https://pkg.go.dev/github.com/anthrodjear/mpesa-sdk/go)
+[![Go](https://img.shields.io/badge/Go-1.26.10+-00ADD8?logo=go&logoColor=white)](https://pkg.go.dev/github.com/anthrodjear/mpesa-sdk/go)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://pypi.org/project/mpesa-sdk/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9+-3178C6?logo=typescript&logoColor=white)](https://www.npmjs.com/package/@mpesa-sdk/core)
 [![CI](https://github.com/anthrodjear/mpesa-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/anthrodjear/mpesa-sdk/actions/workflows/ci.yml)
@@ -11,7 +11,7 @@ A production-grade SDK for the Safaricom **M-Pesa Daraja API** in three language
 
 | Language   | Version  | Install                        | Import                                  | Runtime deps                          |
 |------------|----------|--------------------------------|-----------------------------------------|---------------------------------------|
-| Go         | 1.26.9+  | `go get github.com/anthrodjear/mpesa-sdk/go` | `import mpesa "github.com/anthrodjear/mpesa-sdk/go"` | none (stdlib only)                    |
+| Go         | 1.26.10+ | `go get github.com/anthrodjear/mpesa-sdk/go` | `import mpesa "github.com/anthrodjear/mpesa-sdk/go"` | none (stdlib only)                    |
 | Python     | 3.11+    | `pip install mpesa-sdk`        | `import mpesa`                           | `requests`, `cryptography`            |
 | TypeScript | Node ≥20 | `npm install @mpesa-sdk/core`  | `import { ... } from "@mpesa-sdk/core"`  | none (native `fetch` + `node:crypto`) |
 
@@ -32,7 +32,7 @@ A production-grade SDK for the Safaricom **M-Pesa Daraja API** in three language
 | `MPESA_CONSUMER_SECRET`| OAuth basic-auth password                             | secret — never log                        |
 | `MPESA_SHORTCODE`      | Default business shortcode                            | injected into requests when you omit it   |
 | `MPESA_PASSKEY`        | STK Push/Query password derivation                    | secret — never log                        |
-| `MPESA_ENVIRONMENT`    | `sandbox` (default) · `production` / `prod` (Python)  | honored by Python `Environment.from_config`; in Go set `Config.Environment` yourself. TypeScript: `MPESA_ENVIRONMENT` accepts exactly `"sandbox"` or `"production"` — any other value throws a `ConfigError`; when unset it defaults to sandbox |
+| `MPESA_ENVIRONMENT`    | `sandbox` (default) or `production`                   | accepted values differ per engine — see [Choosing the environment](#choosing-the-environment) below |
 
 ```dotenv
 # .env.example
@@ -43,11 +43,21 @@ MPESA_PASSKEY=your-passkey
 MPESA_ENVIRONMENT=sandbox
 ```
 
+#### Choosing the environment
+
+The one knob whose accepted values differ per engine — check your language before setting `prod`:
+
+| Engine | Accepted `MPESA_ENVIRONMENT` values | Where it is read |
+|--------|-------------------------------------|------------------|
+| Go | none — set `Config.Environment` yourself (`mpesa.Sandbox` / `mpesa.Production`) | `Config.Environment` |
+| Python | `sandbox` · `production` · `prod` (any case, trimmed) | `Environment.from_config` |
+| TypeScript | exactly `sandbox` or `production`; anything else throws `ConfigError`. Unset = sandbox. The **code** call `MpesaClient.fromEnv("prod")` also accepts `"prod"` — the *env var* does not | `MpesaClient.fromEnv()` |
+
 Request timeouts are owned by the client object, not by an environment variable: Go sets
-`Config.Timeout` (default 30 s) and Python `Config.timeout_seconds` (default 30.0). TypeScript is the
-odd one out — it puts **no** timeout on `Config`; the 30 s default lives on `MpesaClientOptions`
-as `timeoutMs`, set with `new MpesaClient({ config, timeoutMs })`. All three clamp a value ≤ 0 back
-to 30 s, and Python additionally rejects a non-numeric `timeout_seconds` when the client is built.
+`Config.Timeout` (default 30 s) and Python `Config.timeout_seconds` (default 30.0). TypeScript keeps
+its only knob on `MpesaClientOptions` as `timeoutMs`, set with `new MpesaClient({ config, timeoutMs })`.
+All three clamp a value ≤ 0 back to 30 s, and Python additionally rejects a non-numeric
+`timeout_seconds` when the client is built.
 
 Credentials never leak through text rendering: `repr()`/`log_safe()` (Python), `GoString`/`Format` (Go), and `toString()`/`toJSON()`/`logSafe()` (TypeScript) all redact secrets — `consumerKey` is masked to first-4/last-4 in all three engines, and `consumerSecret`/`passkey` are omitted entirely. Log configs freely — but only via those accessors. TypeScript additionally ships `MpesaClient.fromEnv()`, wired straight from these variables; Go has no env loader by design — fill `Config` yourself.
 
@@ -57,7 +67,9 @@ Every engine now enforces per-transaction amount ceilings client-side (opt-in pe
 
 ## Quick start
 
-Every snippet below is complete enough to run (fill the env vars first). Accepted ≠ paid: `ResponseCode "0"` means Daraja queued the prompt; settlement arrives via callback or query.
+Every snippet below is complete enough to run — fill the env vars first.
+
+> ⚠️ **Accepted ≠ paid.** `ResponseCode "0"` means Daraja queued the prompt; the customer's PIN settles it. The verdict arrives on your callback URL (or via STK Query) — never treat the push ack as a payment.
 
 ### Go
 
@@ -105,7 +117,8 @@ cfg = Config(
     consumer_secret=os.environ["MPESA_CONSUMER_SECRET"],
     shortcode=os.environ["MPESA_SHORTCODE"],
     passkey=os.environ["MPESA_PASSKEY"],
-    environment=Environment.SANDBOX,  # default; Environment.PRODUCTION when live
+    environment=Environment.from_config(
+        os.environ.get("MPESA_ENVIRONMENT")),  # sandbox default; "production"/"prod" when live
 )
 client = MpesaClient(cfg)
 
@@ -123,7 +136,7 @@ print(resp.response_code, resp.checkout_request_id, resp.customer_message)
 
 ### TypeScript
 
-> ⚠️ Enum member names differ across languages: TypeScript uses `TransactionType.BillPayGoods` (wire value `"CustomerPayBillOnline"`), Python `CUSTOMER_PAY_BILL_ONLINE`, Go `TransactionTypePayBillOnline`.
+> ⚠️ Enum member names differ across languages: TypeScript uses `TransactionType.PayBillOnline` (wire value `"CustomerPayBillOnline"`), Python `CUSTOMER_PAY_BILL_ONLINE`, Go `TransactionTypePayBillOnline`.
 
 ```ts
 import { Config, MpesaClient, TransactionType } from "@mpesa-sdk/core";
@@ -139,7 +152,7 @@ const client = new MpesaClient({
 });
 
 const resp = await client.stkPush({
-  transactionType: TransactionType.BillPayGoods, // wire: "CustomerPayBillOnline"
+  transactionType: TransactionType.PayBillOnline, // wire: "CustomerPayBillOnline"
   amount: 100,
   partyA: "254712345678",
   phoneNumber: "254712345678",
@@ -155,14 +168,18 @@ console.log(resp.ResponseCode, resp.CheckoutRequestID, resp.CustomerMessage);
 | Concept | Go | Python | TypeScript |
 |---------|-----|--------|------------|
 | Environment | `mpesa.Production` | `Environment.PRODUCTION` | `Environment.PRODUCTION` |
-| Transaction type (paybill) | `mpesa.TransactionTypePayBillOnline` | `TransactionType.CUSTOMER_PAY_BILL_ONLINE` | `TransactionType.BillPayGoods` |
-| Transaction type (buy goods) | `mpesa.TransactionTypeBuyGoodsOnline` | `TransactionType.CUSTOMER_BUY_GOODS_ONLINE` | `TransactionType.BuyGoodsOnline` (`BillPayGoodsGoods` kept as deprecated alias) |
+| Transaction type (paybill) | `mpesa.TransactionTypePayBillOnline` | `TransactionType.CUSTOMER_PAY_BILL_ONLINE` | `TransactionType.PayBillOnline` |
+| Transaction type (buy goods) | `mpesa.TransactionTypeBuyGoodsOnline` | `TransactionType.CUSTOMER_BUY_GOODS_ONLINE` | `TransactionType.BuyGoodsOnline` (canonical; `BillPayGoodsGoods` kept as deprecated alias) |
 | Result classification | `mpesa.ResultClassIndeterminate` | `ResultClass.INDETERMINATE` | `ResultClass.INCONCLUSIVE` |
 | Response code (success) | `"0"` | `"0"` | `"0"` |
 | Command ID (business payment) | `mpesa.CommandBusinessPayment` | `CommandID.BUSINESS_PAYMENT` | `CommandID.BusinessPayment` |
+| Command ID (C2B simulate) | raw string `mpesa.CommandID("CustomerPayBillOnline")` — Go has no typed member | `CommandID.C2B_PAYBILL_ONLINE` / `C2B_BUY_GOODS_ONLINE` | `CommandID.PayBill` / `PayGoods` |
+| Response type (C2B register) | `mpesa.ResponseTypeCompleted` / `Cancelled` | `ResponseType.COMPLETED` / `CANCELLED` | `ResponseType.Completed` / `Cancelled` (TS rejects the deprecated `Success`/`Fail` aliases at runtime) |
 | QR transaction code | `mpesa.QRTrxPaybill` | `QRTrxCode.PAYBILL` | `QRTrxCode.Paybill` |
 
 > ⚠️ Enum member names differ across languages — the wire values are always identical. Use the tables above or your IDE's autocomplete to pick the right member; the name alone does not tell you the wire string.
+
+> TypeScript keeps deprecated aliases (`TransactionType.BillPayGoods`/`BillPayGoodsGoods`, `ResponseType.Success`/`Fail`) for back-compat — prefer the canonical names above; `c2bRegisterURL` rejects the deprecated `ResponseType` aliases outright.
 
 ### API surface at a glance
 
@@ -229,7 +246,7 @@ if err == nil && res.Classify() == mpesa.ResultClassSuccess {
 
 ```ts
 const res = await client.stkQuery({ checkoutRequestID: crid });
-if (parseInt(res.ResultCode, 10) === 0) settle(order); // by query, never the bare hit
+if (res.ResultCode === "0") settle(order); // stkQuery normalizes ResultCode to string; raw callback JSON may carry "0" or 0 — normalize with String(), never parseInt (the number arm fails)
 ```
 
 Python has the most convenient parser:
@@ -345,6 +362,7 @@ B2C, Transaction Status, Reversal and Account Balance require an API-operator **
 | TypeScript | `securityCredential(certificatePem, initiatorPassword)` — **cert first! Changed post-0.2.0 — swap your two args.** |
 
 ```python
+import os
 from pathlib import Path
 from mpesa import security_credential
 
@@ -357,8 +375,8 @@ ack = client.b2c_payout(B2CPayoutRequest(
     amount=100,                     # KES 10–250000
     party_b="+254705912645",        # recipient MSISDN (party_a ← cfg.shortcode)
     remarks="payout order 42",      # 2–100 chars
-    queue_time_out_url="https://example.com/mpesa/timeout",
-    result_url="https://example.com/mpesa/result",
+    queue_time_out_url="https://example.com/payments/timeout",
+    result_url="https://example.com/payments/result",
 ))
 # ack is the queue ticket only — the verdict lands on result_url.
 ```
@@ -366,13 +384,17 @@ ack = client.b2c_payout(B2CPayoutRequest(
 Same flow in Go:
 
 ```go
-cred, err := mpesa.SecurityCredential(certBytes, os.Getenv("MPESA_INITIATOR_PASSWORD"))
+cert, err := os.ReadFile("assets/certs/SandboxCertificate.cer")  // PEM or DER
+if err != nil {
+    log.Fatal(err)
+}
+cred, err := mpesa.SecurityCredential(cert, os.Getenv("MPESA_INITIATOR_PASSWORD"))
 ack, err := client.B2CPayout(ctx, mpesa.B2CPayoutRequest{
 	InitiatorName: os.Getenv("MPESA_INITIATOR_NAME"), SecurityCredential: cred,
 	CommandID: mpesa.CommandBusinessPayment, Amount: 100,
 	PartyB: "+254705912645", Remarks: "payout order 42",
-	QueueTimeOutURL: "https://example.com/mpesa/timeout",
-	ResultURL:       "https://example.com/mpesa/result",
+	QueueTimeOutURL: "https://example.com/payments/timeout",
+	ResultURL:       "https://example.com/payments/result",
 }) // PartyA ← cfg.Shortcode; OriginatorConversationID auto-generated when empty
 ```
 
@@ -445,7 +467,7 @@ catch (err) {
 ## Security model
 
 - **Callbacks and async results are unsigned** — anyone who can reach your endpoint can forge a payload. Harden with unguessable URL tokens, `CheckoutRequestID`/`OriginatorConversationID` binding, field validation, and the [gateway IP whitelist](docs/apis/getting-started.md#callback-source-ip-whitelist).
-- **Secrets are redacted in every text form** of `Config` and credential-bearing requests — but `pickle`/`asdict`/raw struct copies still carry them; redact at the log boundary.
+- **Secrets are redacted in every text form** of `Config` and credential-bearing requests — but `pickle`/`asdict`/raw struct copies still carry them; redact at the log boundary. TypeScript request objects are plain interfaces (no `inspect` hook), so log them through `logSafeRequest(req)` — it masks `securityCredential`/`passkey` and drops callback-token query strings (Go: `req.LogSafe()`, Python: `repr(req)`).
 - **Tokens live in memory only**, generation-guarded against cross-replica invalidation; nothing touches disk.
 - **Transport is hardened**: TLS verification forced on injected sessions (Python), redirects refused (all engines), response sizes capped.
 - **Transport pinning (Go only)** — opt-in SPKI certificate pinning is the flagship transport control. Set `Config.TLSPinningEnabled = true` and register each expected host's pin with `mpesa.PinSPKI(hostname, spkiHash)`, where `spkiHash` is the SHA-256 of the DER-encoded SubjectPublicKeyInfo of the server's RSA public key. A host with no registered pin is unaffected, so you can roll pins one host at a time and keep a current + backup pin per host. Pinning is **additive to** ordinary TLS verification, never a replacement: a chain that fails normal validation is rejected before pinning is consulted, and the client refuses transports with `InsecureSkipVerify`. There is no built-in helper to compute the hash — the practical starting point is to fetch the live endpoint's certificate and hash its SPKI with `openssl x509 -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary`, then verify the derived hash against a channel you trust before registering it. (Go only: `PinSPKI` and `Config.TLSPinningEnabled` exist in no other engine.)
@@ -481,10 +503,11 @@ Listed so log inspection doesn't panic you; the SDKs emit/accept these verbatim:
 ├── python/                 # PyPI mpesa-sdk — mpesa/ package, examples/, tests/
 ├── typescript/             # npm @mpesa-sdk/core — src/, examples/, test/
 ├── docs/apis/              # per-endpoint reference — source of truth for wire contracts
+├── contract/               # shared cross-engine fixtures + known divergences — the executable form of the "one contract" claim
 ├── assets/certs/           # SandboxCertificate.cer · ProductionCertificate.cer
 ├── .github/
 │   ├── dependabot.yml      # weekly updates for npm · pip · gomod · github-actions, all targeting `develop`
-│   └── workflows/          # ci.yml · promote.yml · dependabot-auto-merge.yml
+│   └── workflows/          # ci.yml · promote.yml · required-checks.yml · dependabot-auto-merge.yml
 ├── ADR-010-m-pesa-adapter.md
 ├── CHANGES.md              # per-release changelog (0.5.1 is current)
 ├── SECURITY.md             # vulnerability reporting · supported versions · release automation · hardening notes
@@ -492,6 +515,8 @@ Listed so log inspection doesn't panic you; the SDKs emit/accept these verbatim:
 ```
 
 ## Development & testing
+
+Testing the SDK against a mock? The base URL is a two-entry allowlist by design (the OAuth leg ships your Basic credentials) — inject the transport/clock seams instead: [testing.md](docs/testing.md).
 
 | Engine     | Commands                                                              |
 |------------|-----------------------------------------------------------------------|
@@ -530,8 +555,8 @@ already been tested on the develop push and on the promotion pull request.
 
 | Job | What it runs |
 |---|---|
-| `go` | `go vet`, `golangci-lint`, and `go test -race -v -count=1 ./...` on **Go 1.26.9** — the same toolchain `govulncheck` scans, so build and scan cannot drift |
-| `python` | `pytest` on Python 3.11, then `ruff check` |
+| `go` | `go vet`, `golangci-lint`, and `go test -race -v -count=1 ./...` on **Go 1.26.10** — the same toolchain `govulncheck` scans, so build and scan cannot drift |
+| `python` | `pytest` on Python 3.11, then `ruff check`, then a version-parity check that the five version literals (`go/version.go`, `python/setup.py`, `python/mpesa/__init__.py`, `typescript/package.json`, `typescript/src/index.ts`) agree |
 | `typescript` | `npm ci`, typecheck (including examples), `vitest`, then ESLint or `tsc --noEmit` |
 | `security` | `govulncheck ./...` (Go), `bandit -r mpesa/ -ll` (Python), `npm audit --audit-level=high` (TypeScript) — **a hard gate**, and a timeout here is itself a failure |
 
@@ -549,6 +574,7 @@ longer be satisfied by a push-run result that no PR ever evaluated.
 - [transaction-status.md](docs/apis/transaction-status.md) · [reversal.md](docs/apis/reversal.md) — receipt/conversation queries · C2B-only reversal
 - [account-balance.md](docs/apis/account-balance.md) — balance blob parsing · [dynamic-qr.md](docs/apis/dynamic-qr.md) — TrxCode matrix
 - [oauth.md](docs/apis/oauth.md) — token TTL, invalidation-on-refresh, generation guard, refresh rate limit (`mpesa: refresh rate limited ...`)
+- [testing.md](docs/testing.md) — transport/clock injection seams for testing against a mock (the base-URL allowlist has no override by design)
 
 ## FAQ
 

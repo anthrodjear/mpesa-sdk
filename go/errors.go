@@ -10,6 +10,43 @@ import (
 	"unicode/utf8"
 )
 
+// ErrNotDispatched marks a request that provably never received a gateway
+// ANSWER: the transport refused the connection, the context was cancelled,
+// or the OAuth leg failed before any business request left the process.
+//
+// The daily ledger refunds a reservation ONLY for these errors (see
+// Client.rollbackDaily and its five call sites). An OversizeError and a
+// 2xx-decode failure both PROVE the gateway answered, so their quota is
+// KEPT — refunding it would let real day-spend exceed MaxPerDay without
+// bound, which is the opposite of what the ledger exists to enforce.
+//
+// Python's parity rule is the same positive classifier: its refund is keyed
+// on requests.exceptions.RequestException ("never answered"), and an
+// oversize body (MpesaError 413) or a decode failure (ValueError) keeps
+// the reservation. A NEW error type added later therefore also fails closed
+// in the keep direction.
+var ErrNotDispatched = errors.New("mpesa: request was never dispatched")
+
+// notDispatchedError preserves the caller-visible message of a transport
+// failure byte-for-byte (so no log parser or test pinned on the old text
+// breaks) while joining ErrNotDispatched and the cause into the Unwrap
+// chain, so errors.Is(err, ErrNotDispatched) AND
+// errors.Is(err, context.DeadlineExceeded) both hold.
+type notDispatchedError struct {
+	msg string
+	err error
+}
+
+func (e *notDispatchedError) Error() string { return e.msg }
+
+func (e *notDispatchedError) Unwrap() []error { return []error{ErrNotDispatched, e.err} }
+
+// notDispatched wraps a pre-answer failure. The message keeps the historical
+// "mpesa: POST %s: %v" rendering of the wrapped cause.
+func notDispatched(path string, err error) error {
+	return &notDispatchedError{msg: fmt.Sprintf("mpesa: POST %s: %v", path, err), err: err}
+}
+
 // MpesaError is the typed surface for non-2xx Daraja responses carrying the
 // standard {requestId, errorCode, errorMessage} envelope.
 type MpesaError struct {

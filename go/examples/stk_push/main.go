@@ -25,18 +25,19 @@ func main() {
 		Shortcode:      os.Getenv("MPESA_SHORTCODE"),
 		Passkey:        os.Getenv("MPESA_PASSKEY"),
 		Environment:    mpesa.Sandbox,
-		Timeout:        15 * time.Second,
+		Timeout:        15 * time.Second, // default ceiling for every request the client makes
 	}
 
 	// 2. Create a concurrency-safe client (share across goroutines).
 	client, err := mpesa.NewClient(cfg)
 	if err != nil {
-		log.Fatalf("bad config: %v", err)
+		log.Fatalf("bad config (check the MPESA_* env vars): %v", err)
 	}
 	// Close() zeroes the cached bearer token in memory; the client must not be reused after it.
 	defer client.Close()
 
 	// 3. Send the STK Push prompt.
+	//    ctx is the per-call override: the shorter of this and cfg.Timeout wins.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

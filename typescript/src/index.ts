@@ -32,7 +32,7 @@
  *   amount:      100,
  *   accountReference: "Order 42",
  *   transactionDesc:  "test",
- *   transactionType: TransactionType.BillPayGoods, // wire "CustomerPayBillOnline"
+ *   transactionType: TransactionType.PayBillOnline, // wire "CustomerPayBillOnline"
  *   partyA: "+254712345678",
  *   callBackURL: "https://example.com/callback",
  * });
@@ -117,6 +117,7 @@ export {
   normalizePhone,
   securityCredential,
   newOriginatorID,
+  logSafeRequest,
 } from "./helpers.js";
 
 // ── Callback tokens ─────────────────────────────────────────────────────

@@ -72,7 +72,7 @@ each message names the exact config path to raise (or `0` to disable):
 | Engine | Type | Shape |
 |---|---|---|
 | Go | `*mpesa.LimitError` | `mpesa: STK Push Amount <n> exceeds configured max <m> KES (set Config.Limits.STK.MaxPerTransaction, or 0 for unlimited)` |
-| Python | `ValueError` | `mpesa: <field> <n> exceeds the <m> KES per-transaction ceiling configured for the <service> service; override it with Config(limits=TransactionLimits(…))` |
+| Python | `ValueError` | `mpesa: <field> <n> exceeds the <m> KES per-transaction ceiling configured for the <service> service; override it with Config(limits=TransactionLimits(<service>=ServiceLimits(max_per_transaction=<KES>))) -- leave a field unset (None) to keep the Safaricom default for it, or set it to 0 to disable that ceiling entirely` |
 | TypeScript | `MpesaError` (HTTP 400) | `STK Push amount <n> exceeds the configured per-transaction limit of <m> KES (raise limits.stk.maxPerTransaction in Config; 0 = unlimited)` |
 
 ## Behavior change vs earlier releases
