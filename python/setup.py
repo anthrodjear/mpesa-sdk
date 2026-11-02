@@ -35,7 +35,7 @@ against sandbox and production endpoints.
 
 setup(
     name="mpesa-sdk",
-    version="0.5.1",
+    version="0.6.0",
     description=("Python SDK for the Safaricom M-Pesa Daraja API "
                  "(OAuth, STK Push/Query, B2C v3, C2B register/simulate, "
                  "Transaction Status, Reversal, Account Balance, Dynamic QR)"),
