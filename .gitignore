@@ -31,3 +31,8 @@ opencode.jsonc
 .cursor/
 .aider*
 *.skill
+
+# Coverage data (pytest-cov; CI regenerates it on every run)
+python/.coverage
+python/coverage.xml
+typescript/coverage/
