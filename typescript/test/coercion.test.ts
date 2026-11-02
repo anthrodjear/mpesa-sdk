@@ -6,7 +6,13 @@
  * TypeScript's standalone-function approach with JSON.parse-based parsing.
  */
 import { describe, expect, it } from "vitest";
-import { coerceInt, isNumericString, parseIntSafe, safeJsonInt } from "../src/coercion.js";
+import {
+  coerceAmount,
+  coerceInt,
+  isNumericString,
+  parseIntSafe,
+  safeJsonInt,
+} from "../src/coercion.js";
 
 describe("safeJsonInt", () => {
   it("parses string numbers", () => {

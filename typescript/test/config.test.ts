@@ -162,16 +162,26 @@ describe("Config construction — invalid", () => {
     ).toThrow(ConfigError);
   });
 
-  it("throws ConfigError for empty passkey", () => {
-    expect(
-      () =>
-        new Config({
-          consumerKey: "k",
-          consumerSecret: "s",
-          shortcode: "174379",
-          passkey: "",
-        }),
-    ).toThrow(ConfigError);
+  it("accepts an empty passkey at construction (lazy check — Go/Python parity)", () => {
+    // A B2C-only merchant never calls STK Push/Query, so the passkey is
+    // optional at construction (Go/Python parity) and rejected only where
+    // it is bound into the request Password — see client.test.ts.
+    const cfg = new Config({
+      consumerKey: "k",
+      consumerSecret: "s",
+      shortcode: "174379",
+      passkey: "",
+    });
+    expect(cfg.passkey).toBe("");
+    expect(() => cfg.validate()).not.toThrow();
+  });
+
+  it("defaults an omitted passkey to empty string", () => {
+    const cfg = new Config({
+      consumerKey: "k",
+      consumerSecret: "s",
+    });
+    expect(cfg.passkey).toBe("");
   });
 
   it("throws ConfigError for shortcode with non-digit characters", () => {
@@ -548,27 +558,6 @@ describe("toJSON passkey omission", () => {
     });
     const json = cfg.toJSON();
     expect(json).not.toHaveProperty("passkey");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ConfigError passkey field name
-// ---------------------------------------------------------------------------
-
-describe("ConfigError passkey field name", () => {
-  it("message includes the field name for passkey", () => {
-    try {
-      new Config({
-        consumerKey: "k",
-        consumerSecret: "s",
-        shortcode: "12345",
-        passkey: "",
-      });
-      expect.fail("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(ConfigError);
-      expect((e as ConfigError).message).toContain("passkey");
-    }
   });
 });
 

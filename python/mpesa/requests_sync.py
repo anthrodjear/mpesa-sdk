@@ -10,9 +10,10 @@ credential models live in :mod:`mpesa.requests_async`.
 TRANSPORT NOTE: "sync" and "async" name the two FILES (this one carries
 the synchronous STK/C2B/QR endpoints, the other the credential-bearing
 async-result ones), not two HTTP transports. There is ONE transport --
-:class:`mpesa.client.MpesaClient`, which is blocking; the OAuth lock is
-held across the network leg, so an async transport would have to be built
-around it and is deliberately out of scope. Every validation rule lives
+:class:`mpesa.client.MpesaClient`, which is blocking. Its OAuth refresh
+runs a leader/waiter protocol with the network call OUTSIDE the lock, so
+waiters are never serialised behind one thread's round-trip; an async
+transport is still out of scope. Every validation rule lives
 in the shared helpers below so the two files cannot drift: ``_url``
 (inet_aton numeric-host normalization + blocklist), ``_phone``,
 ``_shortcode``, ``_amount_int``, ``_check_transaction_limit``.

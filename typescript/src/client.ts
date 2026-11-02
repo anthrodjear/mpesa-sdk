@@ -26,7 +26,7 @@
  * }));
  *
  * const resp = await client.stkPush({
- *   transactionType: TransactionType.BillPayGoods,
+ *   transactionType: TransactionType.PayBillOnline,
  *   amount: 100,
  *   partyA: "254722000000",
  *   phoneNumber: "254722111111",
@@ -220,7 +220,15 @@ function parseNumericIPv4(host: string): number | null {
 
 /** Is this host spelled like a numeric (dotted/numeric) IPv4 literal? */
 function looksNumericIPv4(host: string): boolean {
-  return /^(\d+)(\.\d+){0,3}$/.test(host) || /^0[xX][0-9a-fA-F]+$/.test(host);
+  return /^(\d+)(\.\d+){0,3}$/.test(host) || /^0[xX][0-9a-fA-F]+$/.test(host)
+    // Fail-closed shapes: a SIGNED decimal and a 0x-prefixed token that is
+    // not a pure hex run are unmistakable attempts to name an IP by value
+    // (Go's numericHostShapeRe + normalizeNumericHost; Python's
+    // _BadNumericHost). Letting them through hands them to the resolver as
+    // DNS names — "http://0xzz/" used to reach fetch. Only no-dot hosts are
+    // caught, so ordinary DNS names are untouched.
+    || /^[+-]\d+$/.test(host)
+    || /^0[xX][^.:/@]*$/.test(host);
 }
 
 function isBlockedIPv4(host: string): boolean {
@@ -246,6 +254,29 @@ function isBlockedIP(host: string): boolean {
   const pct = h.indexOf("%");
   if (pct !== -1) h = h.slice(0, pct); // strip IPv6 zone id (fe80::1%eth0)
   if (h === "::" || h === "::1") return true; // unspecified / loopback
+  // IPv4-mapped form: judge the EMBEDDED IPv4 address on its own merits,
+  // exactly like Go (net.IP.To4()) and Python (_ip_literals unwraps the
+  // mapped address) — a PUBLIC mapped address is allowed, a private or
+  // loopback one blocked.
+  //
+  // WHATWG's URL normalises "[::ffff:8.8.8.8]" to "::ffff:808:808" (the
+  // dotted quad is hex-compressed), so the host reaching here is always
+  // the hex form; the dotted shape is kept for callers that build the host
+  // string themselves. The old code sliced at the last ":" ("8" for
+  // ::ffff:8.8.8.8, never a dotted-quad match) and then classified the
+  // whole string by its first hextet — "ffff" reads as ff00::/8 multicast,
+  // so EVERY mapped address was refused, public ones included (a
+  // strictness divergence from Go/Python, and false versus SECURITY.md's
+  // "identical blocked set" claim).
+  const mappedDotted = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (mappedDotted?.[1] !== undefined) return isBlockedIPv4(mappedDotted[1]);
+  const mappedHex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedHex) {
+    const hi = Number.parseInt(mappedHex[1] as string, 16);
+    const lo = Number.parseInt(mappedHex[2] as string, 16);
+    const embedded = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    return isBlockedIPv4(embedded);
+  }
   if (h.includes(":")) {
     // Any ":" means an IP literal (DNS names never contain ":").
     // Embedded IPv4 tail (e.g. ::ffff:127.0.0.1) — check the tail.
@@ -296,10 +327,21 @@ function requireURL(field: string, value: string): void {
   if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
   const zoneIdx = host.indexOf("%");
   if (zoneIdx !== -1) host = host.slice(0, zoneIdx);
+  // Strip the DNS root label ONCE, before EVERY check below. The root
+  // label is optional in DNS ("localhost." IS "localhost"), so a host is
+  // judged by its VALUE, never by its spelling. Doing this only inside
+  // the localhost NAME check (the old shape) left every OTHER guard
+  // blind: "127.0.0.1.." failed looksNumericIPv4's regex AND
+  // isBlockedIPv4's dotted-quad regex (trailing dots are not octets),
+  // so a loopback/metadata literal reached fetch with one extra dot
+  // appended. Go (strings.TrimRight(host, ".")) and Python
+  // (host.rstrip(".")) both strip before all checks — this restores
+  // that ordering. Go/Python parity.
+  host = host.replace(/\.+$/, "");
   if (host === "") {
     throw new Error(`mpesa: ${field} must have a valid host`);
   }
-  if (host === "localhost" || host === "localhost." || host.replace(/\.+$/, "") === "localhost") {
+  if (host === "localhost") {
     throw new Error(`mpesa: ${field} must not point to localhost`);
   }
   // Numeric-host normalization (inet_aton parity with the Go/Python fixes):
@@ -869,7 +911,7 @@ export class MpesaClient {
    * @example
    * ```ts
    * const resp = await client.stkPush({
-   *   transactionType: TransactionType.BillPayGoods,
+   *   transactionType: TransactionType.PayBillOnline,
    *   amount: 100, partyA: "254722000000",
    *   phoneNumber: "254722111111",
    *   callBackURL: "https://mydomain.com/callback",
@@ -881,9 +923,39 @@ export class MpesaClient {
     // Value copy — caller's object is never mutated
     const r = { ...req };
 
+    // The STK Password is base64(shortcode + passkey + timestamp), so an
+    // empty passkey still derives a perfectly well-formed blob — the only
+    // place the mistake is detectable is here, BEFORE the round-trip (not
+    // in Config.Validate): non-STK users without a passkey are unaffected,
+    // and the caller gets a client-side error instead of a 500.001.1001
+    // gateway rejection. Go STKPush parity (go/client.go).
+    if (this._config.passkey.trim().length === 0) {
+      throw new Error(
+        "mpesa: Config.passkey is required for STK Push (it is bound into the request Password)",
+      );
+    }
+
     // Inject defaults
     if (!r.businessShortCode) r.businessShortCode = this._config.shortcode;
     if (!r.partyB) r.partyB = r.businessShortCode;
+
+    // Shortcode SHAPE on the effective (post-default) values — stkQuery's
+    // block below is the same rule, and STK Push is where Go and Python
+    // enforce it (go/requests.go requireShortcode; Python _shortcode): a
+    // typo'd or over-long shortcode is a local error here instead of a
+    // gateway 500.001.1001. PartyB is the numeric receiving shortcode
+    // (stk-push.md), so it takes the same shape, not the MSISDN shape.
+    for (const [field, value] of [["BusinessShortCode", r.businessShortCode],
+                                  ["PartyB", r.partyB]] as const) {
+      const v = (value || "").trim();
+      if (!/^\d{5,10}$/.test(v)) {
+        throw v === ""
+          ? new Error(`mpesa: ${field} is required`)
+          : new Error(
+              `mpesa: ${field} must be 5-10 ASCII digits (got ${v.length} characters)`,
+            );
+      }
+    }
 
     // Validate
     requireNonEmpty("BusinessShortCode", r.businessShortCode);
@@ -966,6 +1038,16 @@ export class MpesaClient {
   async stkQuery(req: STKQueryRequest): Promise<STKQueryResponse> {
     // Value copy
     const r = { ...req };
+
+    // Same contract as stkPush: the request Password is derived from the
+    // passkey, so an empty one can only fail server-side. Validated at the
+    // request level (not in Config.Validate) to keep non-STK users
+    // unaffected. Go STKQuery parity (go/client.go).
+    if (this._config.passkey.trim().length === 0) {
+      throw new Error(
+        "mpesa: Config.passkey is required for STK Query (it is bound into the request Password)",
+      );
+    }
 
     // Validate — documented contract: non-empty (Go
     // requireNonEmpty) AND <= 64 printable characters (Python

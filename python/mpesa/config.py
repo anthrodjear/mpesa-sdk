@@ -96,6 +96,18 @@ class Config:
     #: shortcode, so a local counter under-counts and must never be treated
     #: as a platform-wide gate.
     track_daily: bool = False
+    #: Retry-once on HTTP 401 carrying the invalid-token code ``401.003.01``.
+    #: On by default because a token can expire mid-flight: without the
+    #: retry a single call fails with a stale bearer token that the very
+    #: next attempt would have replaced. Set ``False`` to surface the FIRST
+    #: 401 as a typed :class:`~mpesa.exceptions.MpesaError` instead -- no
+    #: forced token refresh, no second request. Mirrors Go's
+    #: ``Config.DisableRetryOnUnauthorized`` (go/config.go, the INVERTED
+    #: spelling: Go disables what Python enables) and TypeScript's
+    #: ``MpesaClientOptions.retryOnUnauthorized``
+    #: (typescript/src/client.ts, where the option lives on the CLIENT
+    #: options object, not on ``Config``).
+    retry_on_unauthorized: bool = True
 
     def __post_init__(self) -> None:
         # Fail fast on credential SHAPE (Go config.go Validate() parity):
@@ -124,6 +136,13 @@ class Config:
         # truthiness test once and silently enabled the daily accumulator.
         if not isinstance(self.track_daily, bool):
             raise TypeError("mpesa: Config.track_daily must be a bool")
+        # Same explicit bool check for the 401-retry opt-out. Here truthiness
+        # would be doubly wrong: it fails closed on ``0`` yet fails OPEN on
+        # any truthy non-bool (``"yes"``, ``1``), and an opt-out that silently
+        # disables the token refresh is indistinguishable from a gateway that
+        # stopped accepting our tokens.
+        if not isinstance(self.retry_on_unauthorized, bool):
+            raise TypeError("mpesa: Config.retry_on_unauthorized must be a bool")
         if getattr(self.http_client, "verify", True) is not True:
             warnings.warn(
                 "TLS verification disabled on injected session -- Client will refuse",

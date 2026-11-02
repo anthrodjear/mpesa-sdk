@@ -9,7 +9,7 @@
 | Sandbox | `GET https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials` |
 | Production | `GET https://api.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials` |
 
-- Method: **GET** (the only non-POST endpoint)
+- Method: **GET** (the only non-POST endpoint). The SDK clients only ever send this to the two hosts above; to point your tests at a mock, inject the transport seams instead of the base URL — see [testing.md](../testing.md).
 - Header: `Authorization: Basic base64(CONSUMER_KEY:CONSUMER_SECRET)` — colon separator, no spaces
 - Body: none
 
@@ -87,6 +87,6 @@ Match on the prefix, not on the whole string: the elapsed figure moves with the 
 
 ## SDK Design Notes
 
-- Expose `Token(ctx)` (Go) / `get_token()` (Python) / `getToken()` (TS) returning the cached token, transparently refreshing when stale.
+- Refresh the cached token transparently when stale — the clients own this internally; there is no public token accessor in Go or Python, and TypeScript's is `MpesaClient.token()` (not `getToken()`).
 - Never log the full token (redact middle segment).
 - Unit-test: cache hit avoids second HTTP call; concurrent callers produce exactly one fetch (use a counting mock server); expiry boundary triggers refresh at 50 min.

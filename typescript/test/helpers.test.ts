@@ -11,6 +11,7 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   generatePassword,
+  logSafeRequest,
   normalizePhone,
   securityCredential,
   newOriginatorID,
@@ -455,5 +456,54 @@ describe("newOriginatorID", () => {
     const first = newOriginatorID();
     const second = newOriginatorID();
     expect(first).not.toBe(second);
+  });
+});
+
+describe("logSafeRequest", () => {
+  it("masks the live securityCredential (Go LogSafe parity)", () => {
+    const out = logSafeRequest({
+      initiatorName: "testapi",
+      securityCredential: "BASE64RSA==",
+      amount: 100,
+    });
+    expect(out.securityCredential).toBe("[REDACTED]");
+    expect(out.initiatorName).toBe("testapi");
+    expect(out.amount).toBe(100);
+  });
+
+  it("never mutates the caller's request object", () => {
+    const req = { securityCredential: "secret", passkey: "pk" };
+    logSafeRequest(req);
+    expect(req.securityCredential).toBe("secret");
+    expect(req.passkey).toBe("pk");
+  });
+
+  it("masks the passkey", () => {
+    expect(logSafeRequest({ passkey: "bfb279..." }).passkey).toBe("[REDACTED]");
+  });
+
+  it("keeps scheme+host+path of URL fields but drops the callback-token query", () => {
+    const out = logSafeRequest({
+      callBackURL: "https://example.com/stk/cb?token=0123456789abcdef",
+      resultURL: "https://example.com/payments/result?token=deadbeef",
+      queueTimeOutURL: "https://example.com/payments/timeout",
+    });
+    expect(out.callBackURL).toBe("https://example.com/stk/cb");
+    expect(out.resultURL).toBe("https://example.com/payments/result");
+    expect(out.queueTimeOutURL).toBe("https://example.com/payments/timeout");
+    expect(JSON.stringify(out)).not.toContain("token");
+  });
+
+  it("passes through non-secret fields untouched", () => {
+    const req = { amount: 50, partyB: "254705912645", remarks: "payout order 42" };
+    expect(logSafeRequest(req)).toEqual(req);
+  });
+
+  it("JSON.stringify of the redacted copy carries no secret", () => {
+    const json = JSON.stringify(
+      logSafeRequest({ securityCredential: "LIVE-CREDENTIAL", commandID: "BusinessPayment" }),
+    );
+    expect(json).not.toContain("LIVE-CREDENTIAL");
+    expect(json).toContain("[REDACTED]");
   });
 });

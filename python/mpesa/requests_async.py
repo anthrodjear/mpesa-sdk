@@ -22,10 +22,10 @@ resolves its ceiling through the same ``limits`` argument, so the sync
 about a merchant's tier.
 
 TRANSPORT NOTE: this module contains MODELS ONLY. There is no async HTTP
-transport: :class:`mpesa.client.MpesaClient` blocks the event loop on the
-OAuth lock by design (single-flight refresh, held across the network leg),
-so an async transport is out of scope -- and no model here may be used as
-an excuse to build one.
+transport: :class:`mpesa.client.MpesaClient` is a blocking client by design
+(its OAuth refresh runs a leader/waiter protocol with the network call
+outside the lock), so an async transport is out of scope -- and no model
+here may be used as an excuse to build one.
 """
 from __future__ import annotations
 

@@ -265,6 +265,60 @@ def test_non_retryable_401_surfaces_immediately():
     assert len(business) == 1
 
 
+def test_retry_on_unauthorized_false_surfaces_the_first_401():
+    # Opt-out: a 401.003.01 is the gateway's verdict, not a hint to spend a
+    # forced token refresh on. Exactly one business request leaves the
+    # process, and the OAuth leg count proves no refresh rode behind it --
+    # the FIRST token is reused verbatim for the single attempt.
+    unauthorized = FakeResponse(status_code=401, text=(
+        '{"requestId":"r","errorCode":"401.003.01",'
+        '"errorMessage":"Invalid Access Token"}'))
+    client, session = make([FakeResponse(text=OAUTH_OK), unauthorized],
+                           retry_on_unauthorized=False)
+    assert client._cfg.retry_on_unauthorized is False
+    with pytest.raises(MpesaError) as excinfo:
+        client.stk_push(valid_stk())
+    assert excinfo.value.error_code == "401.003.01"
+    assert excinfo.value.status_code == 401
+    assert len(session.calls) == 2                       # oauth + the 401
+    posts = [c for c in session.calls if c["kind"] == "POST"]
+    assert len(posts) == 1                               # zero retries
+    oauths = [c for c in session.calls if "/oauth/v1/generate" in c["url"]]
+    assert len(oauths) == 1                              # zero forced refreshes
+    assert posts[0]["headers"]["Authorization"] == "Bearer tok-1"
+
+
+def test_retry_on_unauthorized_default_is_true_and_retries_once():
+    # Same fixture shape as the 401 tests above, but on the DEFAULT: the
+    # flag is opt-out, so a config that never mentions it must still spend
+    # one forced refresh and one retry (Go/TS parity for the default).
+    unauthorized = FakeResponse(status_code=401, text=(
+        '{"requestId":"r","errorCode":"401.003.01",'
+        '"errorMessage":"Invalid Access Token"}'))
+    client, session = make([FakeResponse(text=OAUTH_OK), unauthorized,
+                            FakeResponse(text='{"access_token":"tok-2",'
+                                              '"expires_in":"3599"}'),
+                            FakeResponse(text=STK_OK)])
+    assert client._cfg.retry_on_unauthorized is True
+    resp = client.stk_push(valid_stk())
+    assert resp.is_accepted is True
+    assert len(session.calls) == 4                       # oauth,401,tok2,retry
+    assert session.calls[-1]["headers"]["Authorization"] == "Bearer tok-2"
+
+
+def test_config_rejects_non_bool_retry_on_unauthorized():
+    # Explicit bool check, not truthiness: ``1`` would silently DISABLE the
+    # retry, which looks identical to a gateway that stopped accepting our
+    # tokens. The TypeError names the field at construction time.
+    with pytest.raises(TypeError):
+        Config(consumer_key="key", consumer_secret="secret",
+               shortcode="174379", passkey=PASSKEY,
+               retry_on_unauthorized=1)
+    assert Config(consumer_key="key", consumer_secret="secret",
+                  shortcode="174379", passkey=PASSKEY,
+                  retry_on_unauthorized=False).retry_on_unauthorized is False
+
+
 def test_oversize_response_rejected():
     huge_desc = "A" * 1_048_600
     oversized = ('{"MerchantRequestID":"m","CheckoutRequestID":"c",'

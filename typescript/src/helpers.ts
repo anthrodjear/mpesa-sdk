@@ -12,6 +12,10 @@
  *   design). **Security note**: uses PKCS#1 v1.5, NOT OAEP — required
  *   by Safaricom's Daraja gateway.
  * * {@link newOriginatorID} — idempotency key for async APIs (<20 chars).
+ * * {@link logSafeRequest} — redacted copy of a request object for logging
+ *   (Go `LogSafe()` / Python `repr()` parity; TS request objects are plain
+ *   interfaces, so `JSON.stringify` would otherwise print the live
+ *   `securityCredential`).
  *
  * **WARNING**: The EAT timezone is UTC+3 (no DST). Timestamps MUST be
  * rendered in EAT for Safaricom — UTC or any other offset causes silent
@@ -317,4 +321,70 @@ export function securityCredential(
  */
 export function newOriginatorID(): string {
   return randomBytes(8).toString("hex");
+}
+
+// ---------------------------------------------------------------------------
+// logSafeRequest
+// ---------------------------------------------------------------------------
+
+/**
+ * Field names whose values are secrets or capability tokens and must never
+ * reach a log line, an APM trace, or a crash dump.
+ *
+ * - `securityCredential` is the RSA ciphertext of an initiator password —
+ *   a live credential, masked exactly like Go's `LogSafe()` renders it.
+ * - `passkey` derives the STK Password on the wire.
+ * - The five URL fields can carry an unguessable callback capability token
+ *   in their query string (see callback-token.ts: a token "leaks wherever
+ *   URLs are logged"), so the query component is dropped, not the whole
+ *   URL — the host/path stays useful for debugging.
+ */
+const REDACTED_FIELDS: ReadonlySet<string> = new Set([
+  "securityCredential",
+  "passkey",
+]);
+
+const URL_FIELDS: ReadonlySet<string> = new Set([
+  "callBackURL",
+  "queueTimeOutURL",
+  "resultURL",
+  "validationURL",
+  "confirmationURL",
+]);
+
+/**
+ * A redacted COPY of a request object, safe to `console.log` /
+ * `JSON.stringify` — the TypeScript counterpart of Go's `LogSafe()` and
+ * Python's redacting `repr()`.
+ *
+ * WHY THIS EXISTS: request objects are plain interfaces (they are the wire
+ * payload the caller builds), so unlike `Config` they have no
+ * `toString`/`toJSON`/`inspect` hook to intercept — `console.log(req)`
+ * would print the live `SecurityCredential` in cleartext, and the SDK's
+ * value-semantics copy (`{ ...req }`) cannot mask it for the caller. The
+ * caller's original object is NEVER mutated.
+ *
+ * Secrets render as the literal `"[REDACTED]"` (Go's LogSafe spelling);
+ * URL fields keep scheme+host+path and drop the query string.
+ *
+ * @param req - Any request object (a shallow copy is returned).
+ * @returns A new object with the fields above redacted.
+ *
+ * @example
+ * ```ts
+ * console.log(logSafeRequest(req)); // SecurityCredential: "[REDACTED]"
+ * ```
+ */
+export function logSafeRequest<T extends Record<string, unknown>>(
+  req: T,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...req };
+  for (const key of Object.keys(out)) {
+    if (REDACTED_FIELDS.has(key)) {
+      out[key] = "[REDACTED]";
+    } else if (URL_FIELDS.has(key) && typeof out[key] === "string") {
+      out[key] = (out[key] as string).split("?")[0];
+    }
+  }
+  return out;
 }

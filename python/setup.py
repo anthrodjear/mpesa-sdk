@@ -11,16 +11,26 @@ Go reference implementation lives in go/ ; API contracts live in docs/apis/.
 
 from setuptools import find_packages, setup
 
-LONG_DESCRIPTION = """mpesa-sdk - Python SDK for the Safaricom M-Pesa Daraja API.
+LONG_DESCRIPTION = """# mpesa-sdk
+
+Python SDK for the Safaricom M-Pesa Daraja API.
 
 A Python engine for integrating M-Pesa payments via the Daraja platform,
 mirroring the semantics of the Go reference implementation in this
-monorepo. Covers OAuth token generation, STK Push (M-Pesa Express) and
-STK Query, B2C v3 payouts, C2B URL registration and payment simulation,
-Transaction Status queries, Reversal, Account Balance and Dynamic QR
-generation against sandbox and production endpoints.
+monorepo. Covers:
 
-Requirements: Python >= 3.11.
+- OAuth token generation
+- STK Push (M-Pesa Express) and STK Query
+- B2C v3 payouts
+- C2B URL registration and payment simulation
+- Transaction Status queries
+- Reversal
+- Account Balance
+- Dynamic QR generation
+
+against sandbox and production endpoints.
+
+**Requirements:** Python >= 3.11.
 """
 
 setup(
@@ -30,13 +40,13 @@ setup(
                  "(OAuth, STK Push/Query, B2C v3, C2B register/simulate, "
                  "Transaction Status, Reversal, Account Balance, Dynamic QR)"),
     long_description=LONG_DESCRIPTION,
-    long_description_content_type="text/plain",
+    long_description_content_type="text/markdown",
     author="mpesa-sdk maintainers",
-    url="https://github.com/mpesa-sdk/mpesa-sdk",
+    url="https://github.com/anthrodjear/mpesa-sdk",
     project_urls={
-        "Source": "https://github.com/mpesa-sdk/mpesa-sdk",
-        "Issues": "https://github.com/mpesa-sdk/mpesa-sdk/issues",
-        "Changelog": "https://github.com/mpesa-sdk/mpesa-sdk/blob/main/CHANGELOG.md",
+        "Source": "https://github.com/anthrodjear/mpesa-sdk",
+        "Issues": "https://github.com/anthrodjear/mpesa-sdk/issues",
+        "Changelog": "https://github.com/anthrodjear/mpesa-sdk/blob/main/CHANGES.md",
     },
     license="MIT",
     packages=find_packages(exclude=["tests", "tests.*"]),
@@ -59,7 +69,7 @@ setup(
         ],
     },
     classifiers=[
-        "Development Status :: 3 - Alpha",
+        "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",

@@ -813,7 +813,10 @@ func (c *Client) refresh(ctx context.Context, force bool) (string, error) {
 	resp, err := c.http.Do(req)
 	if err != nil {
 		c.recordRefreshFailure()
-		return fail(fmt.Errorf("mpesa: oauth request: %w", err))
+		// The OAuth leg never got an answer, so any business request waiting
+		// on this token was never dispatched either — mark it so the daily
+		// ledger refunds (Python's RequestException parity).
+		return fail(&notDispatchedError{msg: fmt.Sprintf("mpesa: oauth request: %v", err), err: err})
 	}
 	// The body is always closed on return; a Close error here cannot change the
 	// outcome of a request whose response we have already read in full, so it is
@@ -933,7 +936,7 @@ func (c *Client) attempt(ctx context.Context, token, path string, payload any) (
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, "", nil, fmt.Errorf("mpesa: POST %s: %w", path, err)
+		return 0, "", nil, notDispatched(path, err)
 	}
 	// Explicit discard for the same reason as refreshLocked: the body is drained
 	// and closed before every return, and a Close error cannot affect the status,
@@ -1039,8 +1042,13 @@ func (c *Client) STKPush(ctx context.Context, r STKPushRequest) (*STKPushRespons
 
 	var out STKPushResponse
 	if err := c.post(ctx, stkPushPath, payload, &out); err != nil {
-		var me *MpesaError
-		if !errors.As(err, &me) {
+		// Refund ONLY when the request provably never reached a gateway
+		// answer (ErrNotDispatched). A gateway non-2xx (*MpesaError), an
+		// oversize body (*OversizeError) and an undecodable 2xx all PROVE
+		// the gateway answered, so the reservation is kept — the old
+		// negative classifier refunded those two and let day-spend pass
+		// MaxPerDay. Python parity: refund on RequestException only.
+		if errors.Is(err, ErrNotDispatched) {
 			c.rollbackDaily(ServiceSTK, r.Amount, accrualDay)
 		}
 		return nil, err
@@ -1093,6 +1101,21 @@ type stkQueryPayload struct {
 	CheckoutRequestID string `json:"CheckoutRequestID"`
 }
 
+// Redaction hooks (redactCredentials — the pattern every other credential
+// carrier in the package uses). Without them this type is the ONE
+// credential-carrying value that renders in cleartext at every fmt verb:
+// Password is base64(shortcode+passkey+timestamp), so a rendered payload
+// hands back Config.Passkey itself, and the passkey authorizes every STK
+// call for that shortcode until rotated — a longer-lived secret than the
+// per-request bearer. SECURITY.md: never log a passkey.
+func (p stkQueryPayload) GoString() string {
+	return redactCredentials(p, "Password")
+}
+
+func (p stkQueryPayload) Format(f fmt.State, verb rune) {
+	_, _ = fmt.Fprint(f, p.GoString())
+}
+
 // B2CPayout pays a registered shortcode out to a customer MSISDN (async).
 // Injected defaults: OriginatorConversationID auto-generated (16 lowercase
 // hex chars, ≤20 per Daraja constraint, idempotency key for retries),
@@ -1118,8 +1141,7 @@ func (c *Client) B2CPayout(ctx context.Context, r B2CPayoutRequest) (*B2CRespons
 	}
 	var out B2CResponse
 	if err := c.post(ctx, b2cPath, r, &out); err != nil {
-		var me *MpesaError
-		if !errors.As(err, &me) {
+		if errors.Is(err, ErrNotDispatched) {
 			c.rollbackDaily(ServiceB2C, r.Amount, accrualDay)
 		}
 		return nil, err
@@ -1168,8 +1190,7 @@ func (c *Client) Reversal(ctx context.Context, r ReversalRequest) (*Conversation
 	}
 	var out ConversationResponse
 	if err := c.post(ctx, reversalPath, r, &out); err != nil {
-		var me *MpesaError
-		if !errors.As(err, &me) {
+		if errors.Is(err, ErrNotDispatched) {
 			c.rollbackDaily(ServiceReversal, r.Amount, accrualDay)
 		}
 		return nil, err
@@ -1229,8 +1250,7 @@ func (c *Client) C2BSimulate(ctx context.Context, r C2BSimulateRequest) (*C2BAck
 	}
 	var out C2BAckResponse
 	if err := c.post(ctx, c2bSimulatePath, r, &out); err != nil {
-		var me *MpesaError
-		if !errors.As(err, &me) {
+		if errors.Is(err, ErrNotDispatched) {
 			c.rollbackDaily(ServiceC2B, r.Amount, accrualDay)
 		}
 		return nil, err
@@ -1250,8 +1270,7 @@ func (c *Client) GenerateQRCode(ctx context.Context, r QRCodeRequest) (*QRCodeRe
 	}
 	var out QRCodeResponse
 	if err := c.post(ctx, qrCodePath, r, &out); err != nil {
-		var me *MpesaError
-		if !errors.As(err, &me) {
+		if errors.Is(err, ErrNotDispatched) {
 			c.rollbackDaily(ServiceQR, r.Amount, accrualDay)
 		}
 		return nil, err

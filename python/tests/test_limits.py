@@ -260,6 +260,25 @@ def test_default_ceiling_boundary_is_exact(build, service, ceiling):
     assert "Config(limits=TransactionLimits(" in message   # override guidance
 
 
+def test_per_transaction_message_spells_out_the_service_kwarg():
+    """The override guidance must be pasteable: it names the bucket.
+
+    A literal ellipsis leaves the operator guessing WHICH service field
+    to raise, so the message interpolates the service name together with
+    the ``max_per_transaction`` kwarg -- the same shape the daily-ceiling
+    sibling spells out for ``max_per_day`` (mpesa/client.py).
+    """
+    with pytest.raises(ValueError) as excinfo:
+        stk(amount=250_001).validate(TransactionLimits())
+    assert "Config(limits=TransactionLimits(stk=ServiceLimits(" \
+           "max_per_transaction=<KES>)))" in str(excinfo.value)
+
+    with pytest.raises(ValueError) as excinfo:
+        reversal(amount=250_001).validate(TransactionLimits())
+    assert "Config(limits=TransactionLimits(reversal=ServiceLimits(" \
+           "max_per_transaction=<KES>)))" in str(excinfo.value)
+
+
 def test_b2c_shares_standard_ceiling_by_default():
     """Safaricom default is 250k per transaction for B2C and STK alike."""
     b2c(amount=250_000).validate()                       # standard default

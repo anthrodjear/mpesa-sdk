@@ -5,6 +5,7 @@ package mpesa
 // refactor cannot silently reinstate a baked-in number.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -1065,6 +1066,70 @@ func TestTransportFailureRollsBackDailyBudget(t *testing.T) {
 	}
 	if got := c2.daily.used[ServiceB2C]; got != 60_000 {
 		t.Fatalf("used after gateway error = %d, want 60000 (gateway errors keep the spend)", got)
+	}
+}
+
+// An oversize 2xx body and an undecodable 2xx both PROVE the gateway
+// answered, so the reservation must be KEPT — the old negative classifier
+// ("roll back unless *MpesaError") refunded both and let day-spend pass
+// MaxPerDay without bound. Mirrors python/mpesa/client.py: only a
+// RequestException-class failure refunds there.
+func TestGatewayAnsweredErrorsKeepTheDailyReservation(t *testing.T) {
+	cases := []struct {
+		name    string
+		handler http.HandlerFunc
+	}{
+		{
+			name: "2xx body over the 1 MiB cap (*OversizeError)",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(bytes.Repeat([]byte("x"), maxResponseLen+1))
+			},
+		},
+		{
+			name: "2xx whose ack will not decode (mistyped field)",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				// ResponseCode as a NUMBER: the real Daraja inconsistency
+				// FlexString exists for on READ paths; the ack model wants a
+				// string, so json.Unmarshal fails after the gateway answered.
+				_, _ = w.Write([]byte(`{"ResponseCode": 0}`))
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.Handle("/oauth/v1/generate", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(t, w, http.StatusOK, map[string]any{"access_token": "tok-gw-answered", "expires_in": "3599"})
+			}))
+			mux.HandleFunc(b2cPath, tc.handler)
+			srv := httptest.NewServer(mux)
+			t.Cleanup(srv.Close)
+
+			now := time.Date(2024, 5, 1, 6, 0, 0, 0, time.UTC)
+			c, err := NewClient(Config{
+				ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox,
+				Shortcode: testShortcode, Passkey: testPasskey,
+				Now: func() time.Time { return now },
+				Limits: &TransactionLimits{
+					B2C: ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(100_000)},
+				},
+				TrackDaily: true,
+			})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			c.baseURL = srv.URL
+			if _, err := c.B2CPayout(context.Background(), b2cAmount(60_000)); err == nil {
+				t.Fatal("gateway-answered failure succeeded, want an error")
+			}
+			if got := dailyUsed(&c.daily, ServiceB2C); got != 60_000 {
+				t.Fatalf("used after gateway-answered failure = %d, want 60000 kept (the gateway saw the transaction)", got)
+			}
+		})
 	}
 }
 

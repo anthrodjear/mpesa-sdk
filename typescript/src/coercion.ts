@@ -116,9 +116,16 @@ export function parseIntSafe(value: unknown): number | null {
   return safeJsonInt(value);
 }
 
-/** Shared amount shape (Python `_AMOUNT_RE` parity): optional sign, 1–12
- *  integer digits, optional fraction of 1–6 digits. ASCII-only. */
-const AMOUNT_RE = /^[+-]?[0-9]{1,12}(\.[0-9]{1,6})?$/;
+/** Shared amount shape (Python `coercion._AMOUNT_RE` parity — now EXACTLY
+ * matched, fraction digits included): optional sign, 1–12 integer digits,
+ * at most TWO fraction digits. The 6-fraction-digit class this used to allow
+ * was a copy drift: `coerce_amount("1.123456")` is None in Python
+ * (pinned by test_hardening_regressions.py: ">2dp: NOT silently rounded"),
+ * so accepting 3–6 dp here would let the SAME wire body settle in one
+ * engine and be dropped in the other. M-Pesa amounts are whole shillings
+ * plus cents; anything finer is not a valid amount.
+ *  integer digits, optional fraction of 1–2 digits. ASCII-only. */
+const AMOUNT_RE = /^[+-]?[0-9]{1,12}(\.[0-9]{1,2})?$/;
 
 /** Hard cap on coerced wire strings (Python `_MAX_STR_LEN` parity). */
 const MAX_WIRE_STR_LEN = 4096;

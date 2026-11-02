@@ -194,7 +194,12 @@ export class Config {
    */
   readonly shortcode: string;
   /**
-   * Daraja passkey — non-empty string.
+   * Daraja passkey — string, EMPTY allowed (Go/Python parity).
+   *
+   * Empty is allowed so a B2C-only merchant that never calls STK
+   * Push/Query can build a client without a passkey; the non-empty
+   * requirement is enforced lazily where the passkey is actually used —
+   * STK Push/Query, which bind it into the request Password.
    *
    * NON-ENUMERABLE own property, like {@link Config.consumerSecret}: the
    * default `util.inspect` walk and an object spread skip it, so the
@@ -249,7 +254,7 @@ export class Config {
     consumerKey: string;
     consumerSecret: string;
     shortcode?: string;
-    passkey: string;
+    passkey?: string;
     environment?: Environment;
     limits?: PartialTransactionLimits;
     trackDaily?: boolean;
@@ -257,7 +262,7 @@ export class Config {
     this.consumerKey = opts.consumerKey;
     this.consumerSecret = opts.consumerSecret;
     this.shortcode = opts.shortcode ?? "";
-    this.passkey = opts.passkey;
+    this.passkey = opts.passkey ?? "";
     // The two SECRET fields are re-declared NON-ENUMERABLE.
     //
     // The `nodejs.util.inspect.custom` hook below covers `util.inspect`
@@ -329,7 +334,9 @@ export class Config {
    * - `consumerKey`: non-empty string, ASCII-only, must not contain `":"`.
    * - `consumerSecret`: non-empty string, ASCII-only.
    * - `shortcode`: `""` (per-request mode) or 5–10 ASCII digits.
-   * - `passkey`: non-empty string.
+   * - `passkey`: any string — empty is allowed (Go/Python parity); the
+   *   non-empty requirement is enforced lazily on the STK Push/Query
+   *   path, where the passkey is bound into the request Password.
    * - `limits` (when supplied): every present ceiling must be a NUMBER —
    *   non-numeric shapes are rejected loudly; `0`/negative/non-finite
    *   values normalize to UNLIMITED in `resolveTransactionLimits`.
@@ -360,7 +367,6 @@ export class Config {
     // shortcode per-request; validate the shape only when non-empty.
     validateField(this.shortcode, "shortcode", (v) => v.length === 0 || /^\d{5,10}$/.test(v),
       "must be a digits-only string of 5 to 10 characters (or empty when passed per-request)");
-    validateField(this.passkey, "passkey", (v) => v.length > 0, "must be a non-empty string");
     // Trusted-URL allowlist: the OAuth leg sends the Basic-auth credential
     // to environment.baseUrl — reject any non-allowlisted host before any
     // network use. Trailing slashes are stripped before the membership test

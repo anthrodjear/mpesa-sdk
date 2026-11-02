@@ -13,6 +13,7 @@ import sys
 
 from mpesa import (
     Config,
+    Environment,
     MpesaClient,
     MpesaError,
     STKPushRequest,
@@ -27,6 +28,9 @@ def main() -> None:
         consumer_secret=os.environ["MPESA_CONSUMER_SECRET"],
         shortcode=os.environ["MPESA_SHORTCODE"],
         passkey=os.environ["MPESA_PASSKEY"],
+        environment=Environment.from_config(
+            os.environ.get("MPESA_ENVIRONMENT")),  # sandbox default; "production"/"prod"
+        timeout_seconds=30.0,  # default ceiling per request
     )
 
     # 2. Create a client (shares the underlying requests.Session).
@@ -63,6 +67,12 @@ def main() -> None:
             print(f"  errorCode:    {exc.error_code}", file=sys.stderr)
         if exc.request_id:
             print(f"  requestId:    {exc.request_id}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as exc:
+        # The most common first-day failure: a bad MPESA_* env var shape or an
+        # amount over a client-side ceiling raises here, before any network I/O.
+        print(f"\n✗ Config/validation error: {exc}", file=sys.stderr)
+        print("  check your MPESA_* env vars and limits config", file=sys.stderr)
         sys.exit(1)
 
 

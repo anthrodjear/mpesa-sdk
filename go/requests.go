@@ -496,6 +496,17 @@ func requireURL(field, v string) error {
 	if i := strings.IndexByte(host, '%'); i >= 0 {
 		return fmt.Errorf("mpesa: %s must not contain an IPv6 zone identifier (%q)", field, host[i:])
 	}
+	// Port bounds (Python/TypeScript parity): an out-of-range port is a
+	// malformed URL, and Go's url.Parse happily accepts one — shipping it
+	// to http.Client moves the failure to dial time, after validation has
+	// already said yes. Python rejects 0 and >65535 here
+	// (requests_sync.py `0 < port <= 65535`); TypeScript's URL does the
+	// same for >65535. An empty port is fine (no port given).
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err != nil || n <= 0 || n > 65535 {
+			return fmt.Errorf("mpesa: %s has an invalid port %q (want 1-65535)", field, p)
+		}
+	}
 	// Reject localhost by name (SSRF protection)
 	if strings.EqualFold(host, "localhost") {
 		return fmt.Errorf("mpesa: %s must not point to localhost", field)
