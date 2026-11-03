@@ -339,10 +339,20 @@ def _url(field_name: str, value: str) -> None:
 
 
 def _phone(field_name: str, raw: str) -> str:
+    """Normalize a required MSISDN, naming the field on failure.
+
+    The failure reports the LENGTH, never the value: the number is
+    caller-supplied PII and the caller will log whatever exception this
+    raises, so a malformed number must not travel inside the message
+    (``_shortcode``'s documented rule, same reasoning).
+    """
     try:
         return normalize_phone(raw)
-    except ValueError as exc:
-        raise ValueError(f"mpesa: invalid {field_name}: {exc}") from None
+    except ValueError:
+        raise ValueError(
+            f"mpesa: {field_name} is not a valid Kenyan MSISDN "
+            f"(got {len(raw)} characters)"
+        ) from None
 
 
 def _service_limits(service: str, limits: "TransactionLimits | None"
@@ -879,7 +889,10 @@ class BillUpdateRequest:
 
     short_code: str = ""
     bill_ref_number: str = ""
-    amount: int = 0
+    # None/0 is the "not supplied" sentinel validate() normalizes to None,
+    # which _clean then drops from the payload; 0 also keeps the historical
+    # call sites working, so the reachable values are None | int.
+    amount: int | None = 0
     expiry_date: str = ""
     call_back_url: str = ""
     payer_number: str = ""

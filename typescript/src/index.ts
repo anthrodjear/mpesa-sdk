@@ -1,7 +1,7 @@
 /**
  * @mpesa-sdk/core — TypeScript client for Safaricom's Daraja M-Pesa API.
  *
- * Nine endpoints covered:
+ * Twelve endpoints covered:
  * {@link MpesaClient.stkPush | STK Push},
  * {@link MpesaClient.stkQuery | STK Query},
  * {@link MpesaClient.b2cPayout | B2C},
@@ -10,7 +10,11 @@
  * {@link MpesaClient.transactionStatus | Transaction Status},
  * {@link MpesaClient.reversal | Reversal},
  * {@link MpesaClient.accountBalance | Account Balance},
- * {@link MpesaClient.generateQRCode | Dynamic QR}.
+ * {@link MpesaClient.generateQRCode | Dynamic QR},
+ * {@link MpesaClient.b2bPayment | B2B Express Checkout},
+ * {@link MpesaClient.taxRemittance | Tax Remittance},
+ * {@link MpesaClient.billRegister | Bill Manager}
+ * (register / query / update / delete).
  *
  * Quick-start:
  * ```ts
@@ -189,4 +193,4 @@ export type {
 
 // ── Version ─────────────────────────────────────────────────────────────
 /** SDK version — kept in sync with package.json. */
-export const VERSION = "0.6.0";
+export const VERSION = "0.7.0";

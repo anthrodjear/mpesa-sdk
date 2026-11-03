@@ -20,7 +20,7 @@ ordinary business Bearer token.
 
 | Field | Type | Notes |
 |---|---|---|
-| `ShortCode` | shortcode | 5–10 digits; **required, not defaulted** |
+| `ShortCode` | shortcode | 5–10 digits; defaults to the configured shortcode when omitted |
 | `BillRefNumber` | string | the bill identifier; shown in logs (not PII, not a secret) |
 | `BillName` | string | free text |
 | `Amount` | integer | whole shillings; per-transaction ceiling bucket `bill` |
@@ -28,6 +28,12 @@ ordinary business Bearer token.
 | `CallBackURL` | URL | SSRF-validated like every other SDK URL |
 | `PayerNumber` | MSISDN | optional; normalized to `254…`; **redacted in logs** |
 | `PayerName` | string | optional; **redacted in logs** (PII) |
+
+`ShortCode` is defaulted on all four operations (register, query, update,
+delete) — the same convention as C2B URL registration and STK Push: an empty
+value is filled from `Config.Shortcode`/`config.shortcode` on the client's
+internal copy, so the caller's object is never mutated. Supply it explicitly
+to bill against someone else's shortcode.
 
 ## Query / Delete
 
@@ -42,6 +48,23 @@ unset (or empty) are omitted from the wire — an update with **no** amount
 moves no money and consumes no daily quota; with an amount it takes the
 `bill` per-transaction ceiling and accrues daily like `register`.
 
+**Spelling "unset" (the type has no `None` on the wire):**
+
+| Engine | How to say "do not touch the amount" |
+|---|---|
+| Go | leave `Amount` at `0` — the `omitempty` key is omitted |
+| Python | `amount=None` (or `0`); `validate` drops it from the payload |
+| TypeScript | omit the `amount` key entirely |
+
+A whitespace-only `payerNumber`/`payerName` counts as *not supplied* and is
+dropped from the payload in all three engines, never sent as spaces.
+
+> TypeScript differs deliberately on the value itself: `amount: 0` is
+> **rejected** as non-positive rather than read as "unset". TypeScript has no
+> equivalent of Go's zero-value/`omitempty` sentinel, and an explicit `0` is
+> far more likely to be a mistake than a partial update — omit the key
+> instead.
+
 ## Response
 
 All four operations return the standard ACK envelope —
@@ -51,6 +74,12 @@ it on register; absence is tolerated, never an error). This shape is an
 assumption documented in each engine's response model; if Safaricom's
 bill-manager ack diverges, the response models are the single place to
 correct.
+
+Strictness of the ACK decode differs by engine: only **Python's
+`from_json`** enforces the four required keys and raises when one is missing.
+Go's plain `json.Unmarshal` silently leaves a missing field at its zero value,
+and TypeScript's response is a cast — neither can detect the omission. Do not
+assume the three engines reject a malformed ACK identically.
 
 ## Security notes
 

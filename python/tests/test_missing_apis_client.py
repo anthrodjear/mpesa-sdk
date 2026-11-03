@@ -7,6 +7,7 @@ validation failure must leave the session with ZERO calls (validation
 happens before any network I/O).
 """
 
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -183,15 +184,35 @@ def test_tax_remittance_path_body_and_bearer():
 def test_tax_remittance_defaults_injected_and_caller_not_mutated():
     client, session = make(*[FakeResponse(text=OAUTH_OK),
                              FakeResponse(text=CONV_OK)])
-    req = tax(command_id=None, sender_identifier_type="",
+    req = tax(command_id=CommandID.TAX_REMITTANCE, sender_identifier_type="",
               receiver_identifier_type="")
     client.tax_remittance(req)
     body = posts(session)[0]["json"]
     assert body["CommandID"] == "TaxRemittance"
     assert body["SenderIdentifierType"] == "4"
     assert body["ReceiverIdentifierType"] == "4"
-    assert req.command_id is None          # caller's object untouched
-    assert req.sender_identifier_type == ""
+    assert req.command_id == CommandID.TAX_REMITTANCE   # not rewritten
+    assert req.sender_identifier_type == ""             # caller untouched
+
+
+def test_tax_remittance_command_id_not_supplied_is_rejected():
+    """Parity with Go/TS: a missing CommandID is a REJECTION, not a
+    defaulted value — only the originator id and identifier types are
+    injected."""
+    client, session = make([])                     # empty queue: no replies
+    with pytest.raises(ValueError, match="TaxRemittance CommandID"):
+        client.tax_remittance(tax(command_id=None))
+    assert session.calls == []                     # nothing at all
+
+
+def test_tax_remittance_rejects_non_tax_command_before_network():
+    """A CommandID from another endpoint (SALARY_PAYMENT) must be refused
+    before any network call, never rewritten to TaxRemittance."""
+    client, session = make([])                     # empty queue: no replies
+    with pytest.raises(ValueError, match="TaxRemittance CommandID"):
+        client.tax_remittance(tax(command_id=CommandID.SALARY_PAYMENT))
+    assert session.calls == []
+    assert posts(session) == []
 
 
 def test_all_four_bill_paths_and_bodies():
@@ -243,6 +264,42 @@ def test_bill_manager_caller_object_not_mutated():
     assert d.short_code == ""
 
 
+def test_bill_manager_short_code_defaults_from_config_on_all_four():
+    """Every Bill Manager call defaults ShortCode from cfg.shortcode when the
+    caller leaves it empty (Go/TS parity), and passes an explicit one through.
+    """
+    client, session = make(*[FakeResponse(text=OAUTH_OK)] +
+                           [FakeResponse(text=BILL_ACK)] * 5,
+                           shortcode="174379")
+    client.bill_register(bill_register(short_code=""))
+    client.bill_query(BillQueryRequest(bill_ref_number="INV-001"))
+    client.bill_update(BillUpdateRequest(bill_ref_number="INV-001",
+                                         amount=1500))
+    client.bill_delete(BillDeleteRequest(bill_ref_number="INV-001"))
+    # An explicit shortcode is never overwritten.
+    client.bill_query(BillQueryRequest(short_code="600992",
+                                       bill_ref_number="INV-001"))
+    bodies = [c["json"] for c in posts(session)]
+    assert bodies[0]["ShortCode"] == "174379"
+    assert bodies[1]["ShortCode"] == "174379"
+    assert bodies[2]["ShortCode"] == "174379"
+    assert bodies[3]["ShortCode"] == "174379"
+    assert bodies[4]["ShortCode"] == "600992"
+
+
+def test_bill_manager_payloads_never_spell_reciever_identifier_type():
+    """Typo regression guard: the wire key is ReceiverIdentifierType."""
+    client, session = make(*[FakeResponse(text=OAUTH_OK)] +
+                           [FakeResponse(text=BILL_ACK)] * 4)
+    client.bill_register(bill_register())
+    client.bill_query(BillQueryRequest(bill_ref_number="INV-001"))
+    client.bill_update(BillUpdateRequest(bill_ref_number="INV-001"))
+    client.bill_delete(BillDeleteRequest(bill_ref_number="INV-001"))
+    for call in posts(session):
+        assert "RecieverIdentifierType" not in call["json"]
+        assert "RecieverIdentifierType" not in json.dumps(call["json"])
+
+
 # ---------------------------------------------------------------------
 # validation happens BEFORE any network I/O
 # ---------------------------------------------------------------------
@@ -277,6 +334,21 @@ def test_secret_travels_despite_being_log_invisible():
     client, _ = make(*[FakeResponse(text=OAUTH_OK), FakeResponse(text=CONV_OK)])
     ack = client.tax_remittance(tax())
     assert ack.response_code == "0"
+
+
+def test_b2b_and_tax_payloads_never_spell_reciever_identifier_type():
+    """Typo regression guard: the wire key is ReceiverIdentifierType."""
+    client, session = make(*[FakeResponse(text=OAUTH_OK),
+                             FakeResponse(text=CONV_OK),
+                             FakeResponse(text=CONV_OK)])
+    client.b2b_payment(b2b())
+    client.tax_remittance(tax())
+    bodies = [c["json"] for c in posts(session)]
+    assert len(bodies) == 2
+    for body in bodies:
+        assert body["ReceiverIdentifierType"] == "4"
+        assert "RecieverIdentifierType" not in body
+        assert "RecieverIdentifierType" not in json.dumps(body)
 
 
 # ---------------------------------------------------------------------

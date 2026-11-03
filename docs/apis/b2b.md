@@ -46,8 +46,10 @@ is unsigned like every Daraja callback.
 
 ## Security notes
 
-- `SecurityCredential` and `TaxPayerPIN`-class fields are redacted in every
+- `SecurityCredential` and any secret-class field are redacted in every
   rendered form of the request (Go `GoString`/`Format`, Python `repr`,
   TypeScript `logSafeRequest`) — never log the raw request object.
+  (`TaxPayerPIN` belongs to [tax-remittance.md](tax-remittance.md), not to
+  B2B.)
 - Amounts above the configured `b2b` ceiling fail locally before any network
   I/O; a request rejected pre-dispatch consumes no daily quota.

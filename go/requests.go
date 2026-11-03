@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // STKPushRequest is the Lipa na M-Pesa Online prompt request. The client
@@ -328,6 +329,38 @@ func requireMaxLenIfSet(field, v string, max int) error {
 	return requireMaxLen(field, v, max)
 }
 
+// requirePrintable rejects control characters in a free-text wire field.
+//
+// A NUL, a newline or a bell is accepted by neither Python's
+// `_printable`/`_free_text` nor TypeScript's `requirePrintableMaxLen`, so
+// Go rejecting them here is parity, not a new rule: a control rune could
+// forge a log line or corrupt the gateway's parser, and every other
+// engine already refuses it on the NEW (0.7.0) request types.
+//
+// unicode.IsPrint is Go's own "printable" definition — letters, marks,
+// numbers, punctuation, symbols and the ASCII space, which is exactly the
+// set CPython's str.isprintable accepts — so the two engines agree on what
+// is rejected without a bespoke table here.
+func requirePrintable(field, v string) error {
+	for _, r := range v {
+		if !unicode.IsPrint(r) {
+			return fmt.Errorf("mpesa: %s contains non-printable characters", field)
+		}
+	}
+	return nil
+}
+
+// requirePrintableIfSet applies requirePrintable only to a SUPPLIED value,
+// mirroring requireMaxLenIfSet: an empty string means "leave it alone",
+// not "invalid" (the D4 lesson — an optional field must not reject the
+// empty value).
+func requirePrintableIfSet(field, v string) error {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	return requirePrintable(field, v)
+}
+
 // inetATonPartRe matches one inet_aton component: decimal ("127"),
 // octal (leading zero, "0177") or 0x-hex ("0x7f"). Anything else means the
 // host is a DNS name, not a numeric literal.
@@ -571,9 +604,15 @@ var shortcodeRe = regexp.MustCompile(`^\d{5,10}$`)
 // surfaced as the gateway's generic 500.001.1001 "wrong credentials" (which
 // reads like a password/timestamp problem) instead of a clear client-side
 // error naming the field.
+//
+// The failure message reports the byte LENGTH, never the value: Python's
+// `_shortcode` and TypeScript's `requireShortcode` deliberately name only
+// "got N characters", because a caller who echoes a validation error into
+// a log must not be handed a megabyte-scale copy of the input that
+// produced it.
 func requireShortcode(field, v string) error {
 	if !shortcodeRe.MatchString(v) {
-		return fmt.Errorf("mpesa: %s %q must be a numeric shortcode of 5-10 digits", field, v)
+		return fmt.Errorf("mpesa: %s must be a numeric shortcode of 5-10 digits (got %d bytes)", field, len(v))
 	}
 	return nil
 }
@@ -1026,10 +1065,16 @@ func (r *B2BRequest) ValidateWithLimits(limits TransactionLimits) error {
 	if err := requireNonEmpty("AccountReference", r.AccountReference); err != nil {
 		return err
 	}
+	if err := requirePrintable("AccountReference", r.AccountReference); err != nil {
+		return err
+	}
 	if err := requireMaxLen("AccountReference", r.AccountReference, 64); err != nil {
 		return err
 	}
 	if err := requireNonEmpty("Remarks", r.Remarks); err != nil {
+		return err
+	}
+	if err := requirePrintable("Remarks", r.Remarks); err != nil {
 		return err
 	}
 	if err := requireMaxLen("Remarks", r.Remarks, 100); err != nil {
@@ -1037,7 +1082,13 @@ func (r *B2BRequest) ValidateWithLimits(limits TransactionLimits) error {
 	}
 	// Identifier types are client-defaulted, so only a SUPPLIED value is
 	// shape-checked (an empty one is not an error here).
+	if err := requirePrintableIfSet("SenderIdentifierType", r.SenderIdentifierType); err != nil {
+		return err
+	}
 	if err := requireMaxLenIfSet("SenderIdentifierType", r.SenderIdentifierType, 12); err != nil {
+		return err
+	}
+	if err := requirePrintableIfSet("ReceiverIdentifierType", r.ReceiverIdentifierType); err != nil {
 		return err
 	}
 	if err := requireMaxLenIfSet("ReceiverIdentifierType", r.ReceiverIdentifierType, 12); err != nil {
@@ -1148,16 +1199,25 @@ func (r *TaxRemittanceRequest) ValidateWithLimits(limits TransactionLimits) erro
 	if err := requireNonEmpty("AccountReference", r.AccountReference); err != nil {
 		return err
 	}
+	if err := requirePrintable("AccountReference", r.AccountReference); err != nil {
+		return err
+	}
 	if err := requireMaxLen("AccountReference", r.AccountReference, 64); err != nil {
 		return err
 	}
 	if err := requireNonEmpty("Remarks", r.Remarks); err != nil {
 		return err
 	}
+	if err := requirePrintable("Remarks", r.Remarks); err != nil {
+		return err
+	}
 	if err := requireMaxLen("Remarks", r.Remarks, 100); err != nil {
 		return err
 	}
 	if err := requireNonEmpty("TaxPeriod", r.TaxPeriod); err != nil {
+		return err
+	}
+	if err := requirePrintable("TaxPeriod", r.TaxPeriod); err != nil {
 		return err
 	}
 	if err := requireMaxLen("TaxPeriod", r.TaxPeriod, 16); err != nil {
@@ -1168,16 +1228,28 @@ func (r *TaxRemittanceRequest) ValidateWithLimits(limits TransactionLimits) erro
 	}
 	// Free text, NOT an enum: Safaricom's obligation set (VAT, PAYE, ...) is
 	// not closed, so a bespoke allow-list would reject a valid new one.
+	if err := requirePrintable("TaxObligation", r.TaxObligation); err != nil {
+		return err
+	}
 	if err := requireMaxLen("TaxObligation", r.TaxObligation, 32); err != nil {
 		return err
 	}
 	if err := requireNonEmpty("TaxPayerPIN", r.TaxPayerPIN); err != nil {
 		return err
 	}
+	if err := requirePrintable("TaxPayerPIN", r.TaxPayerPIN); err != nil {
+		return err
+	}
 	if err := requireMaxLen("TaxPayerPIN", r.TaxPayerPIN, 64); err != nil {
 		return err
 	}
+	if err := requirePrintableIfSet("SenderIdentifierType", r.SenderIdentifierType); err != nil {
+		return err
+	}
 	if err := requireMaxLenIfSet("SenderIdentifierType", r.SenderIdentifierType, 12); err != nil {
+		return err
+	}
+	if err := requirePrintableIfSet("ReceiverIdentifierType", r.ReceiverIdentifierType); err != nil {
 		return err
 	}
 	if err := requireMaxLenIfSet("ReceiverIdentifierType", r.ReceiverIdentifierType, 12); err != nil {
@@ -1252,10 +1324,16 @@ func (r *BillRegisterRequest) ValidateWithLimits(limits TransactionLimits) error
 	if err := requireNonEmpty("BillRefNumber", r.BillRefNumber); err != nil {
 		return err
 	}
+	if err := requirePrintable("BillRefNumber", r.BillRefNumber); err != nil {
+		return err
+	}
 	if err := requireMaxLen("BillRefNumber", r.BillRefNumber, 32); err != nil {
 		return err
 	}
 	if err := requireNonEmpty("BillName", r.BillName); err != nil {
+		return err
+	}
+	if err := requirePrintable("BillName", r.BillName); err != nil {
 		return err
 	}
 	if err := requireMaxLen("BillName", r.BillName, 64); err != nil {
@@ -1273,6 +1351,9 @@ func (r *BillRegisterRequest) ValidateWithLimits(limits TransactionLimits) error
 	// Shape only (length-capped): a strict YYYY-MM-DD parse is deliberately
 	// NOT here — the gateway owns the date format, and rejecting a valid but
 	// unusual spelling would be a local guess.
+	if err := requirePrintable("ExpiryDate", r.ExpiryDate); err != nil {
+		return err
+	}
 	if err := requireMaxLen("ExpiryDate", r.ExpiryDate, 10); err != nil {
 		return err
 	}
@@ -1280,15 +1361,27 @@ func (r *BillRegisterRequest) ValidateWithLimits(limits TransactionLimits) error
 		return err
 	}
 	// Optional payer fields: absent is legal, present must be well-formed.
+	// A whitespace-only value counts as ABSENT: it is blanked here so
+	// `omitempty` drops the key entirely, instead of travelling as spaces
+	// (Python `_optional_free_text`/`_clean` parity).
 	if strings.TrimSpace(r.PayerNumber) != "" {
 		payerNumber, err := requireMSISDN("PayerNumber", r.PayerNumber)
 		if err != nil {
 			return err
 		}
 		r.PayerNumber = payerNumber
+	} else {
+		r.PayerNumber = ""
 	}
-	if err := requireMaxLenIfSet("PayerName", r.PayerName, 64); err != nil {
-		return err
+	if strings.TrimSpace(r.PayerName) != "" {
+		if err := requirePrintable("PayerName", r.PayerName); err != nil {
+			return err
+		}
+		if err := requireMaxLen("PayerName", r.PayerName, 64); err != nil {
+			return err
+		}
+	} else {
+		r.PayerName = ""
 	}
 	return nil
 }
@@ -1306,7 +1399,10 @@ func (r *BillQueryRequest) Validate() error {
 	if err := requireShortcode("ShortCode", r.ShortCode); err != nil {
 		return err
 	}
-	return requireNonEmpty("BillRefNumber", r.BillRefNumber)
+	if err := requireNonEmpty("BillRefNumber", r.BillRefNumber); err != nil {
+		return err
+	}
+	return requireMaxLen("BillRefNumber", r.BillRefNumber, 32)
 }
 
 // BillUpdateRequest amends an existing bill. Every field except the two
@@ -1360,6 +1456,9 @@ func (r *BillUpdateRequest) ValidateWithLimits(limits TransactionLimits) error {
 	if err := requireNonEmpty("BillRefNumber", r.BillRefNumber); err != nil {
 		return err
 	}
+	if err := requirePrintable("BillRefNumber", r.BillRefNumber); err != nil {
+		return err
+	}
 	if err := requireMaxLen("BillRefNumber", r.BillRefNumber, 32); err != nil {
 		return err
 	}
@@ -1371,24 +1470,49 @@ func (r *BillUpdateRequest) ValidateWithLimits(limits TransactionLimits) error {
 			return err
 		}
 	}
-	// ExpiryDate is optional here, but a SUPPLIED one is shape-checked.
-	if err := requireMaxLenIfSet("ExpiryDate", r.ExpiryDate, 10); err != nil {
-		return err
+	// ExpiryDate and CallBackURL are optional here, and a whitespace-only
+	// value counts as UNSET for both: it is blanked so `omitempty` drops the
+	// key, instead of travelling to the gateway as "   ". Same blanking rule
+	// the optional payer fields already apply below (Python/TS refuse or
+	// omit these).
+	if strings.TrimSpace(r.ExpiryDate) != "" {
+		if err := requirePrintable("ExpiryDate", r.ExpiryDate); err != nil {
+			return err
+		}
+		if err := requireMaxLen("ExpiryDate", r.ExpiryDate, 10); err != nil {
+			return err
+		}
+	} else {
+		r.ExpiryDate = ""
 	}
 	if strings.TrimSpace(r.CallBackURL) != "" {
 		if err := requireURL("CallBackURL", r.CallBackURL); err != nil {
 			return err
 		}
+	} else {
+		r.CallBackURL = ""
 	}
+	// Optional payer fields: same rule as BillRegisterRequest — a
+	// whitespace-only value is ABSENT, so it is blanked and omitted from the
+	// wire rather than sent as spaces.
 	if strings.TrimSpace(r.PayerNumber) != "" {
 		payerNumber, err := requireMSISDN("PayerNumber", r.PayerNumber)
 		if err != nil {
 			return err
 		}
 		r.PayerNumber = payerNumber
+	} else {
+		r.PayerNumber = ""
 	}
-	if err := requireMaxLenIfSet("PayerName", r.PayerName, 64); err != nil {
-		return err
+	if strings.TrimSpace(r.PayerName) != "" {
+		if err := requirePrintable("PayerName", r.PayerName); err != nil {
+			return err
+		}
+		if err := requireMaxLen("PayerName", r.PayerName, 64); err != nil {
+			return err
+		}
+	} else {
+		r.PayerName = ""
 	}
 	return nil
 }
@@ -1406,5 +1530,8 @@ func (r *BillDeleteRequest) Validate() error {
 	if err := requireShortcode("ShortCode", r.ShortCode); err != nil {
 		return err
 	}
-	return requireNonEmpty("BillRefNumber", r.BillRefNumber)
+	if err := requireNonEmpty("BillRefNumber", r.BillRefNumber); err != nil {
+		return err
+	}
+	return requireMaxLen("BillRefNumber", r.BillRefNumber, 32)
 }

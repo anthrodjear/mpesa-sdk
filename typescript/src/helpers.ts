@@ -149,9 +149,12 @@ export function normalizePhone(raw: string): string {
   }
 
   if (!PHONE_RE.test(stripped)) {
+    // Length, never the value: a phone number is caller-supplied PII and the
+    // caller logs whatever this throws, so the malformed number must not
+    // travel inside the message (Go/Python report the same way).
     throw new Error(
-      `mpesa: ${JSON.stringify(raw)} is not a valid Kenyan MSISDN ` +
-        "(want 07XX/+2547XX/2547XX)",
+      `mpesa: input is not a valid Kenyan MSISDN ` +
+        `(got ${raw.length} characters, want 07XX/+2547XX/2547XX)`,
     );
   }
 

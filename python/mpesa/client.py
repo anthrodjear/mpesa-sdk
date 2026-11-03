@@ -746,8 +746,13 @@ class MpesaClient:
 
     def tax_remittance(self, req: TaxRemittanceRequest) -> ConversationResponse:
         """Tax remittance to the KRA (docs/apis/tax-remittance.md);
-        OriginatorConversationID <- new_originator_id(), CommandID <-
-        TAX_REMITTANCE and both identifier types <- "4" when unset.
+        OriginatorConversationID <- new_originator_id() and both identifier
+        types <- "4" when unset.
+
+        CommandID is NOT defaulted: ``TaxRemittanceRequest.validate``
+        rejects anything but ``TAX_REMITTANCE``, so silently rewriting the
+        caller's value would mask the mistake instead of refusing it (Go
+        and TypeScript reject it too).
 
         Daily quota accrues against the dedicated ``"tax"`` bucket
         (see :meth:`_accrue_daily`), consumed-on-attempt with
@@ -755,11 +760,10 @@ class MpesaClient:
 
         Example::
 
-            ack = client.tax_remittance(TaxRemittanceRequest(...))
+            ack = client.tax_remittance(TaxRemittanceRequest(
+                command_id=CommandID.TAX_REMITTANCE, ...))
         """
         req = dataclasses.replace(req)
-        if not req.command_id:
-            req.command_id = CommandID.TAX_REMITTANCE
         if not req.originator_conversation_id:
             req.originator_conversation_id = new_originator_id()
         if not req.sender_identifier_type:

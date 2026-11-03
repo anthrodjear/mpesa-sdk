@@ -203,6 +203,21 @@ function requirePrintableMaxLen(field: string, value: string, max: number): void
 }
 
 /**
+ * Printable, length-capped identifier that is only checked WHEN SET —
+ * Go `requireMaxLenIfSet` semantics. A value the caller did not supply
+ * (undefined / empty / whitespace) is not an error: the client defaults it,
+ * so only a SUPPLIED value has to fit.
+ */
+function requirePrintableMaxLenIfSet(
+  field: string,
+  value: string | undefined,
+  max: number,
+): void {
+  if (value === undefined || value.trim().length === 0) return;
+  requirePrintableMaxLen(field, value, max);
+}
+
+/**
  * `inet_aton`-style dotted/numeric IPv4 literal parser (decimal, octal,
  * hex and short-hand forms). Returns the address as a 32-bit unsigned
  * integer, or null when `host` is not a numeric literal at all.
@@ -1281,6 +1296,11 @@ export class MpesaClient {
     // 1..19-char contract as b2cPayout (overlong ids draw a gateway
     // 500.002.1001, so fail fast here instead).
     requireLengthRange("OriginatorConversationID", r.originatorConversationID, 1, 19);
+    // Identifier types are capped at 12 ONLY when set: the injection above
+    // means an unset one is defaulted, never an error (Go
+    // `requireMaxLenIfSet` / Python `_printable(..., 12)` parity).
+    requirePrintableMaxLenIfSet("SenderIdentifierType", r.senderIdentifierType, 12);
+    requirePrintableMaxLenIfSet("ReceiverIdentifierType", r.receiverIdentifierType, 12);
     if (!B2B_COMMANDS.has(r.commandID.value)) {
       throw new Error(
         `mpesa: B2B CommandID ${JSON.stringify(r.commandID.value)} not in {BusinessPayBill, BusinessBuyGoods}`,
@@ -1364,6 +1384,9 @@ export class MpesaClient {
     requireNonEmpty("Initiator", r.initiator);
     requireNonEmpty("SecurityCredential", r.securityCredential);
     requireLengthRange("OriginatorConversationID", r.originatorConversationID, 1, 19);
+    // Identifier types: same "capped only when set" rule as b2bPayment.
+    requirePrintableMaxLenIfSet("SenderIdentifierType", r.senderIdentifierType, 12);
+    requirePrintableMaxLenIfSet("ReceiverIdentifierType", r.receiverIdentifierType, 12);
     if (r.commandID.value !== CommandID.TaxRemittance.value) {
       throw new Error("mpesa: TaxRemittance CommandID must be TaxRemittance");
     }
@@ -1739,7 +1762,8 @@ export class MpesaClient {
 
   /**
    * Register a bill on Bill Manager (docs/apis/bill-manager.md). No
-   * credential — the shortcode owns the bill.
+   * credential — the shortcode owns the bill. `shortCode` ← config
+   * shortcode when empty.
    *
    * `payerNumber`/`payerName` are OPTIONAL PII: only a SUPPLIED number is
    * normalized to gateway form, and an omitted one is omitted from the
@@ -1763,6 +1787,9 @@ export class MpesaClient {
   async billRegister(req: BillRegisterRequest): Promise<BillAckResponse> {
     // Value copy — caller's object is never mutated
     const r = { ...req };
+
+    // Inject default — shortCode ← config shortcode when empty (c2bRegisterURL parity)
+    if (!r.shortCode) r.shortCode = this._config.shortcode;
 
     // Validate
     r.shortCode = requireShortcode("ShortCode", r.shortCode);
@@ -1800,10 +1827,12 @@ export class MpesaClient {
       ExpiryDate: r.expiryDate,
       CallBackURL: r.callBackURL,
     };
-    if (r.payerNumber) {
+    // A whitespace-only value counts as "not supplied": omit the key rather
+    // than sending spaces (Go/Python drop it too).
+    if (r.payerNumber?.trim()) {
       payload["PayerNumber"] = r.payerNumber;
     }
-    if (r.payerName) {
+    if (r.payerName?.trim()) {
       payload["PayerName"] = r.payerName;
     }
 
@@ -1818,7 +1847,7 @@ export class MpesaClient {
   /**
    * Look up one bill — POST /mpesa/billmanager/v1/query. Two keys, no
    * amount, no URL, so no limits gate (a query REPORTS an amount, it
-   * never sends one).
+   * never sends one). `shortCode` ← config shortcode when empty.
    *
    * @throws {Error} On validation failure (before any network I/O).
    *
@@ -1832,6 +1861,9 @@ export class MpesaClient {
   async billQuery(req: BillQueryRequest): Promise<BillAckResponse> {
     // Value copy — caller's object is never mutated
     const r = { ...req };
+
+    // Inject default — shortCode ← config shortcode when empty
+    if (!r.shortCode) r.shortCode = this._config.shortcode;
 
     // Validate
     r.shortCode = requireShortcode("ShortCode", r.shortCode);
@@ -1856,6 +1888,7 @@ export class MpesaClient {
    * Every field beyond `shortCode`/`billRefNumber` is OPTIONAL and an
    * omitted one is OMITTED from the wire payload, not sent as
    * zero/empty — partial updates are the point of the endpoint.
+   * `shortCode` ← config shortcode when empty.
    *
    * @throws {Error} On validation failure (before any network I/O).
    *
@@ -1869,6 +1902,9 @@ export class MpesaClient {
   async billUpdate(req: BillUpdateRequest): Promise<BillAckResponse> {
     // Value copy — caller's object is never mutated
     const r = { ...req };
+
+    // Inject default — shortCode ← config shortcode when empty
+    if (!r.shortCode) r.shortCode = this._config.shortcode;
 
     // Validate
     r.shortCode = requireShortcode("ShortCode", r.shortCode);
@@ -1910,10 +1946,12 @@ export class MpesaClient {
     if (r.callBackURL) {
       payload["CallBackURL"] = r.callBackURL;
     }
-    if (r.payerNumber) {
+    // A whitespace-only value counts as "not supplied": omit the key rather
+    // than sending spaces.
+    if (r.payerNumber?.trim()) {
       payload["PayerNumber"] = r.payerNumber;
     }
-    if (r.payerName) {
+    if (r.payerName?.trim()) {
       payload["PayerName"] = r.payerName;
     }
 
@@ -1927,7 +1965,8 @@ export class MpesaClient {
 
   /**
    * Retire one bill — POST /mpesa/billmanager/v1/delete. Two keys,
-   * nothing optional, no amount, so no limits gate.
+   * nothing optional, no amount, so no limits gate. `shortCode` ←
+   * config shortcode when empty.
    *
    * @throws {Error} On validation failure (before any network I/O).
    *
@@ -1941,6 +1980,9 @@ export class MpesaClient {
   async billDelete(req: BillDeleteRequest): Promise<BillAckResponse> {
     // Value copy — caller's object is never mutated
     const r = { ...req };
+
+    // Inject default — shortCode ← config shortcode when empty
+    if (!r.shortCode) r.shortCode = this._config.shortcode;
 
     // Validate
     r.shortCode = requireShortcode("ShortCode", r.shortCode);

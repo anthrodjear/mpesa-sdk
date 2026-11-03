@@ -92,6 +92,9 @@ def test_b2b_payload_keys_are_exact():
         "CommandID", "SenderIdentifierType", "ReceiverIdentifierType",
         "Amount", "PartyA", "PartyB", "AccountReference", "Remarks",
         "QueueTimeOutURL", "ResultURL", }
+    # Typo regression guard: the wire key is RECEIVERd, never RECIEVERd.
+    assert "RecieverIdentifierType" not in payload
+    assert "RecieverIdentifierType" not in json.dumps(payload)
 
 
 def test_b2b_buy_goods_command_accepted():
@@ -131,6 +134,9 @@ def test_tax_payload_keys_are_exact():
         "Amount", "PartyA", "PartyB", "AccountReference", "Remarks",
         "QueueTimeOutURL", "ResultURL", "TaxPeriod", "TaxObligation",
         "TaxPayerPIN" }
+    # Typo regression guard: the wire key is RECEIVERd, never RECIEVERd.
+    assert "RecieverIdentifierType" not in payload
+    assert "RecieverIdentifierType" not in json.dumps(payload)
 
 
 def test_tax_remittance_payload_round_trips_json():
@@ -354,6 +360,44 @@ def test_bill_update_omits_unset_optionals():
     payload = req.to_payload()
     assert payload == {"ShortCode": "600992", "BillRefNumber": "INV-001",
                        "Amount": 1500}
+
+
+def test_bill_update_with_no_optionals_sends_exactly_two_keys():
+    """The exact two-key body (Go and TypeScript pin the same shape)."""
+    req = BillUpdateRequest(short_code="600992", bill_ref_number="INV-001")
+    req.validate()
+    assert req.to_payload() == {"ShortCode": "600992",
+                                "BillRefNumber": "INV-001"}
+
+
+def test_bill_update_none_amount_is_the_unset_sentinel():
+    """``amount=None`` is the documented "not supplied" spelling; validate()
+    normalizes it (and 0) and _clean drops the key either way."""
+    for unset in (None, 0):
+        req = BillUpdateRequest(short_code="600992",
+                                bill_ref_number="INV-001", amount=unset)
+        req.validate()
+        assert req.amount is None
+        assert "Amount" not in req.to_payload()
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_bill_manager_drops_whitespace_only_payer_fields(blank):
+    """A whitespace-only payer field counts as NOT SUPPLIED in all three
+    engines: the key is DROPPED, never sent as spaces."""
+    reg = bill_register(payer_number=blank, payer_name=blank)
+    reg.validate()
+    payload = reg.to_payload()
+    assert "PayerNumber" not in payload
+    assert "PayerName" not in payload
+
+    up = BillUpdateRequest(short_code="600992", bill_ref_number="INV-001",
+                           payer_number=blank, payer_name=blank)
+    up.validate()
+    up_payload = up.to_payload()
+    assert "PayerNumber" not in up_payload
+    assert "PayerName" not in up_payload
+    assert up_payload == {"ShortCode": "600992", "BillRefNumber": "INV-001"}
 
 
 def test_bill_update_omits_amount_when_not_supplied():

@@ -181,7 +181,7 @@ def test_bill_ref_number_is_required_for_paybill_simulations_only():
         (lambda r: setattr(r, "amount", -1), "Amount"),
         (lambda r: setattr(r, "amount", True), "whole number"),
         (lambda r: setattr(r, "amount", 1.5), "whole number"),
-        (lambda r: setattr(r, "party_a", "12345"), "invalid PartyA"),
+        (lambda r: setattr(r, "party_a", "12345"), "not a valid Kenyan MSISDN"),
         (lambda r: setattr(r, "account_reference", "x" * 13), "exceeds 12"),
         (lambda r: setattr(r, "transaction_desc", "x" * 14), "exceeds 13"),
         (lambda r: setattr(r, "call_back_url", "ftp://x.com"), "absolute http(s) URL"),

@@ -9,6 +9,7 @@ package mpesa
 // any fetch.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -328,6 +329,311 @@ func TestBillRegisterNormalizesOptionalPayerNumber(t *testing.T) {
 	}
 }
 
+// A whitespace-only optional payer field is "not supplied": the key is
+// DROPPED from the payload, never sent as spaces. All three engines pin this
+// (Python `_optional_free_text` + `_clean`, TS the `.trim()` guard).
+func TestBillManagerDropsWhitespaceOnlyPayerFields(t *testing.T) {
+	c, _, bodies := newFamiliesServer(t)
+	ctx := context.Background()
+
+	reg := validBillRegisterRequest()
+	reg.PayerNumber = "   "
+	reg.PayerName = "   "
+	if _, err := c.BillRegister(ctx, reg); err != nil {
+		t.Fatalf("BillRegister: %v", err)
+	}
+	m := decodeBody(t, billRegisterPath, bodies[billRegisterPath])
+	if _, ok := m["PayerNumber"]; ok {
+		t.Errorf("whitespace-only PayerNumber was sent: %v", m["PayerNumber"])
+	}
+	if _, ok := m["PayerName"]; ok {
+		t.Errorf("whitespace-only PayerName was sent: %v", m["PayerName"])
+	}
+	// The required keys still travel.
+	if m["BillRefNumber"] != "INV-1" || m["BillName"] != "Invoice 1" {
+		t.Errorf("required bill keys lost: %v", m)
+	}
+
+	up := BillUpdateRequest{ShortCode: testShortcode, BillRefNumber: "INV-1", PayerNumber: "   ", PayerName: "   "}
+	if _, err := c.BillUpdate(ctx, up); err != nil {
+		t.Fatalf("BillUpdate: %v", err)
+	}
+	upBody := decodeBody(t, billUpdatePath, bodies[billUpdatePath])
+	if len(upBody) != 2 || upBody["ShortCode"] != testShortcode || upBody["BillRefNumber"] != "INV-1" {
+		t.Errorf("amountless, whitespace-payer update must be EXACTLY the two identifiers, got %v", upBody)
+	}
+}
+
+// ShortCode defaults from Config.Shortcode on an EMPTY value and passes an
+// explicit one through — the C2B-register/STK convention (docs/apis/bill-manager.md).
+func TestBillManagerShortCodeDefaultsFromConfig(t *testing.T) {
+	c, _, bodies := newFamiliesServer(t)
+	ctx := context.Background()
+
+	// Empty → the configured shortcode on the wire.
+	if _, err := c.BillQuery(ctx, BillQueryRequest{BillRefNumber: "INV-1"}); err != nil {
+		t.Fatalf("BillQuery with an empty ShortCode: %v", err)
+	}
+	if got := decodeBody(t, billQueryPath, bodies[billQueryPath])["ShortCode"]; got != testShortcode {
+		t.Errorf("BillQuery ShortCode = %v, want the configured %q", got, testShortcode)
+	}
+	if _, err := c.BillRegister(ctx, BillRegisterRequest{BillRefNumber: "INV-1", BillName: "Invoice 1",
+		Amount: 250, ExpiryDate: "2026-03-01", CallBackURL: "https://mydomain.com/bill/callback"}); err != nil {
+		t.Fatalf("BillRegister with an empty ShortCode: %v", err)
+	}
+	if got := decodeBody(t, billRegisterPath, bodies[billRegisterPath])["ShortCode"]; got != testShortcode {
+		t.Errorf("BillRegister ShortCode = %v, want the configured %q", got, testShortcode)
+	}
+	if _, err := c.BillUpdate(ctx, BillUpdateRequest{BillRefNumber: "INV-1", Amount: 300}); err != nil {
+		t.Fatalf("BillUpdate with an empty ShortCode: %v", err)
+	}
+	if got := decodeBody(t, billUpdatePath, bodies[billUpdatePath])["ShortCode"]; got != testShortcode {
+		t.Errorf("BillUpdate ShortCode = %v, want the configured %q", got, testShortcode)
+	}
+	if _, err := c.BillDelete(ctx, BillDeleteRequest{BillRefNumber: "INV-1"}); err != nil {
+		t.Fatalf("BillDelete with an empty ShortCode: %v", err)
+	}
+	if got := decodeBody(t, billDeletePath, bodies[billDeletePath])["ShortCode"]; got != testShortcode {
+		t.Errorf("BillDelete ShortCode = %v, want the configured %q", got, testShortcode)
+	}
+
+	// Explicit → passthrough (the config value never overwrites it).
+	explicit := "600992"
+	if _, err := c.BillQuery(ctx, BillQueryRequest{ShortCode: explicit, BillRefNumber: "INV-1"}); err != nil {
+		t.Fatalf("BillQuery with an explicit ShortCode: %v", err)
+	}
+	if got := decodeBody(t, billQueryPath, bodies[billQueryPath])["ShortCode"]; got != explicit {
+		t.Errorf("explicit ShortCode = %v, want %q", got, explicit)
+	}
+}
+
+// The wire key is ReceiverIdentifierType: a misspelling must never reach the
+// request body on either credentialed endpoint.
+func TestNewFamiliesNeverSpellRecieverIdentifierType(t *testing.T) {
+	c, _, bodies := newFamiliesServer(t)
+	ctx := context.Background()
+	if _, err := c.B2BPayment(ctx, validB2BRequest()); err != nil {
+		t.Fatalf("B2BPayment: %v", err)
+	}
+	if _, err := c.TaxRemittance(ctx, validTaxRequest()); err != nil {
+		t.Fatalf("TaxRemittance: %v", err)
+	}
+	for _, path := range []string{b2bPaymentPath, taxRemittancePath} {
+		body := bodyString(t, path, bodies[path])
+		if strings.Contains(body, "RecieverIdentifierType") {
+			t.Errorf("%s body carries the misspelled key: %s", path, body)
+		}
+		if !strings.Contains(body, `"ReceiverIdentifierType"`) {
+			t.Errorf("%s body is missing the correctly-spelled wire key: %s", path, body)
+		}
+	}
+}
+
+// --- error paths: the daily reservation rule ----------------------------------
+//
+// Every new amount-bearing method must follow the SAME rule the legacy
+// endpoints follow (the 0.6.0 ErrNotDispatched rule):
+//   - a transport-class failure (no gateway answer at all) REFUNDS the
+//     reservation, so a retry fits the daily budget again;
+//   - an oversize 2xx and an undecodable 2xx PROVE the gateway answered, so
+//     the reservation is KEPT.
+// Mirrors TestGatewayAnsweredErrorsKeepTheDailyReservation.
+
+// familiesErrorClient builds a daily-tracking Client whose OAuth answers and
+// whose single business leg runs handler, so the ledger can be inspected
+// after the failure.
+func familiesErrorClient(t *testing.T, path string, handler http.HandlerFunc) *Client {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.Handle("/oauth/v1/generate", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{"access_token": "tok-err", "expires_in": "3599"})
+	}))
+	mux.HandleFunc(path, handler)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	now := time.Date(2024, 5, 1, 6, 0, 0, 0, time.UTC)
+	c, err := NewClient(Config{
+		ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox,
+		Shortcode: testShortcode, Passkey: testPasskey,
+		Now: func() time.Time { return now },
+		Limits: &TransactionLimits{
+			B2B:  ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(100_000)},
+			Tax:  ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(100_000)},
+			Bill: ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(100_000)},
+		},
+		TrackDaily: true,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	c.baseURL = srv.URL
+	return c
+}
+
+// newFamilyAmount is the amount every error-path case below sends: it fits the
+// 900000 per-transaction ceiling and leaves room for a 60000 retry under the
+// 100000 daily ceiling, so a rollback is observable as "a second identical
+// call now succeeds".
+const newFamilyAmount = 60_000
+
+// (a) A transport failure mid-call rolls the daily reservation back on EVERY
+// new amount-bearing method.
+func TestNewFamilyTransportFailureRollsBackDailyBudget(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		path string
+		svc  Service
+		call func(c *Client) error
+	}{
+		{"B2BPayment", b2bPaymentPath, ServiceB2B, func(c *Client) error {
+			r := validB2BRequest()
+			r.Amount = newFamilyAmount
+			_, err := c.B2BPayment(ctx, r)
+			return err
+		}},
+		{"TaxRemittance", taxRemittancePath, ServiceTax, func(c *Client) error {
+			r := validTaxRequest()
+			r.Amount = newFamilyAmount
+			_, err := c.TaxRemittance(ctx, r)
+			return err
+		}},
+		{"BillRegister", billRegisterPath, ServiceBill, func(c *Client) error {
+			r := validBillRegisterRequest()
+			r.Amount = newFamilyAmount
+			_, err := c.BillRegister(ctx, r)
+			return err
+		}},
+		{"BillUpdate", billUpdatePath, ServiceBill, func(c *Client) error {
+			_, err := c.BillUpdate(ctx, BillUpdateRequest{
+				ShortCode: testShortcode, BillRefNumber: "INV-1", Amount: newFamilyAmount,
+			})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var abortNext atomic.Bool
+			abortNext.Store(true)
+			handler := func(w http.ResponseWriter, r *http.Request) {
+				if abortNext.CompareAndSwap(true, false) {
+					// Abort before any response is written: post() surfaces
+					// a transport error (ErrNotDispatched), never a
+					// *MpesaError.
+					panic(http.ErrAbortHandler)
+				}
+				writeJSON(t, w, http.StatusOK, ConversationResponse{ResponseCode: "0"})
+			}
+			c := familiesErrorClient(t, tc.path, handler)
+			err := tc.call(c)
+			if err == nil {
+				t.Fatal("transport-aborted call succeeded, want an error")
+			}
+			if !errors.Is(err, ErrNotDispatched) {
+				t.Fatalf("error = %v, want it to be classified ErrNotDispatched", err)
+			}
+			var me *MpesaError
+			if errors.As(err, &me) {
+				t.Fatalf("transport failure surfaced as *MpesaError (%v), want a plain transport error", err)
+			}
+			if got := dailyUsed(&c.daily, tc.svc); got != 0 {
+				t.Fatalf("%s daily used after the rollback = %d, want 0", tc.svc, got)
+			}
+			// The retry now fits (60000 + 60000 ≤ 100000): the rollback
+			// really freed the budget.
+			if err := tc.call(c); err != nil {
+				t.Fatalf("retry after the rollback rejected: %v", err)
+			}
+		})
+	}
+}
+
+// (b)+(c) An oversize 2xx (*OversizeError) and a 2xx whose body will not
+// decode both PROVE the gateway answered, so the reservation is KEPT.
+func TestNewFamilyGatewayAnsweredErrorsKeepTheDailyReservation(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name    string
+		handler http.HandlerFunc
+		wantAs  func(error) bool
+	}{
+		{
+			name: "2xx body over the 1 MiB cap",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(bytes.Repeat([]byte("x"), maxResponseLen+1))
+			},
+			wantAs: func(err error) bool {
+				var oe *OversizeError
+				return errors.As(err, &oe)
+			},
+		},
+		{
+			name: "2xx whose ack will not decode",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				// ResponseCode as a NUMBER: the ack models want a string, so
+				// json.Unmarshal fails AFTER the gateway answered.
+				_, _ = w.Write([]byte(`{"ResponseCode": 0}`))
+			},
+			wantAs: func(err error) bool {
+				return strings.Contains(err.Error(), "mpesa: decode ")
+			},
+		},
+	}
+	for _, mode := range cases {
+		for _, tc := range []struct {
+			name string
+			path string
+			svc  Service
+			call func(c *Client) error
+		}{
+			{"B2BPayment", b2bPaymentPath, ServiceB2B, func(c *Client) error {
+				r := validB2BRequest()
+				r.Amount = newFamilyAmount
+				_, err := c.B2BPayment(ctx, r)
+				return err
+			}},
+			{"TaxRemittance", taxRemittancePath, ServiceTax, func(c *Client) error {
+				r := validTaxRequest()
+				r.Amount = newFamilyAmount
+				_, err := c.TaxRemittance(ctx, r)
+				return err
+			}},
+			{"BillRegister", billRegisterPath, ServiceBill, func(c *Client) error {
+				r := validBillRegisterRequest()
+				r.Amount = newFamilyAmount
+				_, err := c.BillRegister(ctx, r)
+				return err
+			}},
+			{"BillUpdate", billUpdatePath, ServiceBill, func(c *Client) error {
+				_, err := c.BillUpdate(ctx, BillUpdateRequest{
+					ShortCode: testShortcode, BillRefNumber: "INV-1", Amount: newFamilyAmount,
+				})
+				return err
+			}},
+		} {
+			t.Run(mode.name+"/"+tc.name, func(t *testing.T) {
+				c := familiesErrorClient(t, tc.path, mode.handler)
+				err := tc.call(c)
+				if err == nil {
+					t.Fatal("gateway-answered failure succeeded, want an error")
+				}
+				if !mode.wantAs(err) {
+					t.Fatalf("%s error = %T (%v), want the documented classification", tc.name, err, err)
+				}
+				if got := dailyUsed(&c.daily, tc.svc); got != newFamilyAmount {
+					t.Fatalf("%s daily used = %d, want %d KEPT (the gateway saw the transaction)",
+						tc.svc, got, int64(newFamilyAmount))
+				}
+			})
+		}
+	}
+}
+
 // A response that omits the OPTIONAL BillRefNumber key entirely must still
 // decode: the bill stays identified by the reference the caller sent.
 func TestBillAckToleratesAbsentBillRefNumber(t *testing.T) {
@@ -568,6 +874,14 @@ func TestNewFamiliesRejectMalformedInputBeforeAnyNetworkCall(t *testing.T) {
 		}, "PayerNumber"},
 		{"bill query missing bill ref", func() error {
 			_, err := c.BillQuery(ctx, BillQueryRequest{ShortCode: testShortcode})
+			return err
+		}, "BillRefNumber"},
+		{"bill query overlong bill ref", func() error {
+			_, err := c.BillQuery(ctx, BillQueryRequest{ShortCode: testShortcode, BillRefNumber: strings.Repeat("r", 33)})
+			return err
+		}, "BillRefNumber"},
+		{"bill delete overlong bill ref", func() error {
+			_, err := c.BillDelete(ctx, BillDeleteRequest{ShortCode: testShortcode, BillRefNumber: strings.Repeat("r", 33)})
 			return err
 		}, "BillRefNumber"},
 		{"bill update negative amount", func() error {
@@ -863,6 +1177,82 @@ func TestNewFamilyDailyBucketsAreIndependent(t *testing.T) {
 	if got := dailyUsed(&c.daily, ServiceB2B); got != 500_000 {
 		t.Errorf("B2B daily used = %d after the refused shilling, want 500000", got)
 	}
+
+	// TaxRemittance refuses its own over-budget remittance by the same rule
+	// (the dedicated "tax" bucket, not B2B's). The bucket already holds 1000
+	// from above, so 499000 lands exactly on the 500000 daily ceiling.
+	for _, amount := range []int64{250_000, 249_000} {
+		if _, err := c.TaxRemittance(ctx, func() TaxRemittanceRequest {
+			r := validTaxRequest()
+			r.Amount = amount
+			return r
+		}()); err != nil {
+			t.Fatalf("TaxRemittance %d: %v", amount, err)
+		}
+	}
+	if got := dailyUsed(&c.daily, ServiceTax); got != 500_000 {
+		t.Fatalf("tax daily used = %d, want 500000", got)
+	}
+	_, err = c.TaxRemittance(ctx, func() TaxRemittanceRequest {
+		r := validTaxRequest()
+		r.Amount = 1
+		return r
+	}())
+	if !errors.As(err, &le) || le.Kind != "MaxPerDay" {
+		t.Fatalf("TaxRemittance past the daily ceiling err = %v, want a MaxPerDay LimitError", err)
+	}
+	if got := dailyUsed(&c.daily, ServiceTax); got != 500_000 {
+		t.Errorf("tax daily used = %d after the refused shilling, want 500000", got)
+	}
+}
+
+// An entropy failure while minting the OriginatorConversationID must refuse
+// the call rather than fall back to a predictable id (the seam is
+// helpers.go's randRead, used here exactly as helpers_test.go uses it). No
+// request may reach the wire, and no daily reservation may be taken.
+func TestB2BAndTaxRefuseWhenOriginatorIDCannotBeMinted(t *testing.T) {
+	orig := randRead
+	randRead = func([]byte) (int, error) { return 0, errors.New("entropy unavailable") }
+	defer func() { randRead = orig }()
+
+	c, _, _ := newFamiliesServer(t)
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		call func() error
+		svc  Service
+	}{
+		{"B2BPayment", func() error {
+			_, err := c.B2BPayment(ctx, validB2BRequest())
+			return err
+		}, ServiceB2B},
+		{"TaxRemittance", func() error {
+			_, err := c.TaxRemittance(ctx, validTaxRequest())
+			return err
+		}, ServiceTax},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			if err == nil {
+				t.Fatal("accepted a call whose idempotency key could not be generated")
+			}
+			if !strings.Contains(err.Error(), "OriginatorConversationID") {
+				t.Errorf("error = %v, want it to name OriginatorConversationID", err)
+			}
+			if got := dailyUsed(&c.daily, tc.svc); got != 0 {
+				t.Errorf("%s daily used = %d, want 0 (nothing was reserved)", tc.svc, got)
+			}
+		})
+	}
+	// An explicit id still works: the generator is only used when one is absent.
+	if _, err := c.B2BPayment(ctx, func() B2BRequest {
+		r := validB2BRequest()
+		r.OriginatorConversationID = "my-own-idempotency"
+		return r
+	}()); err != nil {
+		t.Errorf("an explicit OriginatorConversationID was refused: %v", err)
+	}
 }
 
 // Every new credentialed/PII-carrying type must render redacted at %v, %+v
@@ -956,6 +1346,149 @@ func TestNewFamilyRendersRedacted(t *testing.T) {
 	}
 }
 
+// The standalone, no-config entry points documented on every new request
+// type — Validate() ("safe to call before hand-marshalling") and LogSafe()
+// ("the documented structured-logging form") — must behave exactly like the
+// client's limits-aware path and must keep redacting the secrets.
+func TestNewFamilyStandaloneValidateAndLogSafe(t *testing.T) {
+	b2b := validB2BRequest()
+	b2b.OriginatorConversationID = "a1b2c3d4e5f6a7b8"
+	if err := b2b.Validate(); err != nil {
+		t.Fatalf("B2BRequest.Validate: %v", err)
+	}
+	b2bNoID := validB2BRequest()
+	if err := b2bNoID.Validate(); err == nil {
+		t.Error("B2BRequest.Validate accepted an empty OriginatorConversationID, want rejection")
+	}
+
+	tax := validTaxRequest()
+	tax.OriginatorConversationID = "a1b2c3d4e5f6a7b8"
+	if err := tax.Validate(); err != nil {
+		t.Fatalf("TaxRemittanceRequest.Validate: %v", err)
+	}
+
+	reg := validBillRegisterRequest()
+	if err := reg.Validate(); err != nil {
+		t.Fatalf("BillRegisterRequest.Validate: %v", err)
+	}
+
+	up := BillUpdateRequest{ShortCode: testShortcode, BillRefNumber: "INV-1", Amount: 300}
+	if err := up.Validate(); err != nil {
+		t.Fatalf("BillUpdateRequest.Validate: %v", err)
+	}
+
+	// LogSafe redacts the credential (B2B) and the PII (BillUpdate).
+	lsB2B := b2b.LogSafe()
+	if lsB2B["SecurityCredential"] != "[REDACTED]" {
+		t.Errorf("B2BRequest.LogSafe did not redact SecurityCredential: %v", lsB2B)
+	}
+	if lsB2B["CommandID"] != string(CommandBusinessPayBill) {
+		t.Errorf("B2BRequest.LogSafe lost the CommandID: %v", lsB2B)
+	}
+	up.PayerNumber = "254712345678"
+	lsUp := up.LogSafe()
+	if lsUp["PayerNumber"] != "[REDACTED]" {
+		t.Errorf("BillUpdateRequest.LogSafe did not redact PayerNumber: %v", lsUp)
+	}
+	if lsUp["BillRefNumber"] != "INV-1" {
+		t.Errorf("BillUpdateRequest.LogSafe redacted the join key: %v", lsUp)
+	}
+}
+
+// The daily ceiling must bite on BillRegister and BillUpdate too — each
+// accrues against the shared "bill" bucket, so an over-budget registration
+// is refused locally and consumes nothing.
+func TestBillManagerDailyCeilingRejectsBeforeDispatch(t *testing.T) {
+	c, hits := familiesLimitsClient(t, Config{
+		TrackDaily: true,
+		// No per-transaction ceiling, so only the DAILY gate is under test.
+		Limits: &TransactionLimits{
+			Bill: ServiceLimits{MaxPerTransaction: Limit(0), MaxPerDay: Limit(500_000)},
+		},
+	})
+	ctx := context.Background()
+
+	// 499999 leaves one shilling of the 500000 daily bill budget.
+	if _, err := c.BillRegister(ctx, func() BillRegisterRequest {
+		r := validBillRegisterRequest()
+		r.Amount = 499_999
+		return r
+	}()); err != nil {
+		t.Fatalf("BillRegister 499999: %v", err)
+	}
+	if got := dailyUsed(&c.daily, ServiceBill); got != 499_999 {
+		t.Fatalf("bill daily used = %d, want 499999", got)
+	}
+
+	var le *LimitError
+	if _, err := c.BillRegister(ctx, func() BillRegisterRequest {
+		r := validBillRegisterRequest()
+		r.Amount = 2
+		return r
+	}()); !errors.As(err, &le) || le.Kind != "MaxPerDay" {
+		t.Fatalf("BillRegister past the daily ceiling err = %v, want a MaxPerDay LimitError", err)
+	}
+	if _, err := c.BillUpdate(ctx, BillUpdateRequest{ShortCode: testShortcode, BillRefNumber: "INV-1", Amount: 2}); !errors.As(err, &le) || le.Kind != "MaxPerDay" {
+		t.Fatalf("BillUpdate past the daily ceiling err = %v, want a MaxPerDay LimitError", err)
+	}
+	// Both refusals consumed nothing.
+	if got := dailyUsed(&c.daily, ServiceBill); got != 499_999 {
+		t.Errorf("bill daily used after the refusals = %d, want 499999", got)
+	}
+	// Exactly ONE business dispatch (the accepted registration) plus its
+	// OAuth leg: the two refusals never reached the transport.
+	if n := hitCount(hits); n != 2 {
+		t.Fatalf("network hits = %d, want 2 (one OAuth + the one accepted registration)", n)
+	}
+}
+
+// BillQuery/BillDelete carry no amount, so they take no daily reservation and
+// therefore never roll one back — but their transport failures must still
+// surface as errors rather than being swallowed.
+func TestBillQueryAndDeleteSurfaceTransportFailures(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		path string
+		call func(c *Client) error
+	}{
+		{"query", billQueryPath, func(c *Client) error {
+			_, err := c.BillQuery(ctx, BillQueryRequest{ShortCode: testShortcode, BillRefNumber: "INV-1"})
+			return err
+		}},
+		{"delete", billDeletePath, func(c *Client) error {
+			_, err := c.BillDelete(ctx, BillDeleteRequest{ShortCode: testShortcode, BillRefNumber: "INV-1"})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var abortNext atomic.Bool
+			abortNext.Store(true)
+			handler := func(w http.ResponseWriter, r *http.Request) {
+				if abortNext.CompareAndSwap(true, false) {
+					panic(http.ErrAbortHandler)
+				}
+				writeJSON(t, w, http.StatusOK, BillAckResponse{ResponseCode: "0", BillRefNumber: "INV-1"})
+			}
+			c := familiesErrorClient(t, tc.path, handler)
+			err := tc.call(c)
+			if err == nil {
+				t.Fatal("transport-aborted call succeeded, want an error")
+			}
+			if !errors.Is(err, ErrNotDispatched) {
+				t.Fatalf("%s error = %v, want ErrNotDispatched", tc.name, err)
+			}
+			// No money moved, so no bucket may be touched at all.
+			for _, svc := range []Service{ServiceBill, ServiceB2B, ServiceTax} {
+				if got := dailyUsed(&c.daily, svc); got != 0 {
+					t.Errorf("%s daily used = %d, want 0 (query/delete move no money)", svc, got)
+				}
+			}
+		})
+	}
+}
+
 // The new wire enum values must be exactly Safaricom's spellings, and the B2B
 // whitelist must hold its two members and nothing else.
 func TestNewCommandIDEnumValues(t *testing.T) {
@@ -992,5 +1525,35 @@ func TestB2BAcceptsBothDocumentedCommands(t *testing.T) {
 		if _, err := c.B2BPayment(context.Background(), r); err != nil {
 			t.Errorf("B2BPayment with CommandID %s rejected: %v", cmd, err)
 		}
+	}
+}
+
+// TaxObligation is FREE TEXT, not a closed enum (the design decision is
+// documented at the requireNonEmpty in TaxRemittanceRequest.ValidateWithLimits):
+// Safaricom's obligation set (VAT, PAYE, ...) is not closed, so a bespoke
+// allow-list would reject a valid new one. Python
+// test_tax_obligation_is_free_text_not_an_enum and the TypeScript
+// "TaxObligation is free text" test pin the same values.
+func TestTaxObligationIsFreeTextNotAnEnum(t *testing.T) {
+	c, _, bodies := newFamiliesServer(t)
+	want := []string{"VAT", "PAYE", "Excise", "IncomeTax", "Other"}
+	for _, obligation := range want {
+		r := validTaxRequest()
+		r.TaxObligation = obligation
+		if _, err := c.TaxRemittance(context.Background(), r); err != nil {
+			t.Fatalf("TaxRemittance with TaxObligation %q rejected: %v", obligation, err)
+		}
+		if got := decodeBody(t, taxRemittancePath, bodies[taxRemittancePath])["TaxObligation"]; got != obligation {
+			t.Errorf("TaxObligation on the wire = %v, want %q", got, obligation)
+		}
+	}
+	// The length cap (32) still applies to the free text: only the CONSTRAINT
+	// is an enum-like bound, never the value set.
+	over := validTaxRequest()
+	over.TaxObligation = strings.Repeat("x", 33)
+	if _, err := c.TaxRemittance(context.Background(), over); err == nil {
+		t.Error("TaxRemittance accepted a 33-char TaxObligation, want the 32-char cap enforced")
+	} else if !strings.Contains(err.Error(), "TaxObligation") {
+		t.Errorf("overlong TaxObligation error = %v, want it to name TaxObligation", err)
 	}
 }

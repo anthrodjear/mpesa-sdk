@@ -1366,9 +1366,13 @@ func (c *Client) TaxRemittance(ctx context.Context, r TaxRemittanceRequest) (*Co
 
 // BillRegister onboards a bill on the Bill Manager (synchronous). It carries
 // NO initiator and NO SecurityCredential: the bearer token alone
-// authenticates it, exactly like C2B URL registration. See
-// docs/apis/bill-manager.md.
+// authenticates it, exactly like C2B URL registration. ShortCode ←
+// cfg.Shortcode when empty. See docs/apis/bill-manager.md.
 func (c *Client) BillRegister(ctx context.Context, r BillRegisterRequest) (*BillAckResponse, error) {
+	// Defaults are injected on the CALLER'S COPY (r is a value parameter).
+	if r.ShortCode == "" {
+		r.ShortCode = c.cfg.Shortcode
+	}
 	if err := r.ValidateWithLimits(c.limits); err != nil {
 		return nil, err
 	}
@@ -1387,9 +1391,13 @@ func (c *Client) BillRegister(ctx context.Context, r BillRegisterRequest) (*Bill
 }
 
 // BillQuery asks for the state of one registered bill (synchronous, no
-// credential). It moves no money, so it carries no limits and no daily
-// accrual. See docs/apis/bill-manager.md.
+// credential). ShortCode ← cfg.Shortcode when empty. It moves no money, so
+// it carries no limits and no daily accrual. See
+// docs/apis/bill-manager.md.
 func (c *Client) BillQuery(ctx context.Context, r BillQueryRequest) (*BillAckResponse, error) {
+	if r.ShortCode == "" {
+		r.ShortCode = c.cfg.Shortcode
+	}
 	if err := r.Validate(); err != nil {
 		return nil, err
 	}
@@ -1400,11 +1408,14 @@ func (c *Client) BillQuery(ctx context.Context, r BillQueryRequest) (*BillAckRes
 	return &out, nil
 }
 
-// BillUpdate amends an existing bill (synchronous, no credential). Amount is
-// OPTIONAL: 0 means "leave the amount alone", so nothing is accrued or
-// ceiling-checked when it is absent — a partial update spends nothing.
-// See docs/apis/bill-manager.md.
+// BillUpdate amends an existing bill (synchronous, no credential). ShortCode
+// ← cfg.Shortcode when empty. Amount is OPTIONAL: 0 means "leave the amount
+// alone", so nothing is accrued or ceiling-checked when it is absent — a
+// partial update spends nothing. See docs/apis/bill-manager.md.
 func (c *Client) BillUpdate(ctx context.Context, r BillUpdateRequest) (*BillAckResponse, error) {
+	if r.ShortCode == "" {
+		r.ShortCode = c.cfg.Shortcode
+	}
 	if err := r.ValidateWithLimits(c.limits); err != nil {
 		return nil, err
 	}
@@ -1426,10 +1437,13 @@ func (c *Client) BillUpdate(ctx context.Context, r BillUpdateRequest) (*BillAckR
 	return &out, nil
 }
 
-// BillDelete drops a registered bill (synchronous, no credential). It moves
-// no money, so it carries no limits and no daily accrual. See
-// docs/apis/bill-manager.md.
+// BillDelete drops a registered bill (synchronous, no credential). ShortCode
+// ← cfg.Shortcode when empty. It moves no money, so it carries no limits and
+// no daily accrual. See docs/apis/bill-manager.md.
 func (c *Client) BillDelete(ctx context.Context, r BillDeleteRequest) (*BillAckResponse, error) {
+	if r.ShortCode == "" {
+		r.ShortCode = c.cfg.Shortcode
+	}
 	if err := r.Validate(); err != nil {
 		return nil, err
 	}

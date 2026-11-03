@@ -337,7 +337,58 @@ describe("B2B Express Checkout", () => {
     await expect(client.b2bPayment(b2bReq({ amount: -1 }))).rejects.toThrow(
       "positive whole number",
     );
+    await expect(client.b2bPayment(b2bReq({ amount: Number.NaN }))).rejects.toThrow(
+      "positive whole number",
+    );
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects NaN/non-integer amounts on every NEW amount-taking method before any fetch", async () => {
+    const client = makeClient();
+    const cases: Array<[string, () => Promise<unknown>]> = [
+      ["b2bPayment", () => client.b2bPayment(b2bReq({ amount: Number.NaN }))],
+      ["taxRemittance", () => client.taxRemittance(taxReq({ amount: Number.NaN }))],
+      ["billRegister", () => client.billRegister(billRegisterReq({ amount: Number.NaN }))],
+      ["billUpdate", () =>
+        client.billUpdate({ shortCode: "600000", billRefNumber: "INV-001", amount: 10.5 }),
+      ],
+    ];
+    for (const [name, call] of cases) {
+      await expect(call(), name).rejects.toThrow("positive whole number");
+      // ...and a negative amount is refused by the same gate.
+    }
+    await expect(client.billUpdate({ shortCode: "600000", billRefNumber: "INV-001", amount: -1 }))
+      .rejects.toThrow("positive whole number");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("caps BOTH identifier types at 12 chars when SUPPLIED, defaults an unset one", async () => {
+    const client = makeClient();
+    // A 13-char value is refused before any fetch (Go requireMaxLenIfSet(12)
+    // / Python _printable(..., 12) parity).
+    await expect(
+      client.b2bPayment(b2bReq({ senderIdentifierType: "4".repeat(13) })),
+    ).rejects.toThrow(/SenderIdentifierType exceeds 12 characters/);
+    await expect(
+      client.b2bPayment(b2bReq({ receiverIdentifierType: "4".repeat(13) })),
+    ).rejects.toThrow(/ReceiverIdentifierType exceeds 12 characters/);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // An UNSET value is defaulted, never an error: the default itself is sent.
+    const seen = mockTransport();
+    const req = b2bReq();
+    delete (req as Record<string, unknown>).senderIdentifierType;
+    delete (req as Record<string, unknown>).receiverIdentifierType;
+    await makeClient().b2bPayment(req);
+    expect(seen[0]?.body["SenderIdentifierType"]).toBe("4");
+    expect(seen[0]?.body["ReceiverIdentifierType"]).toBe("4");
+  });
+
+  it("always spells the wire key ReceiverIdentifierType (never RecieverIdentifierType)", async () => {
+    const seen = mockTransport();
+    await makeClient().b2bPayment(b2bReq());
+    expect(seen[0]?.body).not.toHaveProperty("RecieverIdentifierType");
+    expect(seen[0]?.body["ReceiverIdentifierType"]).toBe("4");
   });
 
   it("rejects a 20-char OriginatorConversationID (gateway 500.002.1001 parity)", async () => {
@@ -427,6 +478,32 @@ describe("Tax Remittance", () => {
     expect((req as Record<string, unknown>).originatorConversationID).toBeUndefined();
   });
 
+  it("caps BOTH identifier types at 12 chars when SUPPLIED, defaults an unset one", async () => {
+    const client = makeClient();
+    await expect(
+      client.taxRemittance(taxReq({ senderIdentifierType: "4".repeat(13) })),
+    ).rejects.toThrow(/SenderIdentifierType exceeds 12 characters/);
+    await expect(
+      client.taxRemittance(taxReq({ receiverIdentifierType: "4".repeat(13) })),
+    ).rejects.toThrow(/ReceiverIdentifierType exceeds 12 characters/);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const seen = mockTransport();
+    const req = taxReq();
+    delete (req as Record<string, unknown>).senderIdentifierType;
+    delete (req as Record<string, unknown>).receiverIdentifierType;
+    await makeClient().taxRemittance(req);
+    expect(seen[0]?.body["SenderIdentifierType"]).toBe("4");
+    expect(seen[0]?.body["ReceiverIdentifierType"]).toBe("4");
+  });
+
+  it("always spells the wire key ReceiverIdentifierType (never RecieverIdentifierType)", async () => {
+    const seen = mockTransport();
+    await makeClient().taxRemittance(taxReq());
+    expect(seen[0]?.body).not.toHaveProperty("RecieverIdentifierType");
+    expect(seen[0]?.body["ReceiverIdentifierType"]).toBe("4");
+  });
+
   it("missing tax-specific fields are rejected before any fetch", async () => {
     const client = makeClient();
     await expect(client.taxRemittance(taxReq({ taxPeriod: "" }))).rejects.toThrow("TaxPeriod");
@@ -458,6 +535,17 @@ describe("Tax Remittance", () => {
     await expect(client.taxRemittance(taxReq({ partyB: "123456789012" }))).rejects.toThrow(
       /PartyB must be 5-10 ASCII digits/,
     );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-integer / NaN amount before any fetch", async () => {
+    const client = makeClient();
+    for (const bad of [10.5, 0, -1, Number.NaN]) {
+      await expect(
+        client.taxRemittance(taxReq({ amount: bad })),
+        `amount=${String(bad)}`,
+      ).rejects.toThrow("positive whole number");
+    }
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -547,9 +635,6 @@ describe("Bill Manager — register", () => {
     await expect(client.billRegister(billRegisterReq({ shortCode: "1234" }))).rejects.toThrow(
       /ShortCode must be 5-10 ASCII digits/,
     );
-    await expect(client.billRegister(billRegisterReq({ shortCode: "" }))).rejects.toThrow(
-      "mpesa: ShortCode is required",
-    );
     await expect(client.billRegister(billRegisterReq({ billRefNumber: "" }))).rejects.toThrow(
       "BillRefNumber",
     );
@@ -565,12 +650,58 @@ describe("Bill Manager — register", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("defaults ShortCode from the configured shortcode when omitted, passes an explicit one through", async () => {
+    const seen = mockTransport(() => BILL_ACK_WITH_REF);
+
+    // Omitted → the config shortcode (SHORTCODE) travels on the wire.
+    const req = billRegisterReq();
+    delete (req as Record<string, unknown>).shortCode;
+    await makeClient().billRegister(req);
+    expect(seen[0]?.body["ShortCode"]).toBe(SHORTCODE);
+    // Value semantics: the caller's object is untouched.
+    expect((req as Record<string, unknown>).shortCode).toBeUndefined();
+
+    // Explicit → passthrough.
+    const seen2 = mockTransport(() => BILL_ACK_WITH_REF);
+    await makeClient().billRegister(billRegisterReq({ shortCode: "600000" }));
+    expect(seen2[0]?.body["ShortCode"]).toBe("600000");
+  });
+
+  it("always spells the wire key ReceiverIdentifierType (never RecieverIdentifierType)", async () => {
+    const seen = mockTransport(() => BILL_ACK_WITH_REF);
+    await makeClient().billRegister(billRegisterReq());
+    expect(seen[0]?.body).not.toHaveProperty("RecieverIdentifierType");
+    expect(seen[0]?.body["BillRefNumber"]).toBe("INV-001");
+  });
+
   it("rejects a non-integer amount before any fetch", async () => {
     const client = makeClient();
     await expect(client.billRegister(billRegisterReq({ amount: 10.5 }))).rejects.toThrow(
       "positive whole number",
     );
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-integer / NaN amount before any fetch", async () => {
+    const client = makeClient();
+    for (const bad of [10.5, 0, -1, Number.NaN]) {
+      await expect(
+        client.billRegister(billRegisterReq({ amount: bad })),
+        `amount=${String(bad)}`,
+      ).rejects.toThrow("positive whole number");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("drops a whitespace-only payerNumber/payerName instead of sending spaces", async () => {
+    const seen = mockTransport(() => BILL_ACK_WITH_REF);
+
+    const req = billRegisterReq({ payerNumber: "   ", payerName: "   " });
+    await makeClient().billRegister(req);
+
+    const body = seen[0]?.body ?? {};
+    expect(body["PayerNumber"]).toBeUndefined();
+    expect(body["PayerName"]).toBeUndefined();
   });
 });
 
@@ -624,6 +755,76 @@ describe("Bill Manager — query / update / delete", () => {
     expect(seen[0]?.body["CallBackURL"]).toBeUndefined();
     expect(seen[0]?.body["PayerNumber"]).toBeUndefined();
     expect(seen[0]?.body["PayerName"]).toBeUndefined();
+  });
+
+  it("update with NO optional fields sends EXACTLY ShortCode + BillRefNumber", async () => {
+    const seen = mockTransport(() => BILL_ACK_WITHOUT_REF);
+
+    await makeClient().billUpdate({ shortCode: "600000", billRefNumber: "INV-001" });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.body).toEqual({ ShortCode: "600000", BillRefNumber: "INV-001" });
+    for (const key of ["Amount", "ExpiryDate", "CallBackURL", "PayerNumber", "PayerName"]) {
+      expect(seen[0]?.body).not.toHaveProperty(key);
+    }
+  });
+
+  it("update rejects amount: 0 as non-positive BEFORE any dispatch", async () => {
+    const client = makeClient();
+    // TypeScript has no Go/Python "Amount: 0 means unset" sentinel: an
+    // explicit 0 is a mistake, not a partial update. Omitting the key is
+    // how a partial update is spelled.
+    await expect(
+      client.billUpdate({ shortCode: "600000", billRefNumber: "INV-001", amount: 0 }),
+    ).rejects.toThrow("positive whole number");
+    await expect(
+      client.billUpdate({ shortCode: "600000", billRefNumber: "INV-001", amount: Number.NaN }),
+    ).rejects.toThrow("positive whole number");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("update drops a whitespace-only payerNumber/payerName instead of sending spaces", async () => {
+    const seen = mockTransport(() => BILL_ACK_WITHOUT_REF);
+
+    await makeClient().billUpdate({
+      shortCode: "600000",
+      billRefNumber: "INV-001",
+      payerNumber: "  ",
+      payerName: "   ",
+    });
+
+    const body = seen[0]?.body ?? {};
+    expect(body["PayerNumber"]).toBeUndefined();
+    expect(body["PayerName"]).toBeUndefined();
+    // The two identifiers still travel.
+    expect(body).toEqual({ ShortCode: "600000", BillRefNumber: "INV-001" });
+  });
+
+  it("query/update/delete default ShortCode from the configured shortcode when omitted", async () => {
+    const seen = mockTransport(() => BILL_ACK_WITH_REF);
+
+    // All three, with NO shortCode on the caller's object.
+    const q = { billRefNumber: "INV-001" };
+    const u = { billRefNumber: "INV-001", amount: 1500 };
+    const d = { billRefNumber: "INV-001" };
+    const client = makeClient();
+    await client.billQuery(q);
+    await client.billUpdate(u);
+    await client.billDelete(d);
+
+    expect(seen).toHaveLength(3);
+    expect(seen[0]?.body["ShortCode"]).toBe(SHORTCODE);
+    expect(seen[1]?.body["ShortCode"]).toBe(SHORTCODE);
+    expect(seen[2]?.body["ShortCode"]).toBe(SHORTCODE);
+    // Value semantics: the callers' objects never gained the field.
+    expect(q).not.toHaveProperty("shortCode");
+    expect(u).not.toHaveProperty("shortCode");
+    expect(d).not.toHaveProperty("shortCode");
+
+    // An explicit shortcode passes through untouched.
+    const seen2 = mockTransport(() => BILL_ACK_WITH_REF);
+    await makeClient().billQuery({ shortCode: "600000", billRefNumber: "INV-001" });
+    expect(seen2[0]?.body["ShortCode"]).toBe("600000");
   });
 
   it("update carries every supplied optional field (normalizing PayerNumber)", async () => {
