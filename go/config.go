@@ -90,6 +90,9 @@ func (c Config) resolvedLimits() TransactionLimits {
 		B2C:      overlay(base.B2C, over.B2C),
 		Reversal: overlay(base.Reversal, over.Reversal),
 		QR:       overlay(base.QR, over.QR),
+		B2B:      overlay(base.B2B, over.B2B),
+		Tax:      overlay(base.Tax, over.Tax),
+		Bill:     overlay(base.Bill, over.Bill),
 		Default:  overlay(base.Default, over.Default),
 	}
 }

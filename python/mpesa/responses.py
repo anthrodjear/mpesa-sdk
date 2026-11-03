@@ -30,7 +30,8 @@ from ._limits import check_body_size as _check_body_size
 from .coercion import coerce_int, coerce_str, coerce_token, safe_json_int
 
 __all__ = ["STKPushResponse", "STKQueryResponse", "ConversationResponse",
-           "B2CResponse", "C2BAckResponse", "QRCodeResponse", "OAuthToken"]
+           "B2CResponse", "C2BAckResponse", "QRCodeResponse", "OAuthToken",
+           "BillAckResponse"]
 # NOTE (limits centralisation): _MAX_BODY_BYTES / _check_body_size are
 # re-exported from mpesa._limits (the single source of truth) so existing
 # ``from mpesa.responses import _MAX_BODY_BYTES`` imports keep working.
@@ -205,6 +206,77 @@ class C2BAckResponse(_Response):
         "response_code": "ResponseCode",
         "response_description": "ResponseDescription",
     }
+
+
+@dataclass(frozen=True)
+class BillAckResponse(_Response):
+    """ACK of the Bill Manager endpoints (docs/apis/bill-manager.md):
+    ``POST /mpesa/billmanager/v1/{register,query,update,delete}`` all
+    answer with this same shape.
+
+    OPTIONAL ``BillRefNumber``: Safaricom's published capture shows the
+    ACK returning ``ResponseCode``/``ResponseDescription``/
+    ``ConversationID``/``OriginatorConversationID`` but NOT the bill
+    reference on every operation (register echoes it, query/update/delete
+    captures do not). This model therefore tolerates its ABSENCE -- an
+    omitted key decodes to ``""`` so a caller's truthiness check reads as
+    "not echoed", never as a loud shape error. The reverse is NOT relaxed:
+    the four required keys still raise ``ValueError`` when missing, so a
+    genuinely malformed body still fails fast.
+
+    ``response_code == "0"`` means the bill was ACCEPTED, never that money
+    moved -- settle exclusively via the OperationResult callback.
+    Usage::
+
+        ack = BillAckResponse.from_json(raw)
+        join(ack.originator_conversation_id, ack.bill_ref_number or bill_ref)
+    """
+
+    response_code: str = ""
+    response_description: str = ""
+    conversation_id: str = ""
+    originator_conversation_id: str = ""
+    bill_ref_number: str = ""
+
+    _WIRE = {
+        "response_code": "ResponseCode",
+        "response_description": "ResponseDescription",
+        "conversation_id": "ConversationID",
+        "originator_conversation_id": "OriginatorConversationID",
+        "bill_ref_number": "BillRefNumber",  # optional: see from_json
+    }
+
+    @classmethod
+    def from_json(cls: type[_R], data: "dict | bytes | str") -> "BillAckResponse":
+        """Tolerate a gateway reply omitting ``BillRefNumber``.
+
+        Mirrors :meth:`OAuthToken.from_json`'s tolerance pattern exactly:
+        the base decoder raises naming the missing keys, and that error is
+        caught ONLY to retry with the OPTIONAL key defaulted to ``None``
+        (which the shared coercion renders as ``""``). A body missing any
+        of the four REQUIRED keys still propagates the ORIGINAL error --
+        or re-raises it when the payload cannot even be re-decoded -- so
+        optionality never widens to cover a malformed envelope.
+        """
+        try:
+            return super().from_json(data)  # type: ignore[return-value]
+        except ValueError as exc:
+            if "BillRefNumber" not in str(exc):
+                raise
+            payload: Any = data
+            if isinstance(payload, (bytes, bytearray)):
+                payload = bytes(payload).decode("utf-8", errors="replace")
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload, parse_int=safe_json_int)
+                except (ValueError, RecursionError):
+                    raise exc from None
+            if not isinstance(payload, dict):
+                raise exc from None
+            if "BillRefNumber" in payload:
+                raise exc from None
+            return super().from_json(  # type: ignore[return-value]
+                {**payload, "BillRefNumber": None})
 
 
 @dataclass(frozen=True)

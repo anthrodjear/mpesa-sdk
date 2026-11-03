@@ -75,7 +75,7 @@ func (s ServiceLimits) ceiling(max *int64) (int64, bool) {
 	return *max, true
 }
 
-// TransactionLimits holds per-service ceilings. Reversal and QR have their
+// TransactionLimits holds per-service ceilings. B2B, Tax and Bill have their
 // own entries; Default applies to services without a dedicated entry
 // (TransactionStatus and anything unspecialized).
 //
@@ -90,6 +90,9 @@ type TransactionLimits struct {
 	B2C      ServiceLimits
 	Reversal ServiceLimits
 	QR       ServiceLimits
+	B2B      ServiceLimits
+	Tax      ServiceLimits
+	Bill     ServiceLimits
 	Default  ServiceLimits
 }
 
@@ -108,6 +111,9 @@ func DefaultTransactionLimits() TransactionLimits {
 		B2C:      ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
 		Reversal: ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
 		QR:       ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
+		B2B:      ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
+		Tax:      ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
+		Bill:     ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
 		Default:  ServiceLimits{MaxPerTransaction: Limit(250_000), MaxPerDay: Limit(500_000)},
 	}
 }
@@ -154,6 +160,9 @@ const (
 	ServiceB2C      Service = "B2C"
 	ServiceReversal Service = "Reversal"
 	ServiceQR       Service = "QR"
+	ServiceB2B      Service = "B2B"
+	ServiceTax      Service = "Tax"
+	ServiceBill     Service = "Bill"
 	ServiceDefault  Service = "Default"
 )
 
@@ -172,6 +181,12 @@ func (l TransactionLimits) limitsFor(s Service) ServiceLimits {
 		return l.Reversal
 	case ServiceQR:
 		return l.QR
+	case ServiceB2B:
+		return l.B2B
+	case ServiceTax:
+		return l.Tax
+	case ServiceBill:
+		return l.Bill
 	default:
 		return l.Default
 	}
@@ -245,6 +260,12 @@ func limitsFieldName(service Service) string {
 		return "Reversal"
 	case ServiceQR:
 		return "QR"
+	case ServiceB2B:
+		return "B2B"
+	case ServiceTax:
+		return "Tax"
+	case ServiceBill:
+		return "Bill"
 	default:
 		return "Default"
 	}

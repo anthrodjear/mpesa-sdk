@@ -1,6 +1,7 @@
 // Package mpesa is a dependency-free Safaricom Daraja API engine covering
 // OAuth, STK Push/Query, B2C payouts, C2B URL registration and simulation,
-// Transaction Status, Reversal, Account Balance and Dynamic QR.
+// Transaction Status, Reversal, Account Balance, Dynamic QR, B2B Express
+// Checkout, Tax Remittance and the Bill Manager.
 //
 // # Environments and auth model
 //

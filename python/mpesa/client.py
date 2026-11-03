@@ -58,11 +58,17 @@ from .limits import (
 )
 from .requests_async import (
     AccountBalanceRequest,
+    B2BRequest,
     B2CPayoutRequest,
     ReversalRequest,
+    TaxRemittanceRequest,
     TransactionStatusRequest,
 )
 from .requests_sync import (
+    BillDeleteRequest,
+    BillQueryRequest,
+    BillRegisterRequest,
+    BillUpdateRequest,
     C2BRegisterRequest,
     C2BSimulateRequest,
     QRCodeRequest,
@@ -71,6 +77,7 @@ from .requests_sync import (
 )
 from .responses import (
     B2CResponse,
+    BillAckResponse,
     C2BAckResponse,
     ConversationResponse,
     QRCodeResponse,
@@ -89,6 +96,12 @@ TX_STATUS_PATH = "/mpesa/transactionstatus/v1/query"
 REVERSAL_PATH = "/mpesa/reversal/v1/request"
 ACCOUNT_BALANCE_PATH = "/mpesa/accountbalance/v1/query"
 QR_CODE_PATH = "/mpesa/qrcode/v1/generate"
+B2B_PAYMENT_PATH = "/mpesa/b2b/v3/paymentrequest"
+TAX_REMITTANCE_PATH = "/mpesa/b2b/v1/remittax"
+BILL_REGISTER_PATH = "/mpesa/billmanager/v1/register"
+BILL_QUERY_PATH = "/mpesa/billmanager/v1/query"
+BILL_UPDATE_PATH = "/mpesa/billmanager/v1/update"
+BILL_DELETE_PATH = "/mpesa/billmanager/v1/delete"
 
 _ERR_INVALID_TOKEN = "401.003.01"  # nosec B105  # M-Pesa error code, not a token
 
@@ -330,11 +343,13 @@ class MpesaClient:
         Only a pre-dispatch rejection (validation or daily-ceiling
         ``ValueError``) costs nothing, because it never accrues.
 
-        BUCKETS: ``reversal`` and ``generate_qr_code`` each get their own
-        daily bucket (``"reversal"`` and ``"qr"`` respectively; see
-        :mod:`mpesa.limits`); every other amount-bearing endpoint has its
-        own bucket. ``Transaction Status`` has no amount, so it never
-        accrues.
+        BUCKETS: ``reversal``, ``generate_qr_code``, ``b2b_payment``,
+        ``tax_remittance`` and ``bill_register``/``bill_update`` each get
+        their own daily bucket (``"reversal"``, ``"qr"``, ``"b2b"``,
+        ``"tax"`` and ``"bill"`` respectively; see :mod:`mpesa.limits`);
+        every other amount-bearing endpoint has its own bucket. The bill
+        manager QUERY/DELETE operations carry no amount, so they never
+        accrue.
 
         Raises:
             ValueError: the running total for this Nairobi day would pass
@@ -699,3 +714,137 @@ class MpesaClient:
         except requests.exceptions.RequestException:
             self._rollback_daily("qr", req.amount, accrual_day)
             raise
+
+    def b2b_payment(self, req: B2BRequest) -> ConversationResponse:
+        """B2B Express Checkout business payment (docs/apis/b2b.md);
+        OriginatorConversationID <- new_originator_id() and both
+        identifier types <- "4" when unset.
+
+        Daily quota accrues against the dedicated ``"b2b"`` bucket
+        (see :meth:`_accrue_daily`), consumed-on-attempt with
+        transport-error rollback only.
+
+        Example::
+
+            ack = client.b2b_payment(B2BRequest(...))
+        """
+        req = dataclasses.replace(req)
+        if not req.originator_conversation_id:
+            req.originator_conversation_id = new_originator_id()
+        if not req.sender_identifier_type:
+            req.sender_identifier_type = "4"
+        if not req.receiver_identifier_type:
+            req.receiver_identifier_type = "4"
+        req.validate(self._limits)
+        accrual_day = self._accrue_daily("b2b", req.amount)
+        try:
+            return self._post_model(B2B_PAYMENT_PATH, req.to_payload(),
+                                    ConversationResponse)
+        except requests.exceptions.RequestException:
+            self._rollback_daily("b2b", req.amount, accrual_day)
+            raise
+
+    def tax_remittance(self, req: TaxRemittanceRequest) -> ConversationResponse:
+        """Tax remittance to the KRA (docs/apis/tax-remittance.md);
+        OriginatorConversationID <- new_originator_id(), CommandID <-
+        TAX_REMITTANCE and both identifier types <- "4" when unset.
+
+        Daily quota accrues against the dedicated ``"tax"`` bucket
+        (see :meth:`_accrue_daily`), consumed-on-attempt with
+        transport-error rollback only.
+
+        Example::
+
+            ack = client.tax_remittance(TaxRemittanceRequest(...))
+        """
+        req = dataclasses.replace(req)
+        if not req.command_id:
+            req.command_id = CommandID.TAX_REMITTANCE
+        if not req.originator_conversation_id:
+            req.originator_conversation_id = new_originator_id()
+        if not req.sender_identifier_type:
+            req.sender_identifier_type = "4"
+        if not req.receiver_identifier_type:
+            req.receiver_identifier_type = "4"
+        req.validate(self._limits)
+        accrual_day = self._accrue_daily("tax", req.amount)
+        try:
+            return self._post_model(TAX_REMITTANCE_PATH, req.to_payload(),
+                                    ConversationResponse)
+        except requests.exceptions.RequestException:
+            self._rollback_daily("tax", req.amount, accrual_day)
+            raise
+
+    def bill_register(self, req: BillRegisterRequest) -> BillAckResponse:
+        """Register a bill (docs/apis/bill-manager.md); ShortCode <-
+        cfg.shortcode when empty.
+
+        Daily quota accrues against the dedicated ``"bill"`` bucket
+        (see :meth:`_accrue_daily`), consumed-on-attempt with
+        transport-error rollback only.
+
+        Example::
+
+            ack = client.bill_register(BillRegisterRequest(...))
+        """
+        req = dataclasses.replace(req)
+        if not req.short_code:
+            req.short_code = self._cfg.shortcode
+        req.validate(self._limits)
+        accrual_day = self._accrue_daily("bill", req.amount)
+        try:
+            return self._post_model(BILL_REGISTER_PATH, req.to_payload(),
+                                    BillAckResponse)
+        except requests.exceptions.RequestException:
+            self._rollback_daily("bill", req.amount, accrual_day)
+            raise
+
+    def bill_query(self, req: BillQueryRequest) -> BillAckResponse:
+        """Look up one bill (docs/apis/bill-manager.md); ShortCode <-
+        cfg.shortcode when empty. Carries no amount, so it never accrues.
+        """
+        req = dataclasses.replace(req)
+        if not req.short_code:
+            req.short_code = self._cfg.shortcode
+        req.validate(self._limits)
+        return self._post_model(BILL_QUERY_PATH, req.to_payload(),
+                                BillAckResponse)
+
+    def bill_update(self, req: BillUpdateRequest) -> BillAckResponse:
+        """Amend one bill (docs/apis/bill-manager.md); ShortCode <-
+        cfg.shortcode when empty.
+
+        Accrues the ``"bill"`` daily quota ONLY when the request actually
+        carries an amount: an omitted amount normalizes to ``None`` (see
+        :meth:`BillUpdateRequest.validate`) and a partial update moves no
+        money.
+
+        Example::
+
+            ack = client.bill_update(BillUpdateRequest(...))
+        """
+        req = dataclasses.replace(req)
+        if not req.short_code:
+            req.short_code = self._cfg.shortcode
+        req.validate(self._limits)
+        amount = req.amount
+        accrual_day = (self._accrue_daily("bill", amount)
+                       if amount else None)
+        try:
+            return self._post_model(BILL_UPDATE_PATH, req.to_payload(),
+                                    BillAckResponse)
+        except requests.exceptions.RequestException:
+            if amount:
+                self._rollback_daily("bill", amount, accrual_day)
+            raise
+
+    def bill_delete(self, req: BillDeleteRequest) -> BillAckResponse:
+        """Retire one bill (docs/apis/bill-manager.md); ShortCode <-
+        cfg.shortcode when empty. Carries no amount, so it never accrues.
+        """
+        req = dataclasses.replace(req)
+        if not req.short_code:
+            req.short_code = self._cfg.shortcode
+        req.validate(self._limits)
+        return self._post_model(BILL_DELETE_PATH, req.to_payload(),
+                                BillAckResponse)

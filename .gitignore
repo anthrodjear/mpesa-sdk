@@ -36,3 +36,6 @@ opencode.jsonc
 python/.coverage
 python/coverage.xml
 typescript/coverage/
+
+# Local markdown-preview tooling artifacts
+.offline-markdown-preview/

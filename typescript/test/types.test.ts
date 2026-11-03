@@ -14,6 +14,12 @@ import {
   TransactionStatusRequest,
   AccountBalanceRequest,
   ReversalRequest,
+  B2BPaymentRequest,
+  TaxRemittanceRequest,
+  BillRegisterRequest,
+  BillQueryRequest,
+  BillUpdateRequest,
+  BillDeleteRequest,
   C2BRegisterRequest,
   C2BSimulateRequest,
   DynamicQRRequest,
@@ -21,6 +27,7 @@ import {
   STKPushResponse,
   STKQueryResponse,
   ConversationResponse,
+  BillAckResponse,
   C2BAckResponse,
   QRCodeResponse,
   OAuthToken,
@@ -108,6 +115,78 @@ describe("Request interfaces compile", () => {
     expect(req.resultURL).toBe("https://example.com/result");
   });
 
+  it("B2BPaymentRequest constructs (Initiator, NOT InitiatorName)", () => {
+    const req: B2BPaymentRequest = {
+      initiator: "testapi",
+      securityCredential: "encrypted",
+      commandID: CommandID.BusinessPayBill,
+      amount: 1000,
+      partyA: "600000",
+      partyB: "600123",
+      accountReference: "INV-001",
+      remarks: "services",
+      queueTimeOutURL: "https://example.com/timeout",
+      resultURL: "https://example.com/result",
+    };
+    expect(req.initiator).toBe("testapi");
+    expect(req.commandID.value).toBe("BusinessPayBill");
+    // The B2C-only `initiatorName` spelling is absent from this interface.
+    expect((req as Record<string, unknown>)["initiatorName"]).toBeUndefined();
+    // Optionals are omitted (not explicitly `undefined`).
+    expect((req as Record<string, unknown>)["originatorConversationID"]).toBeUndefined();
+    expect((req as Record<string, unknown>)["senderIdentifierType"]).toBeUndefined();
+    expect((req as Record<string, unknown>)["receiverIdentifierType"]).toBeUndefined();
+  });
+
+  it("TaxRemittanceRequest extends the B2B core with the three tax fields", () => {
+    const req: TaxRemittanceRequest = {
+      initiator: "testapi",
+      securityCredential: "encrypted",
+      commandID: CommandID.TaxRemittance,
+      amount: 5000,
+      partyA: "600000",
+      partyB: "572700",
+      accountReference: "TAX-2024-Q3",
+      remarks: "VAT Q3 2024",
+      taxPeriod: "2024Q3",
+      taxObligation: "VAT",
+      taxPayerPIN: "A001234567X",
+      queueTimeOutURL: "https://example.com/timeout",
+      resultURL: "https://example.com/result",
+    };
+    expect(req.taxPeriod).toBe("2024Q3");
+    expect(req.taxObligation).toBe("VAT");
+    expect(req.taxPayerPIN).toBe("A001234567X");
+    expect(req.commandID.value).toBe("TaxRemittance");
+  });
+
+  it("BillManager requests construct; update leaves every field optional", () => {
+    const register: BillRegisterRequest = {
+      shortCode: "600000",
+      billRefNumber: "INV-001",
+      billName: "Invoice 001",
+      amount: 1000,
+      expiryDate: "2024-12-31",
+      callBackURL: "https://example.com/bill",
+    };
+    expect(register.billName).toBe("Invoice 001");
+    // PII optionals stay omittable.
+    expect((register as Record<string, unknown>)["payerNumber"]).toBeUndefined();
+    expect((register as Record<string, unknown>)["payerName"]).toBeUndefined();
+
+    const query: BillQueryRequest = { shortCode: "600000", billRefNumber: "INV-001" };
+    expect(Object.keys(query)).toHaveLength(2);
+
+    const del: BillDeleteRequest = { shortCode: "600000", billRefNumber: "INV-001" };
+    expect(Object.keys(del)).toHaveLength(2);
+
+    // A partial update: only the identity pair.
+    const partial: BillUpdateRequest = { shortCode: "600000", billRefNumber: "INV-001" };
+    expect(partial.amount).toBeUndefined();
+    expect(partial.expiryDate).toBeUndefined();
+    expect(partial.callBackURL).toBeUndefined();
+  });
+
   it("TransactionStatusRequest constructs with resultURL and queueTimeOutURL", () => {
     const req: TransactionStatusRequest = {
       initiator: "test",
@@ -191,6 +270,29 @@ describe("Request interfaces compile", () => {
 // ─── Section 2: Response interfaces compile ──────────────────────────────────
 
 describe("Response interfaces compile", () => {
+  it("BillAckResponse: BillRefNumber is OPTIONAL (register echoes it, the rest do not)", () => {
+    // With the echo — register's published capture.
+    const withRef: BillAckResponse = {
+      ResponseCode: "0",
+      ResponseDescription: "Accept the service request successfully.",
+      ConversationID: "AG_2",
+      OriginatorConversationID: "o-bill",
+      BillRefNumber: "INV-001",
+    };
+    expect(withRef.BillRefNumber).toBe("INV-001");
+
+    // Without it — query/update/delete captures. The absence is tolerated,
+    // so callers must test `!== undefined` and fall back to the ref they
+    // sent rather than assume `""`.
+    const withoutRef: BillAckResponse = {
+      ResponseCode: "0",
+      ResponseDescription: "Accept the service request successfully.",
+      ConversationID: "AG_2",
+      OriginatorConversationID: "o-bill",
+    };
+    expect(withoutRef.BillRefNumber).toBeUndefined();
+  });
+
   it("STKPushResponse constructs with PascalCase wire keys", () => {
     const res: STKPushResponse = {
       MerchantRequestID: "9210397",

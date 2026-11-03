@@ -506,4 +506,108 @@ describe("logSafeRequest", () => {
     expect(json).not.toContain("LIVE-CREDENTIAL");
     expect(json).toContain("[REDACTED]");
   });
+
+  // ── New secret / PII fields (B2B, Tax Remittance, Bill Manager) ──────────
+
+  it("masks TaxPayerPIN (Tax Remittance) — a taxpayer PIN is a secret", () => {
+    const req = {
+      initiator: "testapi",
+      securityCredential: "cred",
+      taxPeriod: "2024Q3",
+      taxObligation: "VAT",
+      taxPayerPIN: "A001234567X",
+    };
+    const out = logSafeRequest(req);
+    expect(out.taxPayerPIN).toBe("[REDACTED]");
+    // The period label and obligation are not PII and stay readable.
+    expect(out.taxPeriod).toBe("2024Q3");
+    expect(out.taxObligation).toBe("VAT");
+    expect(JSON.stringify(out)).not.toContain("A001234567X");
+  });
+
+  it("masks payerNumber/payerName (Bill Manager) — payer identity is PII", () => {
+    const req = {
+      shortCode: "600000",
+      billRefNumber: "INV-001",
+      billName: "Invoice 001",
+      payerNumber: "254712345678",
+      payerName: "Jane Doe",
+    };
+    const out = logSafeRequest(req);
+    expect(out.payerNumber).toBe("[REDACTED]");
+    expect(out.payerName).toBe("[REDACTED]");
+    const json = JSON.stringify(out);
+    expect(json).not.toContain("254712345678");
+    expect(json).not.toContain("Jane Doe");
+  });
+
+  it("does NOT mask billRefNumber — it is the caller's join key, not a secret", () => {
+    const req = {
+      shortCode: "600000",
+      billRefNumber: "INV-001",
+      payerName: "Jane Doe",
+    };
+    const out = logSafeRequest(req);
+    expect(out.billRefNumber).toBe("INV-001");
+    expect(out.shortCode).toBe("600000");
+  });
+
+  it("never mutates the caller's B2B/Tax/Bill request object", () => {
+    const req = {
+      initiator: "testapi",
+      securityCredential: "LIVE",
+      taxPayerPIN: "A001234567X",
+      payerNumber: "254712345678",
+    };
+    logSafeRequest(req);
+    expect(req.securityCredential).toBe("LIVE");
+    expect(req.taxPayerPIN).toBe("A001234567X");
+    expect(req.payerNumber).toBe("254712345678");
+  });
+
+  it("drops the callback-token query from the B2B/Tax/Bill URL fields", () => {
+    // queueTimeOutURL / resultURL (B2B + Tax Remittance) and callBackURL
+    // (Bill Manager) are already in URL_FIELDS — pin that they stay there,
+    // because a bearer capability token leaks wherever URLs are logged.
+    const out = logSafeRequest({
+      queueTimeOutURL: "https://mydomain.com/timeout?token=0123456789abcdef",
+      resultURL: "https://mydomain.com/result?token=deadbeef",
+      callBackURL: "https://mydomain.com/bill?token=cafebabe",
+      initiator: "testapi",
+    });
+    expect(out.queueTimeOutURL).toBe("https://mydomain.com/timeout");
+    expect(out.resultURL).toBe("https://mydomain.com/result");
+    expect(out.callBackURL).toBe("https://mydomain.com/bill");
+    expect(JSON.stringify(out)).not.toContain("token");
+  });
+
+  it("JSON.stringify of a full Tax Remittance request carries no secret at all", () => {
+    const json = JSON.stringify(
+      logSafeRequest({
+        originatorConversationID: "tax-ocid",
+        initiator: "testapi",
+        securityCredential: "LIVE-CREDENTIAL",
+        commandID: "TaxRemittance",
+        senderIdentifierType: "4",
+        receiverIdentifierType: "4",
+        amount: 5000,
+        partyA: "600000",
+        partyB: "572700",
+        accountReference: "TAX-2024-Q3",
+        remarks: "VAT Q3 2024",
+        taxPeriod: "2024Q3",
+        taxObligation: "VAT",
+        taxPayerPIN: "A001234567X",
+        queueTimeOutURL: "https://mydomain.com/timeout?token=0123456789abcdef",
+        resultURL: "https://mydomain.com/result?token=deadbeef",
+      }),
+    );
+    expect(json).not.toContain("A001234567X");
+    expect(json).not.toContain("LIVE-CREDENTIAL");
+    expect(json).not.toContain("token=");
+    // The non-secret identifiers survive so the line stays debuggable.
+    expect(json).toContain("TAX-2024-Q3");
+    expect(json).toContain("2024Q3");
+    expect(json).toContain("[REDACTED]");
+  });
 });

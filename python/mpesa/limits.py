@@ -120,6 +120,9 @@ def _resolve_transaction_limits(
         default=_merge_service(chosen.default, _DEFAULT_DEFAULT),
         reversal=_merge_service(chosen.reversal, _DEFAULT_DEFAULT),
         qr=_merge_service(chosen.qr, _DEFAULT_DEFAULT),
+        b2b=_merge_service(chosen.b2b, _DEFAULT_DEFAULT),
+        tax=_merge_service(chosen.tax, _DEFAULT_DEFAULT),
+        bill=_merge_service(chosen.bill, _DEFAULT_DEFAULT),
     )
 
 
@@ -169,13 +172,15 @@ class TransactionLimits:
 
     Service selection is per ENDPOINT (see ``MpesaClient``): ``stk`` covers
     STK Push, ``c2b`` covers C2B simulate, ``b2c`` covers B2C payout,
-    ``reversal`` covers Reversal, ``qr`` covers dynamic QR, and
+    ``reversal`` covers Reversal, ``qr`` covers dynamic QR, ``b2b`` covers
+    B2B Express Checkout, ``tax`` covers Tax Remittance, ``bill`` covers
+    the amount-bearing Bill Manager operations (register/update), and
     ``default`` covers everything else that carries an amount (Transaction
-    Status, etc.). Reversal and dynamic QR each get their OWN bucket for
-    BOTH bounds: the per-transaction check spends ``"reversal"``/``"qr"``,
-    and so does the daily accrual when ``Config.track_daily`` is on
-    (``MpesaClient._accrue_daily`` is called with the service name
-    ``"reversal"`` or ``"qr"`` respectively), so one service never resolves
+    Status, etc.). Reversal, dynamic QR, B2B, Tax and Bill each get their
+    OWN bucket for BOTH bounds: the per-transaction check spends
+    ``"reversal"``/``"qr"``/``"b2b"``/``"tax"``/``"bill"``, and so does the
+    daily accrual when ``Config.track_daily`` is on (``MpesaClient._accrue_daily``
+    is called with the matching service name), so one service never resolves
     to two different ceilings inside one engine. The daily quota is
     consumed-on-attempt: accrued before dispatch, rolled back only on
     transport-level failures (``requests.exceptions.RequestException``) so
@@ -211,6 +216,9 @@ class TransactionLimits:
     default: ServiceLimits = ServiceLimits()
     reversal: ServiceLimits = ServiceLimits()
     qr: ServiceLimits = ServiceLimits()
+    b2b: ServiceLimits = ServiceLimits()
+    tax: ServiceLimits = ServiceLimits()
+    bill: ServiceLimits = ServiceLimits()
 
 
 #: The documented baseline, resolved and ready to enforce (see the private

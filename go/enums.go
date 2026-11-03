@@ -58,6 +58,15 @@ const (
 	// CommandAccountBalance is wire value "AccountBalance", the only valid
 	// CommandID for Account Balance.
 	CommandAccountBalance CommandID = "AccountBalance"
+	// CommandBusinessPayBill is wire value "BusinessPayBill", one of the two
+	// valid CommandIDs for B2B Express Checkout: the payer settles a bill.
+	CommandBusinessPayBill CommandID = "BusinessPayBill"
+	// CommandBusinessBuyGoods is wire value "BusinessBuyGoods", one of the
+	// two valid CommandIDs for B2B Express Checkout: the payer buys goods.
+	CommandBusinessBuyGoods CommandID = "BusinessBuyGoods"
+	// CommandTaxRemittance is wire value "TaxRemittance", the only valid
+	// CommandID for Tax Remittance.
+	CommandTaxRemittance CommandID = "TaxRemittance"
 
 	// ResponseTypeCompleted is wire value "Completed" for C2B URL
 	// registration: complete the transaction when validation is unreachable.

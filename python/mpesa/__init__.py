@@ -1,8 +1,9 @@
 """M-Pesa Daraja SDK -- public API surface.
 
-Covers all nine business endpoints of the Safaricom Daraja platform
-(STK Push/Query, B2C payout, Transaction Status, Reversal, Account
-Balance, C2B register/simulate, Dynamic QR -- contracts in docs/apis/).
+Covers all twelve business endpoints of the Safaricom Daraja platform
+(STK Push/Query, B2B payout, B2C payout, Tax Remittance, Transaction
+Status, Reversal, Account Balance, C2B register/simulate, Dynamic QR,
+Bill Manager register/query/update/delete -- contracts in docs/apis/).
 Quickstart (credentials via env vars, per client.py convention)::
 
     import os
@@ -46,11 +47,17 @@ from .helpers import generate_password, normalize_phone, security_credential
 from .limits import DEFAULT_TRANSACTION_LIMITS, ServiceLimits, TransactionLimits
 from .requests_async import (
     AccountBalanceRequest,
+    B2BRequest,
     B2CPayoutRequest,
     ReversalRequest,
+    TaxRemittanceRequest,
     TransactionStatusRequest,
 )
 from .requests_sync import (
+    BillDeleteRequest,
+    BillQueryRequest,
+    BillRegisterRequest,
+    BillUpdateRequest,
     C2BRegisterRequest,
     C2BSimulateRequest,
     QRCodeRequest,
@@ -59,6 +66,7 @@ from .requests_sync import (
 )
 from .responses import (
     B2CResponse,
+    BillAckResponse,
     C2BAckResponse,
     ConversationResponse,
     OAuthToken,
@@ -73,9 +81,15 @@ __version__ = "0.6.0"
 __all__ = [
     "AccountBalanceRequest",
     "AsyncResult",
+    "B2BRequest",
     "B2CPayoutRequest",
     "B2CResponse",
     "BalanceSegment",
+    "BillAckResponse",
+    "BillDeleteRequest",
+    "BillQueryRequest",
+    "BillRegisterRequest",
+    "BillUpdateRequest",
     "C2BAckResponse",
     "C2BRegisterRequest",
     "C2BSimulateRequest",
@@ -104,6 +118,7 @@ __all__ = [
     "STKQueryResponse",
     "ServiceLimits",
     "StkCallbackResult",
+    "TaxRemittanceRequest",
     "TokenManager",
     "TransactionLimits",
     "TransactionStatusRequest",

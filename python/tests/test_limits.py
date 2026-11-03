@@ -214,6 +214,9 @@ def test_defaults_match_the_documented_baseline():
         default=ServiceLimits(250_000, 500_000),
         reversal=ServiceLimits(250_000, 500_000),
         qr=ServiceLimits(250_000, 500_000),
+        b2b=ServiceLimits(250_000, 500_000),
+        tax=ServiceLimits(250_000, 500_000),
+        bill=ServiceLimits(250_000, 500_000),
     )
     # Fields start UNSET on a fresh ServiceLimits; "unlimited" is written as
     # an explicit 0 (see test_explicit_zero_disables_only_that_ceiling).

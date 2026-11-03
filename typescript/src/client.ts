@@ -66,6 +66,12 @@ import type {
   STKPushRequest,
   STKQueryRequest,
   B2CRequest,
+  B2BPaymentRequest,
+  TaxRemittanceRequest,
+  BillRegisterRequest,
+  BillQueryRequest,
+  BillUpdateRequest,
+  BillDeleteRequest,
   TransactionStatusRequest,
   AccountBalanceRequest,
   ReversalRequest,
@@ -75,6 +81,7 @@ import type {
   STKPushResponse,
   STKQueryResponse,
   ConversationResponse,
+  BillAckResponse,
   C2BAckResponse,
   QRCodeResponse,
 } from "./types.js";
@@ -109,6 +116,24 @@ const ACCOUNT_BALANCE_PATH = "/mpesa/accountbalance/v1/query";
 /** Dynamic QR code generation path. */
 const QR_CODE_PATH = "/mpesa/qrcode/v1/generate";
 
+/** B2B Express Checkout payment request path. */
+const B2B_PATH = "/mpesa/b2b/v3/paymentrequest";
+
+/** Tax remittance request path. */
+const TAX_REMITTANCE_PATH = "/mpesa/b2b/v1/remittax";
+
+/** Bill Manager — register a bill path. */
+const BILL_REGISTER_PATH = "/mpesa/billmanager/v1/register";
+
+/** Bill Manager — query a bill path. */
+const BILL_QUERY_PATH = "/mpesa/billmanager/v1/query";
+
+/** Bill Manager — amend a bill path. */
+const BILL_UPDATE_PATH = "/mpesa/billmanager/v1/update";
+
+/** Bill Manager — retire a bill path. */
+const BILL_DELETE_PATH = "/mpesa/billmanager/v1/delete";
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /** Daraja invalid-token error code — triggers retry-once. */
@@ -133,6 +158,14 @@ const B2C_COMMANDS = new Set<string>([
 
 /** TrxCode values accepted by the QR endpoint (docs/apis/dynamic-qr.md). */
 const QR_TRX_CODES = new Set<string>(QRTrxCode.ALL.map((c) => c.value));
+
+// ─── B2B command whitelist ────────────────────────────────────────────────────
+
+/** Commands accepted by the B2B endpoint (docs/apis/b2b.md). */
+const B2B_COMMANDS = new Set<string>([
+  CommandID.BusinessPayBill.value,
+  CommandID.BusinessBuyGoods.value,
+]);
 
 // ─── Validation helpers ───────────────────────────────────────────────────────
 
@@ -403,6 +436,29 @@ function requireLengthRange(field: string, value: string, min: number, max: numb
   if (n < min || n > max) {
     throw new Error(`mpesa: ${field} must be ${min}-${max} characters, got ${n}`);
   }
+}
+
+/**
+ * Shortcode SHAPE gate — the same rule `stkPush` applies inline to
+ * `BusinessShortCode`/`PartyB`, extracted because the B2B and Bill Manager
+ * endpoints each carry several shortcode fields (B2B `PartyA`/`PartyB`,
+ * Bill Manager `ShortCode`). `"abc"`, `"12"` and an 11-digit run are
+ * rejected locally instead of surfacing as a gateway `500.001.1001`; the
+ * LENGTH is reported, never the value, so an oversized input cannot
+ * balloon the error string.
+ *
+ * @returns The trimmed wire value (what actually goes on the request).
+ */
+function requireShortcode(field: string, value: string): string {
+  const v = (value || "").trim();
+  if (!/^\d{5,10}$/.test(v)) {
+    throw v === ""
+      ? new Error(`mpesa: ${field} is required`)
+      : new Error(
+          `mpesa: ${field} must be 5-10 ASCII digits (got ${v.length} characters)`,
+        );
+  }
+  return v;
 }
 
 /**
@@ -1184,6 +1240,188 @@ export class MpesaClient {
   }
 
   /**
+   * Pay another business (B2B Express Checkout) — async. Injected
+   * defaults: `originatorConversationID` ← auto-generated (16 lowercase
+   * hex chars, ≤20 per Daraja constraint), `senderIdentifierType` /
+   * `receiverIdentifierType` ← `"4"` (organization shortcode).
+   *
+   * Wire-key trap: the initiator field is `Initiator` here, NOT B2C's
+   * `InitiatorName` (docs/apis/b2b.md).
+   *
+   * @throws {Error} On validation failure (before any network I/O).
+   *
+   * @example
+   * ```ts
+   * const ack = await client.b2bPayment({
+   *   initiator: "testapi",
+   *   securityCredential: cred,
+   *   commandID: CommandID.BusinessPayBill,
+   *   amount: 1000, partyA: "600000", partyB: "600123",
+   *   accountReference: "INV-001", remarks: "services",
+   *   queueTimeOutURL: "https://mydomain.com/timeout",
+   *   resultURL: "https://mydomain.com/result",
+   * });
+   * ```
+   */
+  async b2bPayment(req: B2BPaymentRequest): Promise<ConversationResponse> {
+    // Value copy — caller's object is never mutated
+    const r = { ...req };
+
+    // Inject defaults
+    if (!r.originatorConversationID) {
+      r.originatorConversationID = newOriginatorID();
+    }
+    if (!r.senderIdentifierType) r.senderIdentifierType = "4";
+    if (!r.receiverIdentifierType) r.receiverIdentifierType = "4";
+
+    // Validate
+    requireNonEmpty("Initiator", r.initiator);
+    requireNonEmpty("SecurityCredential", r.securityCredential);
+    // OriginatorConversationID is the async idempotency key — same
+    // 1..19-char contract as b2cPayout (overlong ids draw a gateway
+    // 500.002.1001, so fail fast here instead).
+    requireLengthRange("OriginatorConversationID", r.originatorConversationID, 1, 19);
+    if (!B2B_COMMANDS.has(r.commandID.value)) {
+      throw new Error(
+        `mpesa: B2B CommandID ${JSON.stringify(r.commandID.value)} not in {BusinessPayBill, BusinessBuyGoods}`,
+      );
+    }
+    requirePositiveInt("Amount", r.amount);
+    // Shortcode SHAPE on both parties: the receiver is a paybill shortcode
+    // or a Buy Goods till, never an MSISDN (docs/apis/b2b.md).
+    r.partyA = requireShortcode("PartyA", r.partyA);
+    r.partyB = requireShortcode("PartyB", r.partyB);
+    requireNonEmpty("AccountReference", r.accountReference);
+    requirePrintableMaxLen("AccountReference", r.accountReference, 64);
+    requireNonEmpty("Remarks", r.remarks);
+    requirePrintableMaxLen("Remarks", r.remarks, 100);
+    requireURL("QueueTimeOutURL", r.queueTimeOutURL);
+    requireURL("ResultURL", r.resultURL);
+
+    // Configurable limits gate — dedicated `b2b` bucket. Fail fast before
+    // any network I/O (per-transaction always; daily only when trackDaily
+    // is on).
+    const rollbackDaily = this._enforceLimits("b2b", r.amount);
+
+    // Build payload — `Initiator` (NOT `InitiatorName`) is B2B's wire key.
+    const payload: Record<string, unknown> = {
+      OriginatorConversationID: r.originatorConversationID,
+      Initiator: r.initiator,
+      SecurityCredential: r.securityCredential,
+      CommandID: r.commandID,
+      SenderIdentifierType: r.senderIdentifierType,
+      ReceiverIdentifierType: r.receiverIdentifierType,
+      Amount: r.amount,
+      PartyA: r.partyA,
+      PartyB: r.partyB,
+      AccountReference: r.accountReference,
+      Remarks: r.remarks,
+      QueueTimeOutURL: r.queueTimeOutURL,
+      ResultURL: r.resultURL,
+    };
+
+    return this._post(
+      B2B_PATH,
+      payload,
+      (body) => decodeJsonObject<ConversationResponse>(body, B2B_PATH),
+      { onTransportError: rollbackDaily },
+    );
+  }
+
+  /**
+   * Remit tax (KRA and other obligations) to a revenue authority
+   * shortcode — async. The B2B core plus `TaxPeriod` / `TaxObligation` /
+   * `TaxPayerPIN`, with `CommandID` pinned to `TaxRemittance`.
+   *
+   * @throws {Error} On validation failure (before any network I/O).
+   *
+   * @example
+   * ```ts
+   * const ack = await client.taxRemittance({
+   *   initiator: "testapi",
+   *   securityCredential: cred,
+   *   commandID: CommandID.TaxRemittance,
+   *   amount: 5000, partyA: "600000", partyB: "572700",
+   *   accountReference: "TAX-2024-Q3", remarks: "VAT Q3 2024",
+   *   taxPeriod: "2024Q3", taxObligation: "VAT", taxPayerPIN: "A001234567X",
+   *   queueTimeOutURL: "https://mydomain.com/timeout",
+   *   resultURL: "https://mydomain.com/result",
+   * });
+   * ```
+   */
+  async taxRemittance(req: TaxRemittanceRequest): Promise<ConversationResponse> {
+    // Value copy — caller's object is never mutated
+    const r = { ...req };
+
+    // Inject defaults (same rule as b2bPayment)
+    if (!r.originatorConversationID) {
+      r.originatorConversationID = newOriginatorID();
+    }
+    if (!r.senderIdentifierType) r.senderIdentifierType = "4";
+    if (!r.receiverIdentifierType) r.receiverIdentifierType = "4";
+
+    // Validate — the B2B core with CommandID pinned
+    requireNonEmpty("Initiator", r.initiator);
+    requireNonEmpty("SecurityCredential", r.securityCredential);
+    requireLengthRange("OriginatorConversationID", r.originatorConversationID, 1, 19);
+    if (r.commandID.value !== CommandID.TaxRemittance.value) {
+      throw new Error("mpesa: TaxRemittance CommandID must be TaxRemittance");
+    }
+    requirePositiveInt("Amount", r.amount);
+    r.partyA = requireShortcode("PartyA", r.partyA);
+    r.partyB = requireShortcode("PartyB", r.partyB);
+    requireNonEmpty("AccountReference", r.accountReference);
+    requirePrintableMaxLen("AccountReference", r.accountReference, 64);
+    requireNonEmpty("Remarks", r.remarks);
+    requirePrintableMaxLen("Remarks", r.remarks, 100);
+    // Tax-specific fields
+    requireNonEmpty("TaxPeriod", r.taxPeriod);
+    requirePrintableMaxLen("TaxPeriod", r.taxPeriod, 16);
+    requireNonEmpty("TaxObligation", r.taxObligation);
+    // Free text, NOT an enum: Safaricom's obligation set (VAT, PAYE,
+    // Excise, …) is not closed and a bespoke allow-list would reject a
+    // valid new obligation.
+    requirePrintableMaxLen("TaxObligation", r.taxObligation, 32);
+    // TaxPayerPIN is a SECRET — masked by logSafeRequest like
+    // securityCredential; only shape/length is checked here, never echoed.
+    requireNonEmpty("TaxPayerPIN", r.taxPayerPIN);
+    requirePrintableMaxLen("TaxPayerPIN", r.taxPayerPIN, 64);
+    requireURL("QueueTimeOutURL", r.queueTimeOutURL);
+    requireURL("ResultURL", r.resultURL);
+
+    // Configurable limits gate — dedicated `tax` bucket. Fail fast before
+    // any network I/O (per-transaction always; daily only when trackDaily
+    // is on).
+    const rollbackDaily = this._enforceLimits("tax", r.amount);
+
+    const payload: Record<string, unknown> = {
+      OriginatorConversationID: r.originatorConversationID,
+      Initiator: r.initiator,
+      SecurityCredential: r.securityCredential,
+      CommandID: r.commandID,
+      SenderIdentifierType: r.senderIdentifierType,
+      ReceiverIdentifierType: r.receiverIdentifierType,
+      Amount: r.amount,
+      PartyA: r.partyA,
+      PartyB: r.partyB,
+      AccountReference: r.accountReference,
+      Remarks: r.remarks,
+      TaxPeriod: r.taxPeriod,
+      TaxObligation: r.taxObligation,
+      TaxPayerPIN: r.taxPayerPIN,
+      QueueTimeOutURL: r.queueTimeOutURL,
+      ResultURL: r.resultURL,
+    };
+
+    return this._post(
+      TAX_REMITTANCE_PATH,
+      payload,
+      (body) => decodeJsonObject<ConversationResponse>(body, TAX_REMITTANCE_PATH),
+      { onTransportError: rollbackDaily },
+    );
+  }
+
+  /**
    * Query any transaction by receipt XOR conversation ID. Injected
    * defaults: `commandID` ← TransactionStatusQuery, `identifierType`
    * ← "4" (organization shortcode).
@@ -1496,6 +1734,228 @@ export class MpesaClient {
       payload,
       (body) => decodeJsonObject<C2BAckResponse>(body, C2B_SIMULATE_PATH),
       { onTransportError: rollbackDaily },
+    );
+  }
+
+  /**
+   * Register a bill on Bill Manager (docs/apis/bill-manager.md). No
+   * credential — the shortcode owns the bill.
+   *
+   * `payerNumber`/`payerName` are OPTIONAL PII: only a SUPPLIED number is
+   * normalized to gateway form, and an omitted one is omitted from the
+   * wire. `billRefNumber` stays visible in logs — it is the caller's join
+   * key, not a secret.
+   *
+   * @throws {Error} On validation failure (before any network I/O).
+   *
+   * @example
+   * ```ts
+   * const ack = await client.billRegister({
+   *   shortCode: "600000",
+   *   billRefNumber: "INV-001",
+   *   billName: "Invoice 001",
+   *   amount: 1000,
+   *   expiryDate: "2024-12-31",
+   *   callBackURL: "https://mydomain.com/bill",
+   * });
+   * ```
+   */
+  async billRegister(req: BillRegisterRequest): Promise<BillAckResponse> {
+    // Value copy — caller's object is never mutated
+    const r = { ...req };
+
+    // Validate
+    r.shortCode = requireShortcode("ShortCode", r.shortCode);
+    requireNonEmpty("BillRefNumber", r.billRefNumber);
+    requirePrintableMaxLen("BillRefNumber", r.billRefNumber, 32);
+    requireNonEmpty("BillName", r.billName);
+    requirePrintableMaxLen("BillName", r.billName, 64);
+    requirePositiveInt("Amount", r.amount);
+    requireNonEmpty("ExpiryDate", r.expiryDate);
+    // Shape only (printable, length-capped): a strict YYYY-MM-DD parse is
+    // deliberately NOT here — the gateway owns the date format, and
+    // rejecting a valid-but-unusual spelling would be a local guess.
+    requirePrintableMaxLen("ExpiryDate", r.expiryDate, 10);
+    requireURL("CallBackURL", r.callBackURL);
+    // Optional payer identity — an empty value means "not supplied", so
+    // only a NON-empty one is validated (and normalized).
+    if (r.payerNumber !== undefined && r.payerNumber.trim().length > 0) {
+      r.payerNumber = normalizePhone(r.payerNumber);
+    }
+    if (r.payerName !== undefined && r.payerName.trim().length > 0) {
+      requirePrintableMaxLen("PayerName", r.payerName, 64);
+    }
+
+    // Configurable limits gate — dedicated `bill` bucket. Fail fast before
+    // any network I/O (per-transaction always; daily only when trackDaily
+    // is on).
+    const rollbackDaily = this._enforceLimits("bill", r.amount);
+
+    // Build payload — optional PII fields are omitted when unset
+    const payload: Record<string, unknown> = {
+      ShortCode: r.shortCode,
+      BillRefNumber: r.billRefNumber,
+      BillName: r.billName,
+      Amount: r.amount,
+      ExpiryDate: r.expiryDate,
+      CallBackURL: r.callBackURL,
+    };
+    if (r.payerNumber) {
+      payload["PayerNumber"] = r.payerNumber;
+    }
+    if (r.payerName) {
+      payload["PayerName"] = r.payerName;
+    }
+
+    return this._post(
+      BILL_REGISTER_PATH,
+      payload,
+      (body) => decodeJsonObject<BillAckResponse>(body, BILL_REGISTER_PATH),
+      { onTransportError: rollbackDaily },
+    );
+  }
+
+  /**
+   * Look up one bill — POST /mpesa/billmanager/v1/query. Two keys, no
+   * amount, no URL, so no limits gate (a query REPORTS an amount, it
+   * never sends one).
+   *
+   * @throws {Error} On validation failure (before any network I/O).
+   *
+   * @example
+   * ```ts
+   * const ack = await client.billQuery({
+   *   shortCode: "600000", billRefNumber: "INV-001",
+   * });
+   * ```
+   */
+  async billQuery(req: BillQueryRequest): Promise<BillAckResponse> {
+    // Value copy — caller's object is never mutated
+    const r = { ...req };
+
+    // Validate
+    r.shortCode = requireShortcode("ShortCode", r.shortCode);
+    requireNonEmpty("BillRefNumber", r.billRefNumber);
+    requirePrintableMaxLen("BillRefNumber", r.billRefNumber, 32);
+
+    const payload: Record<string, unknown> = {
+      ShortCode: r.shortCode,
+      BillRefNumber: r.billRefNumber,
+    };
+
+    return this._post(
+      BILL_QUERY_PATH,
+      payload,
+      (body) => decodeJsonObject<BillAckResponse>(body, BILL_QUERY_PATH),
+    );
+  }
+
+  /**
+   * Amend one bill — POST /mpesa/billmanager/v1/update.
+   *
+   * Every field beyond `shortCode`/`billRefNumber` is OPTIONAL and an
+   * omitted one is OMITTED from the wire payload, not sent as
+   * zero/empty — partial updates are the point of the endpoint.
+   *
+   * @throws {Error} On validation failure (before any network I/O).
+   *
+   * @example
+   * ```ts
+   * const ack = await client.billUpdate({
+   *   shortCode: "600000", billRefNumber: "INV-001", amount: 1500,
+   * });
+   * ```
+   */
+  async billUpdate(req: BillUpdateRequest): Promise<BillAckResponse> {
+    // Value copy — caller's object is never mutated
+    const r = { ...req };
+
+    // Validate
+    r.shortCode = requireShortcode("ShortCode", r.shortCode);
+    requireNonEmpty("BillRefNumber", r.billRefNumber);
+    requirePrintableMaxLen("BillRefNumber", r.billRefNumber, 32);
+    if (r.amount !== undefined) requirePositiveInt("Amount", r.amount);
+    if (r.expiryDate !== undefined) {
+      requireNonEmpty("ExpiryDate", r.expiryDate);
+      requirePrintableMaxLen("ExpiryDate", r.expiryDate, 10);
+    }
+    if (r.callBackURL !== undefined) requireURL("CallBackURL", r.callBackURL);
+    if (r.payerNumber !== undefined && r.payerNumber.trim().length > 0) {
+      r.payerNumber = normalizePhone(r.payerNumber);
+    }
+    if (r.payerName !== undefined && r.payerName.trim().length > 0) {
+      requirePrintableMaxLen("PayerName", r.payerName, 64);
+    }
+
+    // Configurable limits gate — dedicated `bill` bucket, taken ONLY when
+    // the caller actually sends an amount: an amount-free partial update
+    // has nothing to spend, and the daily accumulator cannot add
+    // `undefined`.
+    let rollbackDaily: () => void = () => {};
+    if (r.amount !== undefined) {
+      rollbackDaily = this._enforceLimits("bill", r.amount);
+    }
+
+    // Build payload — optional fields omitted when unset (partial update)
+    const payload: Record<string, unknown> = {
+      ShortCode: r.shortCode,
+      BillRefNumber: r.billRefNumber,
+    };
+    if (r.amount !== undefined) {
+      payload["Amount"] = r.amount;
+    }
+    if (r.expiryDate) {
+      payload["ExpiryDate"] = r.expiryDate;
+    }
+    if (r.callBackURL) {
+      payload["CallBackURL"] = r.callBackURL;
+    }
+    if (r.payerNumber) {
+      payload["PayerNumber"] = r.payerNumber;
+    }
+    if (r.payerName) {
+      payload["PayerName"] = r.payerName;
+    }
+
+    return this._post(
+      BILL_UPDATE_PATH,
+      payload,
+      (body) => decodeJsonObject<BillAckResponse>(body, BILL_UPDATE_PATH),
+      { onTransportError: rollbackDaily },
+    );
+  }
+
+  /**
+   * Retire one bill — POST /mpesa/billmanager/v1/delete. Two keys,
+   * nothing optional, no amount, so no limits gate.
+   *
+   * @throws {Error} On validation failure (before any network I/O).
+   *
+   * @example
+   * ```ts
+   * const ack = await client.billDelete({
+   *   shortCode: "600000", billRefNumber: "INV-001",
+   * });
+   * ```
+   */
+  async billDelete(req: BillDeleteRequest): Promise<BillAckResponse> {
+    // Value copy — caller's object is never mutated
+    const r = { ...req };
+
+    // Validate
+    r.shortCode = requireShortcode("ShortCode", r.shortCode);
+    requireNonEmpty("BillRefNumber", r.billRefNumber);
+    requirePrintableMaxLen("BillRefNumber", r.billRefNumber, 32);
+
+    const payload: Record<string, unknown> = {
+      ShortCode: r.shortCode,
+      BillRefNumber: r.billRefNumber,
+    };
+
+    return this._post(
+      BILL_DELETE_PATH,
+      payload,
+      (body) => decodeJsonObject<BillAckResponse>(body, BILL_DELETE_PATH),
     );
   }
 

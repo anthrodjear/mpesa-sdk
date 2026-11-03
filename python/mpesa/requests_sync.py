@@ -1,4 +1,4 @@
-"""Sync-side request models (STK, C2B, QR) mirroring go/requests.go.
+"""Sync-side request models (STK, C2B, QR, Bill Manager) mirroring go/requests.go.
 
 Construct via future ``Client`` methods or :meth:`validate` before
 sending -- ``to_payload`` refuses unvalidated models (RuntimeError);
@@ -44,7 +44,8 @@ from .limits import (
 )
 
 __all__ = ["STKPushRequest", "STKQueryRequest", "C2BRegisterRequest",
-           "C2BSimulateRequest", "QRCodeRequest"]
+           "C2BSimulateRequest", "QRCodeRequest", "BillRegisterRequest",
+           "BillQueryRequest", "BillUpdateRequest", "BillDeleteRequest"]
 # Case-insensitive scheme per RFC 3986 (scheme is case-insensitive):
 # "HTTP://…" is a valid http URL, not a shape rejection.
 _URL_RE = re.compile(r"https?://[^\s\x00-\x1f]+", re.IGNORECASE)
@@ -727,3 +728,219 @@ class QRCodeRequest:
         return {"MerchantName": self.merchant_name, "RefNo": self.ref_no,
                 "Amount": self.amount, "TrxCode": _enum_value(self.trx_code),
                 "CPI": self.cpi, "Size": self.size}
+
+
+# ---------------------------------------------------------------------
+# Bill Manager (docs/apis/bill-manager.md) -- no SecurityCredential
+# ---------------------------------------------------------------------
+
+def _payer_number_if_set(field_name: str, value: str) -> str:
+    """Optional MSISDN normalisation: empty means "not supplied".
+
+    ``_clean`` already drops the empty string from the payload, so the
+    unset case costs nothing here; only a SUPPLIED value is normalized
+    (mirroring ``TransactionStatusRequest``'s optional ``IdentifierType``
+    branch). Never call ``_phone`` unconditionally: an optional field must
+    not make an empty value a validation error (lesson D4).
+    """
+    if not (value or "").strip():
+        return ""
+    return _phone(field_name, value)
+
+
+def _optional_free_text(field_name: str, value: str, cap: int) -> str:
+    """Optional free text: empty passes through untouched (D4 lesson)."""
+    if not (value or "").strip():
+        return ""
+    return _free_text(field_name, value, cap)
+
+
+def _bill_ref_number(field_name: str, value: str) -> str:
+    """BillRefNumber: REQUIRED, trimmed, printable-bounded, free text.
+
+    Same 32-char cap ``C2BSimulateRequest`` applies to BillRefNumber, so
+    the two models cannot disagree on what a bill reference is.
+    """
+    _require(field_name, value)
+    return _free_text(field_name, value, 32)
+
+
+@dataclass
+class BillRegisterRequest:
+    """Register a bill on Bill Manager (docs/apis/bill-manager.md):
+    ``POST /mpesa/billmanager/v1/register``. No credential -- the
+    shortcode owns the bill.
+
+    ``PayerNumber``/``PayerName`` are OPTIONAL and both are PII: they are
+    kept out of the repr (``_safe`` whitelist) while ``BillRefNumber``
+    stays visible -- it is the identifier a caller joins on, not a
+    secret. CallBackURL is redacted per the C2B pattern (it can embed a
+    signed token).
+
+    Usage::
+
+        req = BillRegisterRequest(bill_ref_number="INV-001", bill_name="Invoice 001",
+                                  amount=1000, expiry_date="2024-12-31",
+                                  call_back_url=CB)
+        req.validate(); payload = req.to_payload()
+    """
+
+    short_code: str = ""
+    bill_ref_number: str = ""
+    bill_name: str = ""
+    amount: int = 0
+    expiry_date: str = ""
+    call_back_url: str = ""
+    payer_number: str = ""
+    payer_name: str = ""
+    _validated: bool = _sentinel()
+
+    def __repr__(self) -> str:
+        # Payer identity (name, phone) is PII and is NOT whitelisted;
+        # BillRefNumber is a join key and stays visible.
+        return _safe(self, "short_code", "bill_ref_number", "amount")
+
+    def validate(self, limits: "TransactionLimits | None" = None) -> None:
+        self.short_code = _shortcode("ShortCode", self.short_code)
+        self.bill_ref_number = _bill_ref_number("BillRefNumber", self.bill_ref_number)
+        _require("BillName", self.bill_name)
+        self.bill_name = _free_text("BillName", self.bill_name, 64)
+        _amount_int("Bill Amount", self.amount)
+        _check_transaction_limit("Bill Amount", "bill", self.amount, limits)
+        _require("ExpiryDate", self.expiry_date)
+        # Shape only (printable, length-capped): a strict YYYY-MM-DD
+        # parse is deliberately NOT here -- see docs follow-up.
+        _printable("ExpiryDate", self.expiry_date, 10)
+        _url("CallBackURL", self.call_back_url)
+        self.payer_number = _payer_number_if_set("PayerNumber", self.payer_number)
+        self.payer_name = _optional_free_text("PayerName", self.payer_name, 64)
+        self._validated = True
+
+    def to_payload(self) -> dict[str, Any]:
+        _ensure_validated(self)
+        return _clean({
+            "ShortCode": self.short_code,
+            "BillRefNumber": self.bill_ref_number,
+            "BillName": self.bill_name, "Amount": self.amount,
+            "ExpiryDate": self.expiry_date,
+            "CallBackURL": self.call_back_url,
+            "PayerNumber": self.payer_number, "PayerName": self.payer_name,
+        })
+
+
+@dataclass
+class BillQueryRequest:
+    """Look up one bill (docs/apis/bill-manager.md):
+    ``POST /mpesa/billmanager/v1/query``. Two keys, no amount, no URL.
+
+    Usage::
+
+        req = BillQueryRequest(bill_ref_number="INV-001"); req.validate()
+    """
+
+    short_code: str = ""
+    bill_ref_number: str = ""
+    _validated: bool = _sentinel()
+
+    def __repr__(self) -> str:
+        return _safe(self, "short_code", "bill_ref_number")
+
+    def validate(self, limits: "TransactionLimits | None" = None) -> None:
+        # No amount (a query reports one, it never sends one): ``limits``
+        # is accepted only for the uniform client-side call.
+        self.short_code = _shortcode("ShortCode", self.short_code)
+        self.bill_ref_number = _bill_ref_number("BillRefNumber", self.bill_ref_number)
+        self._validated = True
+
+    def to_payload(self) -> dict[str, Any]:
+        _ensure_validated(self)
+        return _clean({"ShortCode": self.short_code,
+                       "BillRefNumber": self.bill_ref_number})
+
+
+@dataclass
+class BillUpdateRequest:
+    """Amend one bill (docs/apis/bill-manager.md):
+    ``POST /mpesa/billmanager/v1/update``.
+
+    EVERY field beyond ``ShortCode``/``BillRefNumber`` is OPTIONAL and an
+    omitted one is OMITTED from the payload, not sent as zero/empty --
+    partial updates are the point of the endpoint, and Safaricom would
+    otherwise read ``"Amount": 0`` as "set the amount to nothing".
+    ``Amount`` therefore normalizes its unset state to ``None`` (ints
+    survive ``_clean`` by design, see :func:`_clean`), while the optional
+    string fields keep the empty-string convention.
+
+    Usage::
+
+        req = BillUpdateRequest(bill_ref_number="INV-001", amount=1500)
+        req.validate(); payload = req.to_payload()
+    """
+
+    short_code: str = ""
+    bill_ref_number: str = ""
+    amount: int = 0
+    expiry_date: str = ""
+    call_back_url: str = ""
+    payer_number: str = ""
+    payer_name: str = ""
+    _validated: bool = _sentinel()
+
+    def __repr__(self) -> str:
+        return _safe(self, "short_code", "bill_ref_number", "amount")
+
+    def validate(self, limits: "TransactionLimits | None" = None) -> None:
+        self.short_code = _shortcode("ShortCode", self.short_code)
+        self.bill_ref_number = _bill_ref_number("BillRefNumber", self.bill_ref_number)
+        if self.amount:
+            _amount_int("Bill Amount", self.amount)
+            _check_transaction_limit("Bill Amount", "bill", self.amount, limits)
+        else:
+            # Unset means "leave the amount alone": _clean drops None but
+            # would keep int 0, which would overwrite the bill's amount.
+            self.amount = None
+        if self.expiry_date:
+            _printable("ExpiryDate", self.expiry_date, 10)
+        if self.call_back_url:
+            _url("CallBackURL", self.call_back_url)
+        self.payer_number = _payer_number_if_set("PayerNumber", self.payer_number)
+        self.payer_name = _optional_free_text("PayerName", self.payer_name, 64)
+        self._validated = True
+
+    def to_payload(self) -> dict[str, Any]:
+        _ensure_validated(self)
+        return _clean({
+            "ShortCode": self.short_code,
+            "BillRefNumber": self.bill_ref_number, "Amount": self.amount,
+            "ExpiryDate": self.expiry_date,
+            "CallBackURL": self.call_back_url,
+            "PayerNumber": self.payer_number, "PayerName": self.payer_name,
+        })
+
+
+@dataclass
+class BillDeleteRequest:
+    """Retire one bill (docs/apis/bill-manager.md):
+    ``POST /mpesa/billmanager/v1/delete``. Two keys, nothing optional.
+
+    Usage::
+
+        req = BillDeleteRequest(bill_ref_number="INV-001"); req.validate()
+    """
+
+    short_code: str = ""
+    bill_ref_number: str = ""
+    _validated: bool = _sentinel()
+
+    def __repr__(self) -> str:
+        return _safe(self, "short_code", "bill_ref_number")
+
+    def validate(self, limits: "TransactionLimits | None" = None) -> None:
+        self.short_code = _shortcode("ShortCode", self.short_code)
+        self.bill_ref_number = _bill_ref_number("BillRefNumber", self.bill_ref_number)
+        self._validated = True
+
+    def to_payload(self) -> dict[str, Any]:
+        _ensure_validated(self)
+        return _clean({"ShortCode": self.short_code,
+                       "BillRefNumber": self.bill_ref_number})
