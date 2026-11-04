@@ -1,7 +1,7 @@
 # Implementation Plan: Missing M-Pesa Daraja APIs
 
 **Branch:** `feat/missing-apis-implementation`  
-**Target Version:** v0.6.0 (minor bump for new APIs)  
+**Target Version:** v0.7.0 (minor bump for new APIs — shipped on 2026-11-03; this plan targeted v0.6.0 before the 0.6.0 release took that number)  
 **Base Commit:** v0.5.1 (42 commits from base)  
 **Security Review Required:** Yes - All new APIs handle credentials & PII
 
@@ -19,7 +19,7 @@
 | **Bill Manager** | Medium | High | 10-14 days | Multiple endpoints |
 
 **Total Estimated Effort:** 3-4 weeks (1 engineer)  
-**Target Release:** v0.6.0 (minor bump for new APIs)
+**Target Release:** v0.7.0 (minor bump for new APIs — shipped)
 
 ---
 
