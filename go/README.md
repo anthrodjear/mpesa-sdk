@@ -1,11 +1,12 @@
 # mpesa — M-Pesa Daraja SDK (Go engine)
 
 [![Go](https://img.shields.io/badge/Go-1.26.10+-00ADD8?logo=go)](https://pkg.go.dev/github.com/anthrodjear/mpesa-sdk/go)
-[![version](https://img.shields.io/badge/version-0.7.0-blue)](https://pkg.go.dev/github.com/anthrodjear/mpesa-sdk/go)
+[![version](https://img.shields.io/badge/version-0.7.1-blue)](https://pkg.go.dev/github.com/anthrodjear/mpesa-sdk/go)
 
 A dependency-free Go client for the Safaricom **M-Pesa Daraja API** — standard
-library only, no third-party imports. Covers all nine business endpoints plus
-the OAuth token lifecycle, with the safety rules a payments SDK needs:
+library only, no third-party imports. Covers all twelve business endpoint
+families (fifteen calls) plus the OAuth token lifecycle, with the safety
+rules a payments SDK needs:
 single-flight token refresh, 401-retry once, SSRF-hardened callback URLs,
 redacted credential rendering, and fail-safe result classification.
 
@@ -80,6 +81,12 @@ verdict arrives on your `CallBackURL` — or poll `STKQuery`. See
 | `Reversal` | `/mpesa/reversal/v1/request` |
 | `AccountBalance` | `/mpesa/accountbalance/v1/query` |
 | `GenerateQRCode` | `/mpesa/qrcode/v1/generate` |
+| `B2BPayment` | `/mpesa/b2b/v3/paymentrequest` |
+| `TaxRemittance` | `/mpesa/b2b/v1/remittax` |
+| `BillRegister` | `/mpesa/billmanager/v1/register` |
+| `BillQuery` | `/mpesa/billmanager/v1/query` |
+| `BillUpdate` | `/mpesa/billmanager/v1/update` |
+| `BillDelete` | `/mpesa/billmanager/v1/delete` |
 
 OAuth (`/oauth/v1/generate`) is handled internally: the client caches the
 bearer, refreshes eagerly on an `expires_in`-derived cadence (TTL − 60 s,
