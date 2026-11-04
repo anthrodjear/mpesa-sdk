@@ -1,3 +1,26 @@
+# Changes — 0.7.1 (2026-11-04)
+
+A **patch** release: no API or wire change — the only functional edits are
+the version literals themselves. It exists so the **Go module's published
+documentation** is correct at the tagged version: `go/v0.7.0` was cut before
+the Go README's badge and endpoint table were updated, so that tag ships an
+overview still reading 0.6.0 and listing only the original nine endpoints
+(the generated package docs at v0.7.0 were already correct). Tags are
+immutable once `sum.golang.org` records their hash, so this patch ships the
+correction rather than re-pointing the old tag.
+
+- `go/README.md`: version badge 0.6.0 → 0.7.1, the endpoint table gains the
+  six new calls (`B2BPayment`, `TaxRemittance`,
+  `BillRegister`/`BillQuery`/`BillUpdate`/`BillDelete`), and the intro
+  counts the twelve families / fifteen calls.
+- All six version literals + `package-lock.json` move together
+  (the CI parity step enforces it, lockfile included).
+- `@mpesa-sdk/core@0.7.1` is published to npm alongside this tag;
+  `go get github.com/anthrodjear/mpesa-sdk/go@v0.7.1` resolves the corrected
+  module.
+
+---
+
 # Changes — 0.7.0 (2026-11-03)
 
 All three engines ship `0.7.0` together. A **minor** bump: new endpoints and
