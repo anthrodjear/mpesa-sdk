@@ -2,7 +2,22 @@
   "name": "@mpesa-sdk/core",
   "version": "0.7.0",
   "description": "Zero-dependency TypeScript SDK engine for the Safaricom M-Pesa Daraja API (Node >=20 native fetch + node:crypto).",
+  "keywords": [
+    "mpesa",
+    "daraja",
+    "safaricom",
+    "mpesa-api",
+    "mobile-money",
+    "payments",
+    "kenya",
+    "stk-push",
+    "b2c",
+    "c2b",
+    "typescript",
+    "sdk"
+  ],
   "license": "MIT",
+  "author": "anthrodjear",
   "type": "module",
   "sideEffects": false,
   "engines": {
@@ -19,9 +34,16 @@
   "files": [
     "dist"
   ],
+  "homepage": "https://github.com/anthrodjear/mpesa-sdk/tree/main/typescript#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/anthrodjear/mpesa-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/anthrodjear/mpesa-sdk/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

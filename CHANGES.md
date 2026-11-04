@@ -52,6 +52,17 @@ only Python's decoder enforces the four required keys).
 - `ExpiryDate` is shape-checked (≤ 10 chars); the gateway owns the date
   format. `TaxObligation` is free text, not an enum.
 
+## Publishing
+
+- **`@mpesa-sdk/core@0.7.0` published to npm** — the tarball ships the
+  package README + LICENSE and the standard manifest metadata (keywords,
+  author, repository, bugs, `publishConfig.access: "public"`); the
+  `prepublishOnly` gate (build + full test suite) runs on every publish.
+- The Go engine is tagged `go/v0.7.0`, in the subdirectory-module convention
+  used by the earlier releases, so
+  `go get github.com/anthrodjear/mpesa-sdk/go@v0.7.0` resolves through the
+  module proxy and pkg.go.dev.
+
 ---
 
 # Changes — 0.6.0 (2026-11-02)
