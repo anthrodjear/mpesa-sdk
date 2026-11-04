@@ -50,9 +50,17 @@ from .requests_sync import (
 )
 
 __all__ = ["B2CPayoutRequest", "TransactionStatusRequest",
-           "ReversalRequest", "AccountBalanceRequest"]
+           "ReversalRequest", "AccountBalanceRequest", "B2BRequest",
+           "TaxRemittanceRequest"]
 _B2C_COMMANDS = {CommandID.SALARY_PAYMENT.value, CommandID.BUSINESS_PAYMENT.value,
                  CommandID.PROMOTION_PAYMENT.value}
+#: B2B Express Checkout accepts exactly two CommandIDs: paying a paybill
+#: (``PartyB`` is a paybill shortcode, ``AccountReference`` its account)
+#: or paying a Buy Goods till (``PartyB`` is a till number). Mirrors
+#: ``_B2C_COMMANDS`` so the closed set lives beside its sibling, not
+#: inside each validator.
+_B2B_COMMANDS = {CommandID.BUSINESS_PAY_BILL.value,
+                 CommandID.BUSINESS_BUY_GOODS.value}
 
 
 def _safe(model: Any, *shown: str) -> str:
@@ -345,4 +353,227 @@ class AccountBalanceRequest:
             "Remarks": self.remarks,
             "QueueTimeOutURL": self.queue_time_out_url,
             "ResultURL": self.result_url,
+        })
+
+
+@dataclass
+class B2BRequest:
+    """B2B Express Checkout, business-to-business payment
+    (docs/apis/b2b.md) -- ``POST /mpesa/b2b/v3/paymentrequest``.
+
+    Wire keys are contractual: ``Initiator`` (NOT B2C's
+    ``InitiatorName``), ``CommandID`` restricted to
+    ``BusinessPayBill``/``BusinessBuyGoods``, and BOTH parties are
+    SHORTCODES (a business sends a business payment, never an MSISDN)
+    bounded by ``_shortcode`` exactly as ``TransactionStatusRequest``'s
+    ``PartyA`` is. ``OriginatorConversationID`` and both identifier types
+    are OPTIONAL here: the client injects ``"4"`` for the identifier
+    types and a fresh 16-hex id (see
+    :func:`~mpesa.helpers.new_originator_id`) BEFORE ``validate()``, so
+    the model -- like :class:`B2CPayoutRequest` -- still refuses an empty
+    id on the direct-``validate()`` path.
+
+    Usage::
+
+        req = B2BRequest(initiator="testapi", security_credential=cred,
+                         command_id=CommandID.BUSINESS_PAY_BILL, amount=1000,
+                         party_a="600000", party_b="600123",
+                         account_reference="INV-001", remarks="services",
+                         queue_time_out_url="https://x.com/t",
+                         result_url="https://x.com/r")
+        req.validate(); payload = req.to_payload()
+    """
+
+    originator_conversation_id: str = ""
+    initiator: str = _secret()
+    security_credential: str = _secret()
+    command_id: CommandID | str | None = None
+    sender_identifier_type: str = ""
+    receiver_identifier_type: str = ""
+    amount: int = 0
+    party_a: str = ""
+    party_b: str = ""
+    account_reference: str = ""
+    remarks: str = ""
+    queue_time_out_url: str = ""
+    result_url: str = ""
+    _validated: bool = _sentinel()
+
+    def __repr__(self) -> str:
+        return _safe(self, "party_a", "amount")
+
+    def validate(self, limits: "TransactionLimits | None" = None) -> None:
+        """Constraint parity with the Go Validate(); ``limits`` supplies
+        the ``b2b`` tier ceiling (see :mod:`mpesa.limits`).
+        """
+        # Client-injected before this runs (see the class docstring), so
+        # the empty case is the direct-validate() misuse path.
+        _require("OriginatorConversationID", self.originator_conversation_id)
+        _printable("OriginatorConversationID",
+                   self.originator_conversation_id, 19)
+        _require("Initiator", self.initiator)
+        _require("SecurityCredential", self.security_credential)
+        cmd = _enum_value(self.command_id)
+        if cmd not in _B2B_COMMANDS:
+            raise ValueError(f"mpesa: B2B CommandID {cmd!r} not in "
+                             "{BusinessPayBill, BusinessBuyGoods}")
+        amount = _amount_int("B2B Amount", self.amount)
+        # "b2b" is the endpoint's OWN bucket for BOTH bounds -- the same
+        # containment rule ReversalRequest applies to "reversal" (see the
+        # comment there).
+        _check_transaction_limit("B2B Amount", "b2b", amount, limits)
+        self.party_a = _shortcode("PartyA", self.party_a)
+        self.party_b = _shortcode("PartyB", self.party_b)
+        _require("AccountReference", self.account_reference)
+        self.account_reference = _free_text(
+            "AccountReference", self.account_reference, 64)
+        _require("Remarks", self.remarks)
+        self.remarks = _free_text("B2B Remarks", self.remarks, 100)
+        # Client-injected defaults: only length/printable-guarded here so
+        # a caller-supplied type is not silently normalised away.
+        if self.sender_identifier_type:
+            _printable("SenderIdentifierType", self.sender_identifier_type, 12)
+        else:
+            self.sender_identifier_type = "4"
+        if self.receiver_identifier_type:
+            _printable("ReceiverIdentifierType",
+                       self.receiver_identifier_type, 12)
+        else:
+            self.receiver_identifier_type = "4"
+        _url("QueueTimeOutURL", self.queue_time_out_url)
+        _url("ResultURL", self.result_url)
+        self._validated = True
+
+    def to_payload(self) -> dict[str, Any]:
+        """``Initiator`` (not ``InitiatorName``) -- B2B's own wire key."""
+        _ensure_validated(self)
+        return _clean({
+            "OriginatorConversationID": self.originator_conversation_id,
+            "Initiator": self.initiator,
+            "SecurityCredential": self.security_credential,
+            "CommandID": _enum_value(self.command_id),
+            "SenderIdentifierType": self.sender_identifier_type,
+            "ReceiverIdentifierType": self.receiver_identifier_type,
+            "Amount": self.amount, "PartyA": self.party_a,
+            "PartyB": self.party_b,
+            "AccountReference": self.account_reference,
+            "Remarks": self.remarks,
+            "QueueTimeOutURL": self.queue_time_out_url,
+            "ResultURL": self.result_url,
+        })
+
+
+@dataclass
+class TaxRemittanceRequest:
+    """Tax remittance to the KRA (docs/apis/tax-remittance.md) --
+    ``POST /mpesa/b2b/v1/remittax``. The B2B core (``Initiator``,
+    ``SecurityCredential``, two shortcode parties, one amount) plus three
+    tax-specific keys, with ``CommandID`` fixed to ``TaxRemittance``.
+
+    ``TaxPayerPIN`` is a SECRET: it is ``repr=False`` at the field level
+    AND absent from the whitelist ``_safe`` renders, so neither repr nor
+    the default ``dataclasses.__repr__`` exposes it.
+
+    Usage::
+
+        req = TaxRemittanceRequest(initiator="testapi", security_credential=cred,
+                                   command_id=CommandID.TAX_REMITTANCE, amount=5000,
+                                   party_a="600000", party_b="572700",
+                                   account_reference="TAX-2024-Q3",
+                                   remarks="VAT Q3 2024",
+                                   tax_period="2024Q3", tax_obligation="VAT",
+                                   tax_payer_pin="A001234567X",
+                                   queue_time_out_url="https://x.com/t",
+                                   result_url="https://x.com/r")
+        req.validate(); payload = req.to_payload()
+    """
+
+    originator_conversation_id: str = ""
+    initiator: str = _secret()
+    security_credential: str = _secret()
+    command_id: CommandID | str | None = None
+    sender_identifier_type: str = ""
+    receiver_identifier_type: str = ""
+    amount: int = 0
+    party_a: str = ""
+    party_b: str = ""
+    account_reference: str = ""
+    remarks: str = ""
+    queue_time_out_url: str = ""
+    result_url: str = ""
+    tax_period: str = ""
+    tax_obligation: str = ""
+    tax_payer_pin: str = _secret()
+    _validated: bool = _sentinel()
+
+    def __repr__(self) -> str:
+        # tax_period is a period label, not PII; tax_payer_pin is a
+        # secret and is deliberately NOT whitelisted here.
+        return _safe(self, "party_a", "amount", "tax_period")
+
+    def validate(self, limits: "TransactionLimits | None" = None) -> None:
+        """The B2B core with ``CommandID`` pinned and ``limits`` supplying
+        the ``tax`` tier ceiling.
+        """
+        _require("OriginatorConversationID", self.originator_conversation_id)
+        _printable("OriginatorConversationID",
+                   self.originator_conversation_id, 19)
+        _require("Initiator", self.initiator)
+        _require("SecurityCredential", self.security_credential)
+        cmd = _enum_value(self.command_id)
+        if cmd != CommandID.TAX_REMITTANCE.value:
+            raise ValueError(f"mpesa: TaxRemittance CommandID {cmd!r} "
+                             "must be TaxRemittance")
+        amount = _amount_int("Tax Amount", self.amount)
+        _check_transaction_limit("Tax Amount", "tax", amount, limits)
+        self.party_a = _shortcode("PartyA", self.party_a)
+        self.party_b = _shortcode("PartyB", self.party_b)
+        _require("AccountReference", self.account_reference)
+        self.account_reference = _free_text(
+            "AccountReference", self.account_reference, 64)
+        _require("Remarks", self.remarks)
+        self.remarks = _free_text("Tax Remarks", self.remarks, 100)
+        _require("TaxPeriod", self.tax_period)
+        self.tax_period = _free_text("TaxPeriod", self.tax_period, 16)
+        _require("TaxObligation", self.tax_obligation)
+        # Free text, NOT an enum: Safaricom's obligation set (VAT, PAYE,
+        # Excise, ...) is not closed here and a bespoke allow-list would
+        # reject a valid new obligation.
+        self.tax_obligation = _free_text(
+            "TaxObligation", self.tax_obligation, 32)
+        _require("TaxPayerPIN", self.tax_payer_pin)
+        _printable("TaxPayerPIN", self.tax_payer_pin, 64)
+        if self.sender_identifier_type:
+            _printable("SenderIdentifierType", self.sender_identifier_type, 12)
+        else:
+            self.sender_identifier_type = "4"
+        if self.receiver_identifier_type:
+            _printable("ReceiverIdentifierType",
+                       self.receiver_identifier_type, 12)
+        else:
+            self.receiver_identifier_type = "4"
+        _url("QueueTimeOutURL", self.queue_time_out_url)
+        _url("ResultURL", self.result_url)
+        self._validated = True
+
+    def to_payload(self) -> dict[str, Any]:
+        """B2B core plus the three tax keys; ``Initiator``, not
+        ``InitiatorName``."""
+        _ensure_validated(self)
+        return _clean({
+            "OriginatorConversationID": self.originator_conversation_id,
+            "Initiator": self.initiator,
+            "SecurityCredential": self.security_credential,
+            "CommandID": _enum_value(self.command_id),
+            "SenderIdentifierType": self.sender_identifier_type,
+            "ReceiverIdentifierType": self.receiver_identifier_type,
+            "Amount": self.amount, "PartyA": self.party_a,
+            "PartyB": self.party_b,
+            "AccountReference": self.account_reference,
+            "Remarks": self.remarks,
+            "QueueTimeOutURL": self.queue_time_out_url,
+            "ResultURL": self.result_url,
+            "TaxPeriod": self.tax_period,
+            "TaxObligation": self.tax_obligation,
+            "TaxPayerPIN": self.tax_payer_pin,
         })

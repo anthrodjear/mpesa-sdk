@@ -16,6 +16,7 @@ import { CommandID, QRTrxCode, TransactionType } from "../src/enums.js";
 import { MpesaError } from "../src/errors.js";
 import {
   DEFAULT_TRANSACTION_LIMITS,
+  LIMIT_SERVICE_KEYS,
   effectiveCeiling,
   nairobiDayKey,
   resolveTransactionLimits,
@@ -153,6 +154,46 @@ function qrReq(amount: number) {
     trxCode: QRTrxCode.BuyGoods,
     cpi: "174379",
     size: "300",
+  };
+}
+
+function b2bReq(amount: number) {
+  return {
+    originatorConversationID: "a1b2c3d4e5f6a7b8",
+    initiator: "testapi",
+    securityCredential: "cred",
+    commandID: CommandID.BusinessPayBill,
+    amount,
+    partyA: "600000",
+    partyB: "600123",
+    accountReference: "INV-001",
+    remarks: "services",
+    queueTimeOutURL: "https://mydomain.com/timeout",
+    resultURL: "https://mydomain.com/result",
+  };
+}
+
+function taxReq(amount: number) {
+  return {
+    ...b2bReq(amount),
+    commandID: CommandID.TaxRemittance,
+    accountReference: "TAX-2024-Q3",
+    remarks: "VAT Q3 2024",
+    partyB: "572700",
+    taxPeriod: "2024Q3",
+    taxObligation: "VAT",
+    taxPayerPIN: "A001234567X",
+  };
+}
+
+function billReq(amount: number) {
+  return {
+    shortCode: "600000",
+    billRefNumber: "INV-001",
+    billName: "Invoice 001",
+    amount,
+    expiryDate: "2024-12-31",
+    callBackURL: "https://mydomain.com/bill",
   };
 }
 
@@ -369,6 +410,12 @@ describe("CROSS-LANGUAGE PARITY MATRIX (shared with go/limits_fix_test.go and py
         return client.reversal(reversalReq(amount));
       case "qr":
         return client.generateQRCode(qrReq(amount));
+      case "b2b":
+        return client.b2bPayment(b2bReq(amount));
+      case "tax":
+        return client.taxRemittance(taxReq(amount));
+      case "bill":
+        return client.billRegister(billReq(amount));
       default:
         throw new Error(`no dispatch for service ${String(service)}`);
     }
@@ -449,8 +496,17 @@ describe("limit defaults and merge semantics", () => {
       b2c: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
       reversal: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
       qr: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
+      b2b: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
+      tax: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
+      bill: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
       default: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
     });
+  });
+
+  it("LIMIT_SERVICE_KEYS carries the three new buckets before `default`", () => {
+    expect(LIMIT_SERVICE_KEYS).toEqual([
+      "stk", "c2b", "b2c", "reversal", "qr", "b2b", "tax", "bill", "default",
+    ]);
   });
 
   it("omitted limits resolve to the defaults", () => {
@@ -629,6 +685,65 @@ describe("per-transaction limits", () => {
     );
     expect(businessHits).toBe(0);
   });
+
+  it("B2B, Tax and Bill have their own 250000 buckets; `default` no longer gates them", async () => {
+    // A `default` override does NOT reach B2B/Tax/Bill — they read their
+    // own buckets (250_000/500_000 defaults).
+    const client = makeClient({ limits: { default: { maxPerTransaction: 1_000 } } });
+    await client.b2bPayment(b2bReq(2_000));
+    await client.taxRemittance(taxReq(2_000));
+    await client.billRegister(billReq(2_000));
+    expect(businessHits).toBe(3);
+
+    // Their own buckets DO gate them.
+    const gated = makeClient({
+      limits: {
+        b2b: { maxPerTransaction: 1_000 },
+        tax: { maxPerTransaction: 500 },
+        bill: { maxPerTransaction: 100 },
+      },
+    });
+    await expect(gated.b2bPayment(b2bReq(1_001))).rejects.toThrow(
+      /B2B amount 1001 exceeds the configured per-transaction limit of 1000/,
+    );
+    await expect(gated.taxRemittance(taxReq(501))).rejects.toThrow(
+      /Tax amount 501 exceeds the configured per-transaction limit of 500/,
+    );
+    await expect(gated.billRegister(billReq(101))).rejects.toThrow(
+      /Bill amount 101 exceeds the configured per-transaction limit of 100/,
+    );
+    await gated.b2bPayment(b2bReq(1_000));
+    await gated.taxRemittance(taxReq(500));
+    await gated.billRegister(billReq(100));
+    expect(businessHits).toBe(6);
+  });
+
+  it("each new bucket enforces its own default ceiling", async () => {
+    const client = makeClient();
+    await client.b2bPayment(b2bReq(250_000)); // B2B ceiling
+    await client.taxRemittance(taxReq(250_000)); // Tax ceiling
+    await client.billRegister(billReq(250_000)); // Bill ceiling
+    expect(businessHits).toBe(3);
+
+    await expect(client.b2bPayment(b2bReq(250_001))).rejects.toThrow(
+      /per-transaction limit of 250000/,
+    );
+    await expect(client.taxRemittance(taxReq(250_001))).rejects.toThrow(
+      /per-transaction limit of 250000/,
+    );
+    await expect(client.billRegister(billReq(250_001))).rejects.toThrow(
+      /per-transaction limit of 250000/,
+    );
+    // Fail-fast: no extra dispatch for the three rejections.
+    expect(businessHits).toBe(3);
+
+    // Approved-tier merchants raise via a Config limits override.
+    const upgraded = makeClient({
+      limits: { b2b: { maxPerTransaction: 500_000 } },
+    });
+    await upgraded.b2bPayment(b2bReq(500_000));
+    expect(businessHits).toBe(4);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -762,6 +877,61 @@ describe("daily limits (trackDaily)", () => {
     await client.b2cPayout(b2cReq(500_000));
     await expect(client.b2cPayout(b2cReq(10))).rejects.toThrow(/B2C daily limit reached/);
     await client.stkPush(stkReq(250_000));
+    expect(businessHits).toBe(2);
+  });
+
+  it("keeps daily buckets per service for B2B/Tax/Bill (three independent budgets)", async () => {
+    const client = makeClient({
+      limits: {
+        b2b: { maxPerTransaction: 0, maxPerDay: 500_000 },
+        tax: { maxPerTransaction: 0, maxPerDay: 500_000 },
+        bill: { maxPerTransaction: 0, maxPerDay: 500_000 },
+      },
+      trackDaily: true,
+    });
+    // Fill the B2B budget; prove Tax and Bill are untouched.
+    await client.b2bPayment(b2bReq(500_000));
+    await expect(client.b2bPayment(b2bReq(10))).rejects.toThrow(/B2B daily limit reached/);
+    await client.taxRemittance(taxReq(500_000));
+    await client.billRegister(billReq(500_000));
+    expect(businessHits).toBe(3);
+  });
+
+  it("b2b/tax/bill refund the accrual on TRANSPORT failure, keep it on gateway errors", async () => {
+    // (a) Transport failure (fetch rejects) — the reservation is refunded,
+    //     so the same amount fits again (300_000 + 300_000 ≤ 500_000).
+    const client = makeClient({
+      limits: { b2b: { maxPerTransaction: 0, maxPerDay: 500_000 } },
+      trackDaily: true,
+    });
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
+      throw new TypeError("fetch failed");
+    });
+    await expect(client.b2bPayment(b2bReq(300_000))).rejects.toThrow(/fetch failed/);
+    mockTransport();
+    await client.b2bPayment(b2bReq(300_000));
+    expect(businessHits).toBe(1);
+
+    // (b) Gateway rejection (400 + MpesaError) — the reservation STICKS:
+    //     300_000 stays charged, so a further 150_001 would total > 400_000.
+    const gated = makeClient({
+      limits: { bill: { maxPerTransaction: 0, maxPerDay: 400_000 } },
+      trackDaily: true,
+    });
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
+      return jsonResponse(
+        { errorCode: "400.000.01", errorMessage: "bad", requestID: "r", conversationID: "c" },
+        400,
+      );
+    });
+    await expect(gated.billRegister(billReq(300_000))).rejects.toThrow(MpesaError);
+    mockTransport();
+    await expect(gated.billRegister(billReq(150_001))).rejects.toThrow(/daily limit reached/);
+    await gated.billRegister(billReq(100_000));
     expect(businessHits).toBe(2);
   });
 });

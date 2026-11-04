@@ -34,6 +34,12 @@ const (
 	reversalPath       = "/mpesa/reversal/v1/request"
 	accountBalancePath = "/mpesa/accountbalance/v1/query"
 	qrCodePath         = "/mpesa/qrcode/v1/generate"
+	b2bPaymentPath     = "/mpesa/b2b/v3/paymentrequest"
+	taxRemittancePath  = "/mpesa/b2b/v1/remittax"
+	billRegisterPath   = "/mpesa/billmanager/v1/register"
+	billQueryPath      = "/mpesa/billmanager/v1/query"
+	billUpdatePath     = "/mpesa/billmanager/v1/update"
+	billDeletePath     = "/mpesa/billmanager/v1/delete"
 
 	errCodeInvalidToken = "401.003.01"
 
@@ -1273,6 +1279,176 @@ func (c *Client) GenerateQRCode(ctx context.Context, r QRCodeRequest) (*QRCodeRe
 		if errors.Is(err, ErrNotDispatched) {
 			c.rollbackDaily(ServiceQR, r.Amount, accrualDay)
 		}
+		return nil, err
+	}
+	return &out, nil
+}
+
+// B2BPayment settles a B2B Express Checkout between two organization
+// shortcodes (async). Injected defaults: OriginatorConversationID
+// auto-generated (16 lowercase hex chars, ≤20 per Daraja constraint,
+// idempotency key for retries), SenderIdentifierType and
+// ReceiverIdentifierType ← "4" (organization shortcode). CommandID MUST be
+// BusinessPayBill or BusinessBuyGoods — anything else is refused client-side.
+// The ACK reuses ConversationResponse: every v3 B2B async API answers with
+// the same OriginatorConversationID/ConversationID envelope B2C does, so no
+// separate B2B response type exists. See docs/apis/b2b.md.
+func (c *Client) B2BPayment(ctx context.Context, r B2BRequest) (*ConversationResponse, error) {
+	// Defaults are injected on the CALLER'S COPY (r is a value parameter):
+	// mutating the caller's request would surprise them and would make a
+	// retry with the same struct produce a different OriginatorConversationID.
+	if r.OriginatorConversationID == "" {
+		ocid, oerr := newOriginatorID()
+		if oerr != nil {
+			return nil, fmt.Errorf("mpesa: generate OriginatorConversationID: %w", oerr)
+		}
+		r.OriginatorConversationID = ocid
+	}
+	if r.SenderIdentifierType == "" {
+		r.SenderIdentifierType = IdentifierOrgShortcode
+	}
+	if r.ReceiverIdentifierType == "" {
+		r.ReceiverIdentifierType = IdentifierOrgShortcode
+	}
+	if err := r.ValidateWithLimits(c.limits); err != nil {
+		return nil, err
+	}
+	accrualDay, err := c.checkDaily(ServiceB2B, r.Amount)
+	if err != nil {
+		return nil, err
+	}
+	// ConversationResponse is the shared async ACK (see the doc comment).
+	var out ConversationResponse
+	if err := c.post(ctx, b2bPaymentPath, r, &out); err != nil {
+		if errors.Is(err, ErrNotDispatched) {
+			c.rollbackDaily(ServiceB2B, r.Amount, accrualDay)
+		}
+		return nil, err
+	}
+	return &out, nil
+}
+
+// TaxRemittance remits PAYE/VAT to KRA over the B2B rail (async). Injected
+// defaults: OriginatorConversationID auto-generated (16 lowercase hex chars),
+// SenderIdentifierType and ReceiverIdentifierType ← "4". CommandID MUST be
+// TaxRemittance. The ACK reuses ConversationResponse (see B2BPayment).
+// See docs/apis/tax-remittance.md.
+func (c *Client) TaxRemittance(ctx context.Context, r TaxRemittanceRequest) (*ConversationResponse, error) {
+	if r.OriginatorConversationID == "" {
+		ocid, oerr := newOriginatorID()
+		if oerr != nil {
+			return nil, fmt.Errorf("mpesa: generate OriginatorConversationID: %w", oerr)
+		}
+		r.OriginatorConversationID = ocid
+	}
+	if r.SenderIdentifierType == "" {
+		r.SenderIdentifierType = IdentifierOrgShortcode
+	}
+	if r.ReceiverIdentifierType == "" {
+		r.ReceiverIdentifierType = IdentifierOrgShortcode
+	}
+	if err := r.ValidateWithLimits(c.limits); err != nil {
+		return nil, err
+	}
+	accrualDay, err := c.checkDaily(ServiceTax, r.Amount)
+	if err != nil {
+		return nil, err
+	}
+	var out ConversationResponse
+	if err := c.post(ctx, taxRemittancePath, r, &out); err != nil {
+		if errors.Is(err, ErrNotDispatched) {
+			c.rollbackDaily(ServiceTax, r.Amount, accrualDay)
+		}
+		return nil, err
+	}
+	return &out, nil
+}
+
+// BillRegister onboards a bill on the Bill Manager (synchronous). It carries
+// NO initiator and NO SecurityCredential: the bearer token alone
+// authenticates it, exactly like C2B URL registration. ShortCode ←
+// cfg.Shortcode when empty. See docs/apis/bill-manager.md.
+func (c *Client) BillRegister(ctx context.Context, r BillRegisterRequest) (*BillAckResponse, error) {
+	// Defaults are injected on the CALLER'S COPY (r is a value parameter).
+	if r.ShortCode == "" {
+		r.ShortCode = c.cfg.Shortcode
+	}
+	if err := r.ValidateWithLimits(c.limits); err != nil {
+		return nil, err
+	}
+	accrualDay, err := c.checkDaily(ServiceBill, r.Amount)
+	if err != nil {
+		return nil, err
+	}
+	var out BillAckResponse
+	if err := c.post(ctx, billRegisterPath, r, &out); err != nil {
+		if errors.Is(err, ErrNotDispatched) {
+			c.rollbackDaily(ServiceBill, r.Amount, accrualDay)
+		}
+		return nil, err
+	}
+	return &out, nil
+}
+
+// BillQuery asks for the state of one registered bill (synchronous, no
+// credential). ShortCode ← cfg.Shortcode when empty. It moves no money, so
+// it carries no limits and no daily accrual. See
+// docs/apis/bill-manager.md.
+func (c *Client) BillQuery(ctx context.Context, r BillQueryRequest) (*BillAckResponse, error) {
+	if r.ShortCode == "" {
+		r.ShortCode = c.cfg.Shortcode
+	}
+	if err := r.Validate(); err != nil {
+		return nil, err
+	}
+	var out BillAckResponse
+	if err := c.post(ctx, billQueryPath, r, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// BillUpdate amends an existing bill (synchronous, no credential). ShortCode
+// ← cfg.Shortcode when empty. Amount is OPTIONAL: 0 means "leave the amount
+// alone", so nothing is accrued or ceiling-checked when it is absent — a
+// partial update spends nothing. See docs/apis/bill-manager.md.
+func (c *Client) BillUpdate(ctx context.Context, r BillUpdateRequest) (*BillAckResponse, error) {
+	if r.ShortCode == "" {
+		r.ShortCode = c.cfg.Shortcode
+	}
+	if err := r.ValidateWithLimits(c.limits); err != nil {
+		return nil, err
+	}
+	var accrualDay string
+	if r.Amount > 0 {
+		day, err := c.checkDaily(ServiceBill, r.Amount)
+		if err != nil {
+			return nil, err
+		}
+		accrualDay = day
+	}
+	var out BillAckResponse
+	if err := c.post(ctx, billUpdatePath, r, &out); err != nil {
+		if r.Amount > 0 && errors.Is(err, ErrNotDispatched) {
+			c.rollbackDaily(ServiceBill, r.Amount, accrualDay)
+		}
+		return nil, err
+	}
+	return &out, nil
+}
+
+// BillDelete drops a registered bill (synchronous, no credential). ShortCode
+// ← cfg.Shortcode when empty. It moves no money, so it carries no limits and
+// no daily accrual. See docs/apis/bill-manager.md.
+func (c *Client) BillDelete(ctx context.Context, r BillDeleteRequest) (*BillAckResponse, error) {
+	if r.ShortCode == "" {
+		r.ShortCode = c.cfg.Shortcode
+	}
+	if err := r.Validate(); err != nil {
+		return nil, err
+	}
+	var out BillAckResponse
+	if err := c.post(ctx, billDeletePath, r, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

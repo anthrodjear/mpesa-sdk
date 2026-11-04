@@ -1,3 +1,59 @@
+# Changes — 0.7.0 (2026-11-03)
+
+All three engines ship `0.7.0` together. A **minor** bump: new endpoints and
+one new public type per family. Existing APIs are unchanged — `Config`,
+`Config.Limits` and every existing method behave exactly as they did in
+0.6.0 — so `^0.6.0` / `~=0.6.0` ranges will **not** auto-upgrade into it; pin
+`0.7.0` explicitly.
+
+## Features — three new endpoint families
+
+- **B2B Express Checkout** — `POST /mpesa/b2b/v3/paymentrequest`
+  (`B2BPayment` / `b2b_payment` / `b2bPayment`). `CommandID`
+  `BusinessPayBill` · `BusinessBuyGoods`; the wire key is **`Initiator`**,
+  not B2C's `InitiatorName`. [b2b.md](docs/apis/b2b.md)
+- **Tax Remittance** — `POST /mpesa/b2b/v1/remittax`
+  (`TaxRemittance` / `tax_remittance` / `taxRemittance`). `CommandID`
+  `TaxRemittance` (a non-`TaxRemittance` value is rejected client-side in
+  all three engines) plus `TaxPeriod`, `TaxObligation`, `TaxPayerPIN`.
+  [tax-remittance.md](docs/apis/tax-remittance.md)
+- **Bill Manager** — `POST /mpesa/billmanager/v1/{register,query,update,delete}`
+  (`BillRegister`/`BillQuery`/`BillUpdate`/`BillDelete` and the snake/camel
+  equivalents). No initiator or credential; `ShortCode` defaults to the
+  configured shortcode; `billUpdate` is a partial update — Go spells "unset"
+  `Amount: 0`, Python `amount=None`, TypeScript omits the key (TS rejects
+  `amount: 0`). [bill-manager.md](docs/apis/bill-manager.md)
+
+All six endpoints return the standard ACK envelope; Bill Manager adds
+`BillAckResponse` with an optional `BillRefNumber` (absence is tolerated;
+only Python's decoder enforces the four required keys).
+
+## Security
+
+- **PII and secret redaction**: `TaxPayerPIN` is treated as a secret and
+  `PayerName`/`PayerNumber` as PII — masked in every rendered form (Go
+  `GoString`/`Format`/`LogSafe`, Python `repr`, TypeScript `logSafeRequest` /
+  `JSON.stringify`), while `BillRefNumber` stays visible as an identifier.
+- **Spend controls**: dedicated `b2b` / `tax` / `bill` limit buckets (250,000
+  per transaction / 500,000 per day by default) for BOTH the
+  per-transaction ceiling and the daily ledger; `Default` overrides do not
+  reach them; the reservation is refunded only when the request provably
+  never reached the gateway — the same rule as every existing endpoint.
+- Validation, SSRF-hardened URL checking, typed errors, the 1 MiB caps and
+  the 401-retry-once path are the existing shared machinery — the new
+  endpoints route through it rather than reimplementing any of it.
+
+## Behavior notes
+
+- Bill Manager's optional fields: a whitespace-only `PayerNumber`/
+  `PayerName` is dropped from the wire (all three engines).
+- Identifier types (`SenderIdentifierType`/`ReceiverIdentifierType`) default
+  to `"4"` and are length-capped at 12 when supplied.
+- `ExpiryDate` is shape-checked (≤ 10 chars); the gateway owns the date
+  format. `TaxObligation` is free text, not an enum.
+
+---
+
 # Changes — 0.6.0 (2026-11-02)
 
 All three engines ship `0.6.0` together. A **minor** bump, per the 0.x rule

@@ -65,7 +65,10 @@ func NormalizePhone(s string) (string, error) {
 		p = "254" + p[1:]
 	}
 	if !phonePattern.MatchString(p) {
-		return "", fmt.Errorf("mpesa: %q is not a valid Kenyan MSISDN (want 07XX/+2547XX/2547XX)", s)
+		// Length, never the value: a phone number is caller-supplied PII, and
+		// the caller will log whatever exception this function hands back
+		// (Python's `_phone` reports the same way).
+		return "", fmt.Errorf("mpesa: input is not a valid Kenyan MSISDN (got %d bytes, want 07XX/+2547XX/2547XX)", len(s))
 	}
 	return p, nil
 }

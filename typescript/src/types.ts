@@ -151,6 +151,98 @@ export interface ReversalRequest {
   readonly remarks: string;
 }
 
+/**
+ * B2B Express Checkout request body (docs/apis/b2b.md).
+ *
+ * `Initiator` — NOT B2C's `initiatorName` — is this endpoint's wire key.
+ * A B2B request has no `occasion` field and no per-call minimum.
+ */
+export interface B2BPaymentRequest {
+  /**
+   * Auto-generated when empty — 16 lowercase hex chars (≤20 per Daraja
+   * constraint). Serves as the idempotency key for retries.
+   */
+  readonly originatorConversationID?: string | undefined;
+  readonly initiator: string;
+  readonly securityCredential: string;
+  /** Exactly `BusinessPayBill` or `BusinessBuyGoods`. */
+  readonly commandID: CommandID;
+  /** Defaults to `"4"` (organization shortcode) when omitted. */
+  readonly senderIdentifierType?: string | undefined;
+  /** Defaults to `"4"` (organization shortcode) when omitted. */
+  readonly receiverIdentifierType?: string | undefined;
+  readonly amount: number;
+  /** Sender shortcode (5-10 digits). */
+  readonly partyA: string;
+  /** Receiver: a paybill shortcode or a Buy Goods till (5-10 digits). */
+  readonly partyB: string;
+  readonly accountReference: string;
+  readonly remarks: string;
+  readonly queueTimeOutURL: string;
+  readonly resultURL: string;
+}
+
+/**
+ * Tax Remittance request body (docs/apis/tax-remittance.md) — the B2B
+ * core with `CommandID` pinned to `TaxRemittance` plus three
+ * tax-specific keys.
+ *
+ * `taxPayerPIN` is a SECRET: {@link logSafeRequest} masks it like
+ * `securityCredential`, so never log the raw request object.
+ */
+export interface TaxRemittanceRequest extends B2BPaymentRequest {
+  /** Accounting period label, e.g. `"2024Q3"`. */
+  readonly taxPeriod: string;
+  /** Obligation type — free text, NOT a closed enum (VAT, PAYE, Excise, …). */
+  readonly taxObligation: string;
+  /** Taxpayer PIN — a secret. Masked in every rendered form of the request. */
+  readonly taxPayerPIN: string;
+}
+
+/** Bill Manager register request body (`POST /mpesa/billmanager/v1/register`). */
+export interface BillRegisterRequest {
+  readonly shortCode: string;
+  readonly billRefNumber: string;
+  readonly billName: string;
+  readonly amount: number;
+  readonly expiryDate: string;
+  readonly callBackURL: string;
+  /** Optional payer MSISDN (normalized to gateway form when supplied). */
+  readonly payerNumber?: string | undefined;
+  /** Optional payer display name — PII. */
+  readonly payerName?: string | undefined;
+}
+
+/** Bill Manager query request body (`POST /mpesa/billmanager/v1/query`). */
+export interface BillQueryRequest {
+  readonly shortCode: string;
+  readonly billRefNumber: string;
+}
+
+/**
+ * Bill Manager update request body (`POST /mpesa/billmanager/v1/update`).
+ *
+ * Every field beyond `shortCode`/`billRefNumber` is OPTIONAL and an
+ * omitted one is OMITTED from the wire payload — partial updates are the
+ * point of the endpoint, and the gateway would otherwise read
+ * `"Amount": 0` as "set the amount to nothing".
+ */
+export interface BillUpdateRequest {
+  readonly shortCode: string;
+  readonly billRefNumber: string;
+  readonly amount?: number | undefined;
+  readonly expiryDate?: string | undefined;
+  readonly callBackURL?: string | undefined;
+  readonly payerNumber?: string | undefined;
+  readonly payerName?: string | undefined;
+}
+
+/** Bill Manager delete request body (`POST /mpesa/billmanager/v1/delete`). */
+export interface BillDeleteRequest {
+  readonly shortCode: string;
+  readonly billRefNumber: string;
+}
+
 /** C2B URL registration request body. */
 export interface C2BRegisterRequest {
   readonly shortCode?: string | undefined;
@@ -253,6 +345,32 @@ export interface C2BAckResponse {
   readonly OriginatorCoversationID: string;
   readonly ResponseCode: string;
   readonly ResponseDescription: string;
+}
+
+/**
+ * Bill Manager acknowledgement — the synchronous reply of register, query,
+ * update and delete (docs/apis/bill-manager.md).
+ *
+ * `BillRefNumber` is OPTIONAL on the wire: Safaricom's published captures
+ * echo it on `register` but NOT on `query`/`update`/`delete`, so its
+ * absence is tolerated here (`undefined`) instead of failing the decode.
+ * IMPORTANT (and the reason the field is optional rather than required
+ * with a `""` default): the TS decoder performs no runtime presence check
+ * on response fields — it casts the parsed JSON object — so absence and
+ * emptiness are indistinguishable at runtime and only distinguishable at
+ * the TYPE level. Callers must therefore test with
+ * `ack.BillRefNumber !== undefined` (or a truthiness check) and fall back
+ * to the `billRefNumber` they sent when reconciling.
+ *
+ * `ResponseCode === "0"` means the bill was ACCEPTED, never that money
+ * moved — settle exclusively via the OperationResult callback.
+ */
+export interface BillAckResponse {
+  readonly ResponseCode: string;
+  readonly ResponseDescription: string;
+  readonly ConversationID: string;
+  readonly OriginatorConversationID: string;
+  readonly BillRefNumber?: string | undefined;
 }
 
 /** QR code generation response. */
