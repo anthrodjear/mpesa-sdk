@@ -3,6 +3,7 @@
 [![Go](https://img.shields.io/badge/Go-1.26.10+-00ADD8?logo=go&logoColor=white)](https://pkg.go.dev/github.com/anthrodjear/mpesa-sdk/go)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://pypi.org/project/mpesa-sdk/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9+-3178C6?logo=typescript&logoColor=white)](https://www.npmjs.com/package/@mpesa-sdk/core)
+[![npm](https://img.shields.io/npm/v/@mpesa-sdk/core?label=npm)](https://www.npmjs.com/package/@mpesa-sdk/core)
 [![CI](https://github.com/anthrodjear/mpesa-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/anthrodjear/mpesa-sdk/actions/workflows/ci.yml)
 
 A production-grade SDK for the Safaricom **M-Pesa Daraja API** in three languages — Go, Python, and TypeScript — sharing one contract: identical wire behaviour, identical test vectors, and identical safety rules. All nine business endpoints are covered (STK Push, STK Query, B2C payouts, C2B register/simulate, Transaction Status, Reversal, Account Balance, Dynamic QR) plus OAuth token lifecycle management.
@@ -510,7 +511,7 @@ Listed so log inspection doesn't panic you; the SDKs emit/accept these verbatim:
 .
 ├── go/                     # Go engine (module github.com/anthrodjear/mpesa-sdk/go) — version.go, examples/stk_push/, testdata/
 ├── python/                 # PyPI mpesa-sdk — mpesa/ package, examples/, tests/
-├── typescript/             # npm @mpesa-sdk/core — src/, examples/, test/
+├── typescript/             # npm @mpesa-sdk/core (published 0.7.0) — src/, examples/, test/
 ├── docs/apis/              # per-endpoint reference — source of truth for wire contracts
 ├── contract/               # shared cross-engine fixtures + known divergences — the executable form of the "one contract" claim
 ├── assets/certs/           # SandboxCertificate.cer · ProductionCertificate.cer
