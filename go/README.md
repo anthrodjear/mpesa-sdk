@@ -1,7 +1,7 @@
 # mpesa — M-Pesa Daraja SDK (Go engine)
 
 [![Go](https://img.shields.io/badge/Go-1.26.10+-00ADD8?logo=go)](https://pkg.go.dev/github.com/anthrodjear/mpesa-sdk/go)
-[![version](https://img.shields.io/badge/version-0.6.0-blue)](https://pkg.go.dev/github.com/anthrodjear/mpesa-sdk/go)
+[![version](https://img.shields.io/badge/version-0.7.0-blue)](https://pkg.go.dev/github.com/anthrodjear/mpesa-sdk/go)
 
 A dependency-free Go client for the Safaricom **M-Pesa Daraja API** — standard
 library only, no third-party imports. Covers all nine business endpoints plus
