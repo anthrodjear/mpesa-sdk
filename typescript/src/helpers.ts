@@ -149,9 +149,12 @@ export function normalizePhone(raw: string): string {
   }
 
   if (!PHONE_RE.test(stripped)) {
+    // Length, never the value: a phone number is caller-supplied PII and the
+    // caller logs whatever this throws, so the malformed number must not
+    // travel inside the message (Go/Python report the same way).
     throw new Error(
-      `mpesa: ${JSON.stringify(raw)} is not a valid Kenyan MSISDN ` +
-        "(want 07XX/+2547XX/2547XX)",
+      `mpesa: input is not a valid Kenyan MSISDN ` +
+        `(got ${raw.length} characters, want 07XX/+2547XX/2547XX)`,
     );
   }
 
@@ -334,6 +337,14 @@ export function newOriginatorID(): string {
  * - `securityCredential` is the RSA ciphertext of an initiator password —
  *   a live credential, masked exactly like Go's `LogSafe()` renders it.
  * - `passkey` derives the STK Password on the wire.
+ * - `taxPayerPIN` is a taxpayer PIN — personally identifiable financial
+ *   data on the Tax Remittance wire (docs/apis/tax-remittance.md); masked
+ *   like `securityCredential` in all three engines.
+ * - `payerName` / `payerNumber` are Bill Manager payer PII
+ *   (docs/apis/bill-manager.md). Masked for the same reason. NOTE that
+ *   `billRefNumber` is deliberately ABSENT: it is the join key a caller
+ *   reconciles on, not a secret, and masking it would break log-based
+ *   debugging.
  * - The five URL fields can carry an unguessable callback capability token
  *   in their query string (see callback-token.ts: a token "leaks wherever
  *   URLs are logged"), so the query component is dropped, not the whole
@@ -342,6 +353,9 @@ export function newOriginatorID(): string {
 const REDACTED_FIELDS: ReadonlySet<string> = new Set([
   "securityCredential",
   "passkey",
+  "taxPayerPIN",
+  "payerName",
+  "payerNumber",
 ]);
 
 const URL_FIELDS: ReadonlySet<string> = new Set([

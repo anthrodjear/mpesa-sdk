@@ -58,6 +58,30 @@ type QRCodeResponse struct {
 	QRCode              string `json:"QRCode"`
 }
 
+// BillAckResponse is the synchronous ACK of the Bill Manager family
+// (register/query/update/delete), which answers on the same tick as the
+// request rather than through a ResultURL callback.
+//
+// OPTIONAL FIELD ASSUMPTION (the planning spec did not pin the exact ACK
+// body): the shape below ASSUMES the bill-manager ack mirrors the other
+// synchronous ACK envelopes Daraja returns — ResponseCode,
+// ResponseDescription and both conversation IDs. Safaricom's public
+// documentation does not spell out the bill-manager ack key-for-key, so
+// BillRefNumber is OPTIONAL (no omitempty on the wire side, no presence
+// requirement here) while the four envelope fields the plan documented are
+// required. Absence of BillRefNumber therefore decodes to "" and must be
+// tolerated: the bill remains identified by the BillRefNumber the caller
+// already sent, not by this echo.
+type BillAckResponse struct {
+	ResponseCode             string `json:"ResponseCode"`
+	ResponseDescription      string `json:"ResponseDescription"`
+	ConversationID           string `json:"ConversationID"`
+	OriginatorConversationID string `json:"OriginatorConversationID"`
+	// BillRefNumber echoes the bill reference when the gateway returns it;
+	// absent from some ACKs, so it must never be treated as required.
+	BillRefNumber string `json:"BillRefNumber"`
+}
+
 // oauthTokenResponse is the GET /oauth/v1/generate payload; ExpiresIn
 // coerces Safaricom's string-or-number expires_in encodings.
 type oauthTokenResponse struct {

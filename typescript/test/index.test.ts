@@ -67,6 +67,12 @@ import type {
   TransactionStatusRequest,
   AccountBalanceRequest,
   ReversalRequest,
+  B2BPaymentRequest,
+  TaxRemittanceRequest,
+  BillRegisterRequest,
+  BillQueryRequest,
+  BillUpdateRequest,
+  BillDeleteRequest,
   C2BRegisterRequest,
   C2BSimulateRequest,
   DynamicQRRequest,
@@ -74,6 +80,7 @@ import type {
   STKPushResponse,
   STKQueryResponse,
   ConversationResponse,
+  BillAckResponse,
   C2BAckResponse,
   QRCodeResponse,
   OAuthToken,
@@ -177,8 +184,8 @@ type _MpesaClientOptions       = MpesaClientOptions;
 type _TokenManagerOptions      = TokenManagerOptions;
 
 describe("barrel exports — VERSION", () => {
-  it('VERSION equals "0.6.0"', () => {
-    expect(VERSION).toBe("0.6.0");
+  it('VERSION equals "0.7.0"', () => {
+    expect(VERSION).toBe("0.7.0");
   });
 });
 

@@ -81,8 +81,8 @@ describe("TransactionType", () => {
 });
 
 describe("CommandID", () => {
-  it("has 8 static instances covering the union", () => {
-    expect(CommandID.ALL).toHaveLength(8);
+  it("has 11 static instances covering the union", () => {
+    expect(CommandID.ALL).toHaveLength(11);
   });
 
   it("every instance renders its wireKey via toString and toJSON", () => {
@@ -129,6 +129,45 @@ describe("CommandID", () => {
     expect(CommandID.PayGoods.wireKey).toBe("CustomerBuyGoodsOnline");
     expect(CommandID.TransactionStatusQuery.wireKey).toBe("TransactionStatusQuery");
     expect(CommandID.AccountBalance.wireKey).toBe("AccountBalance");
+  });
+
+  // Values pinned against docs/apis/b2b.md and tax-remittance.md
+  // (== go/enums.go CommandBusinessPayBill / CommandBusinessBuyGoods /
+  // CommandTaxRemittance).
+  it("B2B commands pin to the documented set {BusinessPayBill, BusinessBuyGoods}", () => {
+    expect(CommandID.BusinessPayBill.value).toBe("BusinessPayBill");
+    expect(CommandID.BusinessPayBill.wireKey).toBe("BusinessPayBill");
+    expect(CommandID.BusinessBuyGoods.value).toBe("BusinessBuyGoods");
+    expect(CommandID.BusinessBuyGoods.wireKey).toBe("BusinessBuyGoods");
+    expect(`${CommandID.BusinessPayBill}`).toBe("BusinessPayBill");
+    expect(JSON.parse(JSON.stringify({ c: CommandID.BusinessBuyGoods })).c)
+      .toBe("BusinessBuyGoods");
+  });
+
+  it("TaxRemittance pins to wire value TaxRemittance (docs/apis/tax-remittance.md)", () => {
+    expect(CommandID.TaxRemittance.value).toBe("TaxRemittance");
+    expect(CommandID.TaxRemittance.wireKey).toBe("TaxRemittance");
+    expect(`${CommandID.TaxRemittance}`).toBe("TaxRemittance");
+  });
+
+  it("fabricated B2B/Tax values are not members", () => {
+    const names = CommandID.ALL.map((c) => c.value);
+    expect(names).not.toContain("BusinessBuyGood");
+    expect(names).not.toContain("TaxRemit");
+    expect(names).not.toContain("BillPayment");
+    expect(names).not.toContain("tax remittance");
+  });
+
+  it("ALL contains the three new members alongside the eight original ones", () => {
+    for (const cmd of [
+      CommandID.BusinessPayBill,
+      CommandID.BusinessBuyGoods,
+      CommandID.TaxRemittance,
+    ]) {
+      expect(CommandID.ALL).toContain(cmd);
+      expect(MpesaEnum.coerce(cmd.value, CommandID.ALL.map((e) => e.value)))
+        .toBe(cmd.value);
+    }
   });
 });
 
@@ -234,8 +273,11 @@ describe("naming aliases (non-breaking, wire-identical)", () => {
   });
 
   it("ALL lengths unchanged (aliases share identity, not extra entries)", () => {
+    // 11 = the eight original members + B2B's two + TaxRemittance. The
+    // TransactionReversal ALIAS still shares identity rather than adding
+    // a twelfth entry.
     expect(TransactionType.ALL).toHaveLength(2);
-    expect(CommandID.ALL).toHaveLength(8);
+    expect(CommandID.ALL).toHaveLength(11);
     expect(TransactionType.ALL).toContain(TransactionType.PayBillOnline);
     expect(TransactionType.ALL).toContain(TransactionType.BuyGoodsOnline);
     expect(CommandID.ALL).toContain(CommandID.TransactionReversal);

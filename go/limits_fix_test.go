@@ -146,7 +146,9 @@ func sameServiceLimits(a, b ServiceLimits) bool {
 func sameTransactionLimits(a, b TransactionLimits) bool {
 	return sameServiceLimits(a.STK, b.STK) && sameServiceLimits(a.C2B, b.C2B) &&
 		sameServiceLimits(a.B2C, b.B2C) && sameServiceLimits(a.Reversal, b.Reversal) &&
-		sameServiceLimits(a.QR, b.QR) && sameServiceLimits(a.Default, b.Default)
+		sameServiceLimits(a.QR, b.QR) && sameServiceLimits(a.B2B, b.B2B) &&
+		sameServiceLimits(a.Tax, b.Tax) && sameServiceLimits(a.Bill, b.Bill) &&
+		sameServiceLimits(a.Default, b.Default)
 }
 
 func ceilingOf(s ServiceLimits, m *int64) string {
@@ -169,7 +171,8 @@ func everyFieldSet(s ServiceLimits) bool {
 // allFieldsMaterialized checks a whole TransactionLimits.
 func allFieldsMaterialized(l TransactionLimits) error {
 	for name, svc := range map[string]ServiceLimits{
-		"STK": l.STK, "C2B": l.C2B, "B2C": l.B2C, "Reversal": l.Reversal, "QR": l.QR, "Default": l.Default,
+		"STK": l.STK, "C2B": l.C2B, "B2C": l.B2C, "Reversal": l.Reversal, "QR": l.QR,
+		"B2B": l.B2B, "Tax": l.Tax, "Bill": l.Bill, "Default": l.Default,
 	} {
 		if !everyFieldSet(svc) {
 			return errors.New(name + " still carries a nil (unset) field: " +
@@ -197,6 +200,9 @@ func TestDefaultTransactionLimitsArePerService(t *testing.T) {
 		{"B2C", d.B2C, 250_000, 500_000},
 		{"Reversal", d.Reversal, 250_000, 500_000},
 		{"QR", d.QR, 250_000, 500_000},
+		{"B2B", d.B2B, 250_000, 500_000},
+		{"Tax", d.Tax, 250_000, 500_000},
+		{"Bill", d.Bill, 250_000, 500_000},
 		{"Default", d.Default, 250_000, 500_000},
 	}
 	for _, tc := range want {
@@ -225,6 +231,15 @@ func TestDefaultTransactionLimitsArePerService(t *testing.T) {
 	}
 	if got := d.limitsFor(ServiceQR); !sameServiceLimits(got, d.QR) {
 		t.Errorf("QR entry not routed: %+v", got)
+	}
+	if got := d.limitsFor(ServiceB2B); !sameServiceLimits(got, d.B2B) {
+		t.Errorf("B2B entry not routed: %+v", got)
+	}
+	if got := d.limitsFor(ServiceTax); !sameServiceLimits(got, d.Tax) {
+		t.Errorf("Tax entry not routed: %+v", got)
+	}
+	if got := d.limitsFor(ServiceBill); !sameServiceLimits(got, d.Bill) {
+		t.Errorf("Bill entry not routed: %+v", got)
 	}
 	if got := d.limitsFor(ServiceDefault); !sameServiceLimits(got, d.Default) {
 		t.Errorf("Default entry not used for un-enumerated services: %+v", got)

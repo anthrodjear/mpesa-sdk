@@ -173,6 +173,9 @@ console.log(resp.ResponseCode, resp.CheckoutRequestID, resp.CustomerMessage);
 | Result classification | `mpesa.ResultClassIndeterminate` | `ResultClass.INDETERMINATE` | `ResultClass.INCONCLUSIVE` |
 | Response code (success) | `"0"` | `"0"` | `"0"` |
 | Command ID (business payment) | `mpesa.CommandBusinessPayment` | `CommandID.BUSINESS_PAYMENT` | `CommandID.BusinessPayment` |
+| Command ID (B2B pay bill) | `mpesa.CommandBusinessPayBill` | `CommandID.BUSINESS_PAY_BILL` | `CommandID.BusinessPayBill` |
+| Command ID (B2B buy goods) | `mpesa.CommandBusinessBuyGoods` | `CommandID.BUSINESS_BUY_GOODS` | `CommandID.BusinessBuyGoods` |
+| Command ID (tax remittance) | `mpesa.CommandTaxRemittance` | `CommandID.TAX_REMITTANCE` | `CommandID.TaxRemittance` |
 | Command ID (C2B simulate) | raw string `mpesa.CommandID("CustomerPayBillOnline")` — Go has no typed member | `CommandID.C2B_PAYBILL_ONLINE` / `C2B_BUY_GOODS_ONLINE` | `CommandID.PayBill` / `PayGoods` |
 | Response type (C2B register) | `mpesa.ResponseTypeCompleted` / `Cancelled` | `ResponseType.COMPLETED` / `CANCELLED` | `ResponseType.Completed` / `Cancelled` (TS rejects the deprecated `Success`/`Fail` aliases at runtime) |
 | QR transaction code | `mpesa.QRTrxPaybill` | `QRTrxCode.PAYBILL` | `QRTrxCode.Paybill` |
@@ -194,6 +197,12 @@ console.log(resp.ResponseCode, resp.CheckoutRequestID, resp.CustomerMessage);
 | Reversal              | `Reversal`         | `reversal`            | `reversal`          |
 | Account Balance       | `AccountBalance`   | `account_balance`     | `accountBalance`    |
 | Dynamic QR            | `GenerateQRCode`   | `generate_qr_code`    | `generateQRCode`    |
+| B2B Express Checkout  | `B2BPayment`       | `b2b_payment`         | `b2bPayment`        |
+| Tax Remittance        | `TaxRemittance`    | `tax_remittance`      | `taxRemittance`     |
+| Bill Register         | `BillRegister`     | `bill_register`       | `billRegister`      |
+| Bill Query            | `BillQuery`        | `bill_query`          | `billQuery`         |
+| Bill Update           | `BillUpdate`       | `bill_update`         | `billUpdate`        |
+| Bill Delete           | `BillDelete`       | `bill_delete`         | `billDelete`        |
 
 ## Core concepts
 
@@ -509,7 +518,7 @@ Listed so log inspection doesn't panic you; the SDKs emit/accept these verbatim:
 │   ├── dependabot.yml      # weekly updates for npm · pip · gomod · github-actions, all targeting `develop`
 │   └── workflows/          # ci.yml · promote.yml · required-checks.yml · dependabot-auto-merge.yml
 ├── ADR-010-m-pesa-adapter.md
-├── CHANGES.md              # per-release changelog (0.6.0 is current)
+├── CHANGES.md              # per-release changelog (0.7.0 is current)
 ├── SECURITY.md             # vulnerability reporting · supported versions · release automation · hardening notes
 └── LICENSE
 ```

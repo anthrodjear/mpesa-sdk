@@ -110,7 +110,8 @@ class TransactionType(_WireEnum):
 
 class CommandID(_WireEnum):
     """``CommandID`` strings shared by B2C, Transaction Status, Reversal,
-    Account Balance and C2B Simulate -- each endpoint accepts a subset."""
+    Account Balance, C2B Simulate, B2B Express Checkout and Tax Remittance
+    -- each endpoint accepts a subset."""
 
     SALARY_PAYMENT = "SalaryPayment"
     """B2C. Recipient must already be M-Pesa registered; unregistered
@@ -131,6 +132,16 @@ class CommandID(_WireEnum):
     :attr:`TransactionType.CUSTOMER_PAY_BILL_ONLINE`, different endpoint."""
     C2B_BUY_GOODS_ONLINE = "CustomerBuyGoodsOnline"
     """C2B Simulate. Buy-goods/till direction; same spelling caveat."""
+    BUSINESS_PAY_BILL = "BusinessPayBill"
+    """B2B Express Checkout (docs/apis/b2b.md). Sender pays a PAYBILL
+    (``PartyB`` is the paybill shortcode + AccountReference the account)."""
+    BUSINESS_BUY_GOODS = "BusinessBuyGoods"
+    """B2B Express Checkout. Sender pays a Buy Goods TILL (``PartyB`` is
+    the till number); the paybill/account-reference variant above."""
+    TAX_REMITTANCE = "TaxRemittance"
+    """Tax Remittance (docs/apis/tax-remittance.md). Only valid CommandID
+    for that endpoint: a KRA remittance carries TaxPeriod/TaxObligation/
+    TaxPayerPIN alongside the shared B2B core."""
 
 
 class ResponseType(_WireEnum):

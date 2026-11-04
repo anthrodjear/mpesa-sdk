@@ -110,19 +110,21 @@ export class TransactionType extends MpesaEnum<'CustomerPayBillOnline' | 'Custom
 }
 
 /**
- * `CommandID` strings shared by B2C, Transaction Status, Reversal,
- * Account Balance and C2B Simulate — each endpoint accepts a subset.
+ * `CommandID` strings shared by B2C, B2B, Tax Remittance, Transaction
+ * Status, Reversal, Account Balance and C2B Simulate — each endpoint
+ * accepts a subset.
  *
  * @example
  * ```ts
  * const body = { CommandID: CommandID.BusinessPayment.wireKey };
  * ```
- * @see docs/apis/b2c.md, transaction-status.md, reversal.md, account-balance.md, c2b.md
+ * @see docs/apis/b2c.md, b2b.md, tax-remittance.md, transaction-status.md, reversal.md, account-balance.md, c2b.md
  */
 export class CommandID extends MpesaEnum<
   | 'CustomerPayBillOnline' | 'CustomerBuyGoodsOnline'
   | 'SalaryPayment' | 'BusinessPayment' | 'PromotionPayment'
   | 'TransactionStatusQuery' | 'AccountBalance' | 'TransactionReversal'
+  | 'BusinessPayBill' | 'BusinessBuyGoods' | 'TaxRemittance'
 > {
   /** C2B Simulate — paybill direction. */
   static readonly PayBill = new CommandID('CustomerPayBillOnline');
@@ -155,6 +157,17 @@ export class CommandID extends MpesaEnum<
    */
   static readonly TransactionReversal: CommandID = CommandID.ReverseTransaction;
   /**
+   * B2B Express Checkout — paybill direction: `PartyB` is a paybill
+   * shortcode and `AccountReference` its account.
+   */
+  static readonly BusinessPayBill = new CommandID('BusinessPayBill');
+  /**
+   * B2B Express Checkout — Buy Goods direction: `PartyB` is a till number.
+   */
+  static readonly BusinessBuyGoods = new CommandID('BusinessBuyGoods');
+  /** Tax Remittance — the only valid CommandID for that endpoint. */
+  static readonly TaxRemittance = new CommandID('TaxRemittance');
+  /**
    * All `CommandID` instances — memoized frozen array (a single shared
    * instance, not rebuilt per access). The `TransactionReversal` alias
    * shares identity with `ReverseTransaction`, so both names are contained.
@@ -163,7 +176,8 @@ export class CommandID extends MpesaEnum<
     CommandID.PayBill, CommandID.PayGoods, CommandID.SalaryPayment,
     CommandID.BusinessPayment, CommandID.PromotionPayment,
     CommandID.TransactionStatusQuery, CommandID.AccountBalance,
-    CommandID.ReverseTransaction,
+    CommandID.ReverseTransaction, CommandID.BusinessPayBill,
+    CommandID.BusinessBuyGoods, CommandID.TaxRemittance,
   ]);
 }
 

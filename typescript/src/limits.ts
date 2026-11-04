@@ -54,6 +54,12 @@ export interface TransactionLimits {
   reversal: ServiceLimits;
   /** Dynamic QR. */
   qr: ServiceLimits;
+  /** B2B Express Checkout. */
+  b2b: ServiceLimits;
+  /** Tax Remittance. */
+  tax: ServiceLimits;
+  /** Bill Manager (register / update). */
+  bill: ServiceLimits;
   /** Fallback bucket: Transaction Status, anything unspecialized. */
   default: ServiceLimits;
 }
@@ -70,14 +76,15 @@ export type PartialTransactionLimits = { [K in LimitService]?: ServiceLimits };
  * Service bucket keys. `"default"` is the fallback for endpoints without a
  * dedicated bucket (Transaction Status / anything unspecialized).
  */
-export type LimitService = "stk" | "c2b" | "b2c" | "reversal" | "qr" | "default";
+export type LimitService = "stk" | "c2b" | "b2c" | "reversal" | "qr" | "b2b" | "tax" | "bill" | "default";
 
 /**
  * Default ceilings. B2C carries the standard Safaricom default (250_000
  * per transaction, 500_000 per day); Safaricom-approved higher tiers are
- * raised explicitly via Config limits overrides. Reversal / Dynamic QR
- * carry the same numbers the shared `default` bucket historically applied
- * to them, so only explicit `default` overrides observe the split.
+ * raised explicitly via Config limits overrides. Reversal / Dynamic QR /
+ * B2B / Tax / Bill carry the same numbers the shared `default` bucket
+ * historically applied to them, so only explicit `default` overrides
+ * observe the split.
  */
 export const DEFAULT_TRANSACTION_LIMITS: TransactionLimits = {
   stk: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
@@ -85,6 +92,9 @@ export const DEFAULT_TRANSACTION_LIMITS: TransactionLimits = {
   b2c: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
   reversal: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
   qr: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
+  b2b: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
+  tax: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
+  bill: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
   default: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
 };
 
@@ -95,11 +105,16 @@ const SERVICE_LABELS: Record<LimitService, string> = {
   b2c: "B2C",
   reversal: "Reversal",
   qr: "Dynamic QR",
+  b2b: "B2B",
+  tax: "Tax",
+  bill: "Bill",
   default: "default",
 };
 
 /** Ordered service keys — drives the merge and the Config shape check. */
-const SERVICE_KEYS: readonly LimitService[] = ["stk", "c2b", "b2c", "reversal", "qr", "default"];
+const SERVICE_KEYS: readonly LimitService[] = [
+  "stk", "c2b", "b2c", "reversal", "qr", "b2b", "tax", "bill", "default",
+];
 
 /** Africa/Nairobi is UTC+3 year-round (no DST) — a fixed offset suffices. */
 const NAIROBI_UTC_OFFSET_MS = 3 * 60 * 60 * 1000;

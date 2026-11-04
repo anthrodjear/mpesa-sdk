@@ -45,9 +45,19 @@ def test_command_id_wire_values_and_count():
         "AccountBalance",
         "CustomerPayBillOnline",
         "CustomerBuyGoodsOnline",
+        "BusinessPayBill",
+        "BusinessBuyGoods",
+        "TaxRemittance",
     }
     assert {m.value for m in CommandID} == expected
-    assert len(CommandID) == 8
+    assert len(CommandID) == 11
+
+
+def test_command_id_new_members_wire_exact():
+    # Casing is contractual: the gateway matches these strings verbatim.
+    assert CommandID.BUSINESS_PAY_BILL.value == "BusinessPayBill"
+    assert CommandID.BUSINESS_BUY_GOODS.value == "BusinessBuyGoods"
+    assert CommandID.TAX_REMITTANCE.value == "TaxRemittance"
 
 
 def test_response_type_sentence_case():
