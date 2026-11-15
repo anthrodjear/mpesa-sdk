@@ -1,3 +1,21 @@
+# Changes — unreleased
+
+- **Go 1.26.11** — updated toolchain. The `go` directive in `go/go.mod` and
+  **both** `setup-go` pins in `.github/workflows/ci.yml` (the `go` job *and*
+  the `security` job) move from `1.26.10` to `1.26.11`, with the README
+  badge/table and `go/README.md` following. The two CI pins must agree: the
+  `security` job runs `GOTOOLCHAIN=local`, so a pin older than the `go`
+  directive fails `govulncheck` outright — the build/scan drift the comment
+  block above those pins exists to prevent. Consumers on an older patch must
+  upgrade (or let `GOTOOLCHAIN=auto` fetch 1.26.11) before `go get` will
+  resolve. No SDK API changed.
+- **Stale `golang.org/x/crypto` indirect requirement dropped**
+  (`go/go.mod`, `go/go.sum`): nothing in the module imports it (the Go engine
+  is dependency-free), so `go mod tidy` removes it — go.mod now matches the
+  documented "none (stdlib only)" runtime dependency claim.
+
+---
+
 # Changes — 0.7.1 (2026-11-04)
 
 A **patch** release: no API or wire change — the only functional edits are
