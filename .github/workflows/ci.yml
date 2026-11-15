@@ -46,7 +46,7 @@ jobs:
           # scanned toolchain must be the same release: govulncheck matches
           # standard-library CVEs against the Go version that built the code, so
           # a mismatch hides every stdlib advisory in the line we actually ship.
-          go-version: '1.26.10'
+          go-version: '1.26.11'
       - name: Vet
         run: go vet ./...
         working-directory: go
