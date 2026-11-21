@@ -691,6 +691,58 @@ def test_gateway_error_keeps_daily_reservation():
     assert client.daily_spend == {"b2c": 5_000}       # reservation kept
 
 
+class TruncatedResponse(FakeResponse):
+    """A 2xx whose body dies mid-stream: the gateway DID answer."""
+
+    def iter_content(self, chunk_size):
+        yield self.content[:4]
+        raise requests.exceptions.ChunkedEncodingError("truncated body")
+
+
+@pytest.mark.parametrize("kind,expected,raises", [
+    ("transport", 0, requests.exceptions.ConnectionError),
+    ("oauth_transport", 0, requests.exceptions.ConnectionError),
+    ("truncated_2xx", 5_000, requests.exceptions.ChunkedEncodingError),
+    ("gateway_4xx", 5_000, MpesaError),
+])
+def test_daily_refund_only_for_pre_response_failures(kind, expected, raises):
+    """S-2: refund ONLY when no gateway response was ever obtained.
+    A truncated 2xx body is a body-read error, not a transport failure --
+    the gateway answered, so the reservation stays (Go/TS parity).
+    """
+    limits = TransactionLimits(b2c=ServiceLimits(1_000_000, 10_000))
+
+    class ScriptedSession(FakeSession):
+        def request(self, method, url, json=None, params=None, timeout=None,
+                    allow_redirects=True, headers=None, stream=False):
+            self.calls.append({"kind": method, "url": url, "json": json})
+            if kind == "transport":
+                raise requests.exceptions.ConnectionError("simulated blip")
+            return self.queue.pop(0)
+
+        def get(self, url, **kwargs):
+            self.calls.append({"kind": "GET", "url": url})
+            if kind == "oauth_transport":
+                raise requests.exceptions.ConnectionError("oauth blip")
+            return self.queue.pop(0)
+
+    if kind == "truncated_2xx":
+        business = TruncatedResponse(text=B2C_OK.content.decode())
+    elif kind == "gateway_4xx":
+        business = FakeResponse(status_code=400, text="{}")
+    else:
+        business = None
+    session = ScriptedSession([OAUTH_OK] + ([business] if business else []))
+    cfg = Config(consumer_key="k", consumer_secret="s", shortcode="174379",
+                 passkey=PASSKEY, now=lambda: T0, http_client=session,
+                 limits=limits, track_daily=True)
+    client = MpesaClient(cfg)
+
+    with pytest.raises(raises):
+        client.b2c_payout(b2c(amount=5_000))
+    assert client.daily_spend == {"b2c": expected}
+
+
 def test_backward_clock_jump_keeps_daily_budget():
     """A backward clock jump (NTP correction) reuses today's budget
     instead of resetting early. Forward-only day compare: only a day key

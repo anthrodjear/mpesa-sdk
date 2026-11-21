@@ -15,14 +15,20 @@
  * `nodejs.util.inspect.custom` hook installed below the class, so
  * `console.log(config)` never prints the raw object.
  *
- * `console.dir(config)` is NOT covered by that hook: Node documents it
- * as `util.inspect(obj, { ...options, customInspect: false })` — it
- * DISABLES the custom inspect hook — so the default walk would print
- * the consumer secret and the passkey in cleartext. `consumerSecret`
- * and `passkey` are therefore NON-ENUMERABLE own properties: the
- * default inspect walk and an object spread (`{ ...config }`) skip
- * them, so neither can leak a secret. The values stay readable
- * (`config.consumerSecret`) and the public shape is unchanged.
+ * `console.dir(config, { showHidden: true })` walks ALL own properties,
+ * including non-enumerable ones, so hiding a secret merely by marking it
+ * non-enumerable is not enough. The three credential values therefore live
+ * in a module-level `WeakMap`, NOT on the instance at all; prototype getters
+ * keep them readable through the unchanged public API
+ * (`config.consumerKey`, `config.consumerSecret`, `config.passkey`). No
+ * inspect mode or object spread can surface a value that is not an own
+ * property. The masked key remains available for diagnostics via
+ * {@link Config.maskedConsumerKey} / {@link Config.toString} /
+ * {@link Config.toJSON}.
+ *
+ * Residual: `util.inspect(x, { getters: true })` explicitly invokes getters
+ * and would print their values — that opt-in mode is outside the default
+ * `console.dir` walk this hardening addresses.
  *
  * Environment-variable wiring belongs to the Client layer. Safaricom
  * requires IP whitelisting for production credentials.
@@ -153,6 +159,18 @@ function maskCredential(value: string): string {
 }
 
 /**
+ * Credential values live HERE, never on a Config instance. `console.dir(cfg,
+ * { showHidden: true })` walks own properties INCLUDING non-enumerable ones,
+ * so the only reliable hiding place is a key held outside the object. The
+ * public read API is preserved by prototype getters on the class below.
+ */
+const CONFIG_SECRETS = new WeakMap<Config, {
+  consumerKey: string;
+  consumerSecret: string;
+  passkey: string;
+}>();
+
+/**
  * Immutable, credential-safe configuration. Validates on construction and
  * never exposes `consumerSecret` or `passkey` in any text form.
  * `consumerKey` is rendered MASKED (first-4/last-4) in every log
@@ -175,18 +193,19 @@ function maskCredential(value: string): string {
  * ```
  */
 export class Config {
-  /** OAuth consumer key — non-empty string. */
-  readonly consumerKey: string;
   /**
-   * OAuth consumer secret — non-empty string.
-   *
-   * NON-ENUMERABLE own property: the default `util.inspect` walk (which
-   * `console.dir` forces by disabling the custom inspect hook) and an
-   * object spread skip it, so the secret cannot leak through either.
-   * The value stays readable as `cfg.consumerSecret` — only the
-   * enumerability changes, never the public shape.
+   * OAuth consumer key — non-empty string. WeakMap-backed via a prototype
+   * getter, so it is never an own property and no inspect mode or spread can
+   * surface it. The value stays readable as `cfg.consumerKey`; use
+   * {@link Config.maskedConsumerKey} for a log-safe rendering.
    */
-  readonly consumerSecret: string;
+  get consumerKey(): string { return CONFIG_SECRETS.get(this)!.consumerKey; }
+  /**
+   * OAuth consumer secret — non-empty string. WeakMap-backed via a prototype
+   * getter, so it is never an own property and cannot leak through any
+   * inspect walk or `{ ...cfg }`. Readable as `cfg.consumerSecret`.
+   */
+  get consumerSecret(): string { return CONFIG_SECRETS.get(this)!.consumerSecret; }
   /**
    * M-Pesa shortcode — digits-only, 5 to 10 characters, OR empty.
    * Empty is allowed (Go/Py parity) for callers that pass the shortcode
@@ -201,11 +220,11 @@ export class Config {
    * requirement is enforced lazily where the passkey is actually used —
    * STK Push/Query, which bind it into the request Password.
    *
-   * NON-ENUMERABLE own property, like {@link Config.consumerSecret}: the
-   * default `util.inspect` walk and an object spread skip it, so the
-   * passkey cannot leak through `console.dir(cfg)` or `{ ...cfg }`.
+   * WeakMap-backed via a prototype getter, like {@link Config.consumerSecret}:
+   * never an own property, so it cannot leak through `console.dir(cfg,
+   * { showHidden: true })` or `{ ...cfg }`.
    */
-  readonly passkey: string;
+  get passkey(): string { return CONFIG_SECRETS.get(this)!.passkey; }
   /** Target environment (defaults to SANDBOX). */
   readonly environment: Environment;
   /**
@@ -259,27 +278,16 @@ export class Config {
     limits?: PartialTransactionLimits;
     trackDaily?: boolean;
   }) {
-    this.consumerKey = opts.consumerKey;
-    this.consumerSecret = opts.consumerSecret;
+    // Credentials live in the module-level WeakMap, NOT as own properties:
+    // `console.dir(cfg, { showHidden:true })` walks ALL own properties —
+    // non-enumerable ones included — and would otherwise print them. The
+    // prototype getters above keep the public read API unchanged.
+    CONFIG_SECRETS.set(this, {
+      consumerKey: opts.consumerKey,
+      consumerSecret: opts.consumerSecret,
+      passkey: opts.passkey ?? "",
+    });
     this.shortcode = opts.shortcode ?? "";
-    this.passkey = opts.passkey ?? "";
-    // The two SECRET fields are re-declared NON-ENUMERABLE.
-    //
-    // The `nodejs.util.inspect.custom` hook below covers `util.inspect`
-    // and therefore `console.log`, but Node documents `console.dir` as
-    // `util.inspect(obj, { ...options, customInspect: false })` — it
-    // DISABLES the custom hook — so the default walk would print the
-    // consumer secret and the passkey in cleartext. A non-enumerable own
-    // property is skipped by that walk AND by an object spread
-    // (`{ ...config }`), so neither can leak a secret.
-    //
-    // A redefine of an existing configurable data property keeps its
-    // value/writable/configurable attributes, so ONLY `enumerable` moves
-    // and the value assigned above is preserved. The public API is
-    // unchanged: `cfg.consumerSecret` and `cfg.passkey` still read back
-    // exactly what was passed in.
-    Object.defineProperty(this, "consumerSecret", { enumerable: false });
-    Object.defineProperty(this, "passkey", { enumerable: false });
     this.environment = opts.environment ?? Environment.SANDBOX;
     this.limits = resolveTransactionLimits(opts.limits);
     // Deep-freeze the resolved limits (and each nested service bucket):
@@ -383,6 +391,17 @@ export class Config {
   }
 
   /**
+   * Log-safe rendering of the consumer key (first-4/last-4, e.g.
+   * `abcd...wxyz`). A prototype getter, so it is NOT an own enumerable
+   * property — a spread or `console.dir` walk never sees it — yet the
+   * masked value stays directly available for diagnostics even though
+   * {@link Config.consumerKey} itself is not an own property.
+   */
+  get maskedConsumerKey(): string {
+    return maskCredential(this.consumerKey);
+  }
+
+  /**
    * Credential-safe string: `Config(env, shortcode=XXXXXX, key=abcd...wxyz)`.
    * `consumerKey` is MASKED to first-4/last-4 (SECURITY.md: never log
    * credentials); `consumerSecret` and `passkey` are omitted entirely.
@@ -392,7 +411,7 @@ export class Config {
    * ```
    */
   toString(): string {
-    return `Config(${this.environment.name}, shortcode=${this.shortcode}, key=${maskCredential(this.consumerKey)})`;
+    return `Config(${this.environment.name}, shortcode=${this.shortcode}, key=${this.maskedConsumerKey})`;
   }
 
   /**
@@ -409,7 +428,7 @@ export class Config {
     return {
       shortcode: this.shortcode,
       environment: this.environment.name,
-      key: maskCredential(this.consumerKey),
+      key: this.maskedConsumerKey,
     };
   }
 
@@ -425,9 +444,10 @@ export class Config {
  * `util.inspect` hook — the TypeScript equivalent of Go's `Config.Format`
  * (go/config.go) and Python's `__repr__` (python/mpesa/config.py).
  *
- * `util.inspect` does NOT consult `toString()`/`toJSON()`: left to its own
- * devices it walks the own enumerable properties and prints `consumerSecret`
- * and `passkey` in cleartext, which is exactly what `console.log(cfg)` does.
+ * `util.inspect` does NOT consult `toString()`/`toJSON()`: without this hook
+ * it would print the raw instance (whose credentials are held in a WeakMap,
+ * so no secret value can appear in any walk), which is exactly what
+ * `console.log(cfg)` would otherwise do.
  * SECURITY.md forbids cleartext credentials in logs, so the hook routes
  * `inspect` (and therefore `console.log`) through the redacted
  * {@link Config.toString} form.

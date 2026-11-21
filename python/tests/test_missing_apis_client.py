@@ -447,8 +447,8 @@ class TransportFailSession(FakeSession):
     (lambda c, r: c.bill_register(r), lambda: bill_register(amount=5_000), "bill"),
 ])
 def test_transport_error_rolls_back(call, req, service):
-    """A network blip refunds the reservation (Go recordTransportRollback
-    parity) on EVERY new amount-bearing endpoint.
+    """A pre-response network blip refunds the reservation (Go
+    ErrNotDispatched parity) on EVERY new amount-bearing endpoint.
     """
     limits = TransactionLimits(
         b2b=ServiceLimits(1_000_000, 10_000),

@@ -60,7 +60,7 @@ import {
   normalizePhone,
   newOriginatorID,
 } from "./helpers.js";
-import { TokenManager } from "./auth.js";
+import { NotDispatchedError, TokenManager } from "./auth.js";
 import { readBodyBounded, bodyTooLargeError } from "./_bounded-read.js";
 import type {
   STKPushRequest,
@@ -144,6 +144,28 @@ const MAX_RESPONSE_LEN = 1 << 20;
 
 /** Default request timeout (30s). */
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+/**
+ * Max accepted length of any endpoint URL, in UTF-8 bytes (parity with the
+ * 1 MiB body caps and Go's byte-based slice bounds). Shared by
+ * {@link requireURL} so every URL-bearing endpoint rejects oversized
+ * values uniformly — before parsing, with a length-only message that
+ * never echoes the caller-supplied URL.
+ */
+const MAX_URL_LEN = 8192;
+
+/**
+ * Identify an OAuth token-leg TRANSPORT failure by its TYPE, not by a
+ * cross-file message prefix. `TokenManager._fetchToken` throws a branded
+ * {@link NotDispatchedError} — the TS analogue of Go's `notDispatchedError`
+ * on the OAuth leg and Python's `RequestException`. Typed failures
+ * (non-2xx `MpesaError`, 429 rate limit, 408 body timeout, 413 oversize,
+ * decode errors, missing token) mean the gateway answered or a local gate
+ * refused: they are NOT transport failures and never trigger a refund.
+ */
+function isOAuthTransportFailure(err: unknown): boolean {
+  return err instanceof NotDispatchedError;
+}
 
 // ─── B2C command whitelist ────────────────────────────────────────────────────
 
@@ -347,6 +369,14 @@ function isBlockedIP(host: string): boolean {
 
 function requireURL(field: string, value: string): void {
   requireNonEmpty(field, value);
+  // UTF-8 bytes, NOT UTF-16 code units — a multibyte URL must be measured
+  // the same way as the 1 MiB body caps (Go `len([]byte)` parity).
+  const byteLen = Buffer.byteLength(value, "utf8");
+  if (byteLen > MAX_URL_LEN) {
+    // Length-only: an overlong URL is caller-supplied and may embed a
+    // capability token, so neither the value nor a prefix of it is echoed.
+    throw new Error(`mpesa: ${field} exceeds ${MAX_URL_LEN} bytes (got ${byteLen})`);
+  }
   if (/\s/.test(value)) {
     throw new Error(`mpesa: ${field} must not contain whitespace`);
   }
@@ -611,10 +641,11 @@ export interface MpesaClientOptions {
  * Concurrency-safe Daraja API engine. Create one per environment and
  * share it; the OAuth token cache is guarded internally.
  *
- * Token refresh holds the write lock across the OAuth round-trip — a
- * deliberate ~once-per-refresh-window stall traded for strict
- * single-flight, because requesting a token invalidates every previously
- * issued one.
+ * Token refresh is single-flight via the shared in-flight Promise in
+ * {@link TokenManager} (no explicit lock): the first stale caller performs
+ * the OAuth round-trip and concurrent stale callers await that same
+ * Promise, so exactly one mint happens per refresh window. Requesting a
+ * token invalidates every previously issued one.
  *
  * @example
  * ```ts
@@ -693,6 +724,14 @@ export class MpesaClient {
             now: this._now,
             fetch: this._fetch,
           });
+    // `_config` and `_tokens` are the two holders of live credential
+    // material (key/secret/passkey/bearer). Their own classes keep those
+    // values in module-level WeakMaps — never own properties — so even a
+    // `showHidden:true` walk finds no secret. Marking the HOLDERS
+    // non-enumerable too keeps `{ ...client }` from even reaching the
+    // nested objects. Values stay readable on the client; public API is unchanged.
+    Object.defineProperty(this, "_config", { enumerable: false });
+    Object.defineProperty(this, "_tokens", { enumerable: false });
   }
 
   /**
@@ -873,9 +912,20 @@ export class MpesaClient {
    * Response bodies are capped at 1 MiB — oversized payloads are
    * rejected with a typed error before any parsing attempt.
    *
-   * @param opts.onTransportError - Refund hook invoked ONLY when the
-   *   fetch itself throws (transport failure) — never for gateway
-   *   responses, including 413 oversize and non-2xx `MpesaError`.
+   * DAILY-LEDGER REFUND RULE (Go `ErrNotDispatched` / Python
+   * `RequestException` parity): the refund hook fires ONLY when a
+   * request provably never got a gateway answer. That covers (a) a
+   * transport failure in the business-leg fetch and (b) a transport
+   * failure in the OAuth token leg when NO business attempt has been
+   * dispatched yet in this call (a cold start / forced refresh). On the
+   * 401 retry path the first business attempt already reached the
+   * gateway and answered 401, so a refresh-leg transport failure there
+   * keeps the reservation — the gateway saw a request. Typed failures
+   * (gateway non-2xx, oversize, decode, rate limit) always keep it.
+   *
+   * @param opts.onTransportError - Refund hook, invoked under the rule above
+   *   — never for gateway responses, including 413 oversize and non-2xx
+   *   `MpesaError`.
    */
   private async _post<T>(
     path: string,
@@ -883,7 +933,28 @@ export class MpesaClient {
     out: (body: string) => T,
     opts?: { onTransportError?: () => void },
   ): Promise<T> {
-    const [tok, gen] = await this._tokens.getTokenWithGen();
+    // Whether a business attempt has been dispatched in THIS call. The
+    // daily-ledger rule (see the _post doc comment) refunds an OAuth-leg
+    // transport failure ONLY while this is still false — once a business
+    // attempt has run, the gateway may have answered (e.g. the 401 that
+    // triggers the retry), so the reservation sticks.
+    let businessAttemptDispatched = false;
+
+    let tok: string;
+    let gen: number;
+    try {
+      [tok, gen] = await this._tokens.getTokenWithGen();
+    } catch (err) {
+      // Cold start / forced refresh: no business request has left this
+      // process, so an OAuth transport failure means nothing was
+      // dispatched and the daily reservation is refunded. Typed failures
+      // (gateway answer / local gate) keep it.
+      if (!businessAttemptDispatched && isOAuthTransportFailure(err)) {
+        opts?.onTransportError?.();
+      }
+      throw err;
+    }
+
     const attempt = async (token: string): Promise<{ status: number; contentType: string; body: string }> => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this._timeoutMs);
@@ -941,6 +1012,7 @@ export class MpesaClient {
       }
     };
 
+    businessAttemptDispatched = true;
     let result = await attempt(tok);
 
     // Retry-once on 401.003.01 (generation guard). The probe decodes
@@ -950,7 +1022,17 @@ export class MpesaClient {
     if (result.status === 401 && this._retryOnUnauthorized) {
       const probe = tryDecodeJsonObject(result.body);
       if (probe?.["errorCode"] === ERR_CODE_INVALID_TOKEN) {
-        const freshTok = await this._tokens.refreshAfterInvalidToken(gen);
+        let freshTok: string;
+        try {
+          freshTok = await this._tokens.refreshAfterInvalidToken(gen);
+        } catch (err) {
+          // 401 RETRY PATH: the first business attempt already got a
+          // gateway answer (the 401), so the request WAS seen by the
+          // gateway. Even if this forced token refresh now fails at the
+          // transport level, the daily reservation is NOT refunded — the
+          // cold-start path above is the only refund point.
+          throw err;
+        }
         result = await attempt(freshTok);
       }
     }
@@ -1887,7 +1969,9 @@ export class MpesaClient {
    *
    * Every field beyond `shortCode`/`billRefNumber` is OPTIONAL and an
    * omitted one is OMITTED from the wire payload, not sent as
-   * zero/empty — partial updates are the point of the endpoint.
+   * zero/empty — partial updates are the point of the endpoint. A
+   * WHITESPACE-ONLY `expiryDate`/`callBackURL` counts as unset (Go/Python
+   * blank-and-omit parity): no validation error and no wire key.
    * `shortCode` ← config shortcode when empty.
    *
    * @throws {Error} On validation failure (before any network I/O).
@@ -1911,11 +1995,16 @@ export class MpesaClient {
     requireNonEmpty("BillRefNumber", r.billRefNumber);
     requirePrintableMaxLen("BillRefNumber", r.billRefNumber, 32);
     if (r.amount !== undefined) requirePositiveInt("Amount", r.amount);
-    if (r.expiryDate !== undefined) {
-      requireNonEmpty("ExpiryDate", r.expiryDate);
+    // Go/Python BLANK-AND-OMIT parity: a whitespace-only optional counts as
+    // UNSET, not as a malformed value — skip validation and leave it out of
+    // the wire payload below. A genuinely supplied value still gets the
+    // full printable/length or URL validation.
+    if (r.expiryDate !== undefined && r.expiryDate.trim().length > 0) {
       requirePrintableMaxLen("ExpiryDate", r.expiryDate, 10);
     }
-    if (r.callBackURL !== undefined) requireURL("CallBackURL", r.callBackURL);
+    if (r.callBackURL !== undefined && r.callBackURL.trim().length > 0) {
+      requireURL("CallBackURL", r.callBackURL);
+    }
     if (r.payerNumber !== undefined && r.payerNumber.trim().length > 0) {
       r.payerNumber = normalizePhone(r.payerNumber);
     }
@@ -1940,10 +2029,10 @@ export class MpesaClient {
     if (r.amount !== undefined) {
       payload["Amount"] = r.amount;
     }
-    if (r.expiryDate) {
+    if (r.expiryDate?.trim()) {
       payload["ExpiryDate"] = r.expiryDate;
     }
-    if (r.callBackURL) {
+    if (r.callBackURL?.trim()) {
       payload["CallBackURL"] = r.callBackURL;
     }
     // A whitespace-only value counts as "not supplied": omit the key rather
@@ -2075,12 +2164,18 @@ export class MpesaClient {
  * `Client.Format` (go/client.go).
  *
  * `util.inspect` does NOT consult `toString()`/`toJSON()`: left to its own
- * devices it walks the own enumerable properties, so it printed the
- * nested `_tokens` TokenManager — and with it the consumer key and the
- * consumer secret — in cleartext, which is exactly what `console.log(client)`
- * does. SECURITY.md forbids cleartext credentials in logs, so the hook
- * routes `inspect` (and therefore `console.log`) through the
- * credential-safe {@link MpesaClient.toString} form.
+ * devices it walks the own enumerable properties and prints the nested
+ * `_config`/`_tokens` objects. Their credentials now live in module-level
+ * WeakMaps, but the hook keeps the whole rendering concise and safe.
+ * SECURITY.md forbids cleartext credentials in logs, so it routes `inspect`
+ * (and therefore `console.log`) through the credential-safe
+ * {@link MpesaClient.toString} form.
+ *
+ * As with TokenManager/Config, the hook does NOT cover `console.dir` or an
+ * object spread. The constructor makes the two credential holders
+ * (`_config`, `_tokens`) NON-ENUMERABLE so a spread cannot reach them, and
+ * those classes keep their own secret values in WeakMaps, so even a
+ * `showHidden:true` walk finds no secret value.
  *
  * Installed with `Symbol.for("nodejs.util.inspect.custom")` rather than an
  * import of `node:util`, so this module keeps no Node-only import. The

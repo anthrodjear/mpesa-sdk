@@ -568,16 +568,20 @@ describe("Tax Remittance", () => {
     expect(req.taxPayerPIN).toBe("A001234567X");
   });
 
-  it("logSafeRequest drops the callback-token query from both URL fields", async () => {
+  it("logSafeRequest redacts the WHOLE value of both URL fields", async () => {
+    // A callback token can live in the URL PATH, so only a full redaction
+    // (Go LogSafe parity) is safe — not a query-string trim.
     const safe = logSafeRequest(
       taxReq({
-        queueTimeOutURL: "https://mydomain.com/t?token=0123456789abcdef",
+        queueTimeOutURL: "https://mydomain.com/t/0123456789abcdef",
         resultURL: "https://mydomain.com/r?token=deadbeef",
       }),
     );
-    expect(safe.queueTimeOutURL).toBe("https://mydomain.com/t");
-    expect(safe.resultURL).toBe("https://mydomain.com/r");
-    expect(JSON.stringify(safe)).not.toContain("token");
+    expect(safe.queueTimeOutURL).toBe("[REDACTED]");
+    expect(safe.resultURL).toBe("[REDACTED]");
+    const blob = JSON.stringify(safe);
+    expect(blob).not.toContain("token");
+    expect(blob).not.toContain("mydomain.com");
   });
 });
 
@@ -798,6 +802,26 @@ describe("Bill Manager — query / update / delete", () => {
     expect(body["PayerName"]).toBeUndefined();
     // The two identifiers still travel.
     expect(body).toEqual({ ShortCode: "600000", BillRefNumber: "INV-001" });
+  });
+
+  it("update treats whitespace-only expiryDate/callBackURL as UNSET (Go blank-and-omit)", async () => {
+    const seen = mockTransport(() => BILL_ACK_WITHOUT_REF);
+
+    // Whitespace used to throw via requireNonEmpty / requireURL. It must
+    // now be silently omitted from the wire body, like Go/Python.
+    await expect(
+      makeClient().billUpdate({
+        shortCode: "600000",
+        billRefNumber: "INV-001",
+        expiryDate: "   ",
+        callBackURL: "\t \n",
+      }),
+    ).resolves.toBeDefined();
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.body).toEqual({ ShortCode: "600000", BillRefNumber: "INV-001" });
+    expect(seen[0]?.body).not.toHaveProperty("ExpiryDate");
+    expect(seen[0]?.body).not.toHaveProperty("CallBackURL");
   });
 
   it("query/update/delete default ShortCode from the configured shortcode when omitted", async () => {

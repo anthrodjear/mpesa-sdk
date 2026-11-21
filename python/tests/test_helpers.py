@@ -158,6 +158,17 @@ def test_normalize_phone_mixed_separators_positive():
     assert normalize_phone("+254 712-345-678") == "254712345678"
 
 
+def test_normalize_phone_error_never_echoes_the_number():
+    """F-6: an MSISDN is caller PII -- the error reports length only, like
+    requests_sync._phone and the Go/TS helpers, so logs cannot leak it."""
+    raw = "0712 999 8888"                 # malformed, but recognisable
+    with pytest.raises(ValueError) as excinfo:
+        normalize_phone(raw)
+    message = str(excinfo.value)
+    assert "0712" not in message and "999" not in message
+    assert f"got {len(raw)} characters" in message
+
+
 def test_security_credential_requires_bytes_input():
     with pytest.raises(TypeError, match="must be bytes"):
         security_credential("-----BEGIN CERTIFICATE-----", "pw")

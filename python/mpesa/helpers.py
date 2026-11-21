@@ -87,7 +87,10 @@ def normalize_phone(raw: str) -> str:
 
     Raises:
         ValueError: overlong input or non-matching final shape (incl.
-            non-ASCII digit look-alikes, rejected like Go RE2).
+            non-ASCII digit look-alikes, rejected like Go RE2). The message
+            reports the LENGTH only, never the number: an MSISDN is caller
+            PII and whatever raises here will be logged verbatim (same rule
+            as ``requests_sync._phone``).
     """
     if len(raw) > _MAX_MSISDN_INPUT:
         raise ValueError("mpesa: input too long for a Kenyan MSISDN")
@@ -100,8 +103,8 @@ def normalize_phone(raw: str) -> str:
         stripped = "254" + stripped[1:]
     if not _PHONE_RE.fullmatch(stripped):
         raise ValueError(
-            f"mpesa: {raw!r} is not a valid Kenyan MSISDN "
-            "(want 07XX/+2547XX/2547XX)"
+            f"mpesa: not a valid Kenyan MSISDN (got {len(raw)} characters, "
+            "want 07XX/+2547XX/2547XX)"
         )
     return stripped
 

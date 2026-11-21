@@ -7,7 +7,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inspect } from "node:util";
-import { TokenManager, getAccessToken } from "../src/auth.js";
+import { NotDispatchedError, TokenManager, getAccessToken } from "../src/auth.js";
 import { ConfigError } from "../src/config.js";
 import { MpesaError } from "../src/errors.js";
 
@@ -731,6 +731,33 @@ describe("TokenManager zero-config", () => {
 });
 
 // ---------------------------------------------------------------------------
+// NotDispatchedError — typed OAuth transport failure (D3)
+// ---------------------------------------------------------------------------
+
+describe("NotDispatchedError", () => {
+  it("is a branded Error with a stable name and instanceof identity", () => {
+    const err = new NotDispatchedError("mpesa: oauth request: boom");
+    expect(err).toBeInstanceOf(Error);
+    expect(err).toBeInstanceOf(NotDispatchedError);
+    expect(err.name).toBe("NotDispatchedError");
+    expect(err.message).toBe("mpesa: oauth request: boom");
+  });
+
+  it("does not match a plain Error carrying the same message", () => {
+    // The old prefix match could not tell these apart; the type can.
+    const plain = new Error("mpesa: oauth request: boom");
+    expect(plain).not.toBeInstanceOf(NotDispatchedError);
+  });
+
+  it("wraps a fetch rejection with the message text unchanged", async () => {
+    fetchMock.mockRejectedValue(new TypeError("fetch failed"));
+    const tm = makeManager();
+    await expect(tm.getToken()).rejects.toBeInstanceOf(NotDispatchedError);
+    await expect(tm.getToken()).rejects.toThrow("mpesa: oauth request: fetch failed");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Token redaction (toString / toJSON)
 // ---------------------------------------------------------------------------
 
@@ -784,6 +811,68 @@ describe("TokenManager redaction", () => {
     expect(out).not.toContain("0123456789abcdef");
     // The rendering is still the credential-safe toString() form.
     expect(out).toContain(tm.toString());
+  });
+
+  it("a POPULATED token is hidden from a console.dir-style walk", async () => {
+    // The custom inspect hook is disabled by console.dir; only the
+    // WeakMap-backed secret fields (not own properties) keep this safe.
+    fetchMock.mockResolvedValue(jsonResponse(VALID_TOKEN_RESPONSE));
+    const tm = new TokenManager({
+      baseUrl: BASE_URL,
+      consumerKey: "0123456789abcdef",
+      consumerSecret: "SUPERSECRET",
+      timeoutMs: 5000,
+      now: () => nowMs,
+    });
+    await tm.getToken(); // token is now cached — must still not leak
+    expect(tm.toString()).toContain("cached=true");
+
+    const dir = inspect(tm, { customInspect: false });
+    expect(dir).not.toContain("SUPERSECRET");
+    expect(dir).not.toContain("0123456789abcdef");
+    expect(dir).not.toContain("tok-abc123");
+  });
+
+  it("showHidden:true cannot surface the key, secret or cached bearer (H-4)", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(VALID_TOKEN_RESPONSE));
+    const tm = new TokenManager({
+      baseUrl: BASE_URL,
+      consumerKey: "0123456789abcdef",
+      consumerSecret: "SUPERSECRET",
+      timeoutMs: 5000,
+      now: () => nowMs,
+    });
+    await tm.getToken();
+
+    const deep = inspect(tm, { customInspect: false, showHidden: true, depth: 5 });
+    expect(deep).not.toContain("SUPERSECRET");
+    expect(deep).not.toContain("0123456789abcdef");
+    expect(deep).not.toContain("tok-abc123");
+    // Read-back through the prototype accessor is unchanged.
+    expect((tm as unknown as Record<string, unknown>)["_token"]).toBe("tok-abc123");
+  });
+
+  it("a POPULATED token is not carried by an object spread or key listing", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(VALID_TOKEN_RESPONSE));
+    const tm = new TokenManager({
+      baseUrl: BASE_URL,
+      consumerKey: "0123456789abcdef",
+      consumerSecret: "SUPERSECRET",
+      timeoutMs: 5000,
+      now: () => nowMs,
+    });
+    await tm.getToken();
+
+    const spread = { ...tm } as unknown as Record<string, unknown>;
+    for (const field of ["_consumerKey", "_consumerSecret", "_token"]) {
+      expect(spread[field]).toBeUndefined();
+    }
+    const keys = Object.keys(tm);
+    expect(keys).not.toContain("_consumerKey");
+    expect(keys).not.toContain("_consumerSecret");
+    expect(keys).not.toContain("_token");
+    // Read-back is unchanged — the WeakMap-backed accessor still returns it.
+    expect((tm as unknown as Record<string, unknown>)["_token"]).toBe("tok-abc123");
   });
 });
 

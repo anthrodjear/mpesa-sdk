@@ -1964,6 +1964,38 @@ func TestPinnedClientInheritsTheTunedIdleBudget(t *testing.T) {
 	}
 }
 
+// H-6: readCapped must grow incrementally (no ~1 MiB preallocation per tiny
+// response) while keeping the EXACT oversize semantics callers rely on: it
+// returns at most limit bytes, so `len(body) > maxResponseLen` still flags an
+// oversize body and drainOversize can consume the rest.
+func TestReadCappedIncrementalGrowthAndOversize(t *testing.T) {
+	// Tiny bodies round-trip byte-for-byte.
+	for _, size := range []int{0, 1, 64, 4096} {
+		body := bytes.Repeat([]byte("a"), size)
+		got, err := readCapped(bytes.NewReader(body), maxResponseLen+1)
+		if err != nil {
+			t.Fatalf("size %d: readCapped: %v", size, err)
+		}
+		if !bytes.Equal(got, body) {
+			t.Fatalf("size %d: got %d bytes, want %d", size, len(got), size)
+		}
+	}
+
+	// A body larger than the limit is capped at exactly limit bytes, so the
+	// caller's oversize check still fires.
+	big := bytes.Repeat([]byte("x"), maxResponseLen+4096)
+	got, err := readCapped(bytes.NewReader(big), maxResponseLen+1)
+	if err != nil {
+		t.Fatalf("oversize: readCapped: %v", err)
+	}
+	if len(got) != maxResponseLen+1 {
+		t.Fatalf("oversize len = %d, want %d (maxResponseLen+1)", len(got), maxResponseLen+1)
+	}
+	if !(len(got) > maxResponseLen) {
+		t.Fatal("capped body is not flagged oversize by len(body) > maxResponseLen")
+	}
+}
+
 // #13: an oversize response must not poison the connection pool.
 //
 // The capped read stops with bytes still unread on the socket, and a

@@ -139,13 +139,28 @@ func (w unwrapTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // Unwrap exposes the inner RoundTripper so verification checks can descend.
 func (w unwrapTransport) Unwrap() http.RoundTripper { return w.inner }
 
-// opaqueTransport is a wrapper WITHOUT Unwrap: the checker cannot see
-// through it, so it must be treated as safe (nothing provably insecure).
+// opaqueTransport is a wrapper WITHOUT Unwrap whose inner transport sits in
+// an UNEXPORTED field. The walk now descends unexported fields by reflection,
+// so an insecure inner transport here is provably reachable and must be
+// refused (H-2): hiding the transport in a private field is not a defence.
 type opaqueTransport struct{ inner http.RoundTripper }
 
 func (w opaqueTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return w.inner.RoundTrip(r)
 }
+
+// fieldTransport hides the inner transport in an EXPORTED field and does NOT
+// implement Unwrap. The standard-wrapper-only check used to miss this; the
+// reflection descent must still find the insecure *http.Transport.
+type fieldTransport struct{ Inner http.RoundTripper }
+
+func (w fieldTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return w.Inner.RoundTrip(r)
+}
+
+// embeddedTransport embeds the inner transport (its field name "Transport"
+// is exported by virtue of the type name) without an Unwrap method.
+type embeddedTransport struct{ *http.Transport }
 
 func TestNewClientRefusesInsecureSkipVerify(t *testing.T) {
 	insecure := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
@@ -169,6 +184,22 @@ func TestNewClientRefusesInsecureSkipVerify(t *testing.T) {
 		!strings.Contains(err.Error(), "InsecureSkipVerify") {
 		t.Errorf("double-wrapped insecure transport err = %v, want refusal", err)
 	}
+	// Reflection descent catches wrappers that hide an insecure transport in
+	// an exported/embedded field WITHOUT implementing Unwrap (F-8).
+	for name, rt := range map[string]http.RoundTripper{
+		"exported field wrapper": fieldTransport{Inner: insecure},
+		"embedded transport":     embeddedTransport{Transport: insecure},
+		"unwrap around field":    unwrapTransport{inner: fieldTransport{Inner: insecure}},
+		"field around embedded":  fieldTransport{Inner: embeddedTransport{Transport: insecure}},
+		// H-2: an unexported field is NOT a hiding place any more.
+		"unexported field wrapper": opaqueTransport{inner: insecure},
+	} {
+		if _, err := NewClient(Config{ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox, HTTPClient: &http.Client{Transport: rt}}); err == nil ||
+			!strings.Contains(err.Error(), "InsecureSkipVerify") {
+			t.Errorf("%s: err = %v, want InsecureSkipVerify refusal", name, err)
+		}
+	}
+
 	// Secure / nil-TLSConfig / nil-Transport cases must be ALLOWED.
 	for _, tc := range []struct {
 		name string
@@ -178,7 +209,8 @@ func TestNewClientRefusesInsecureSkipVerify(t *testing.T) {
 		{"nil TLSConfig verifies by default", nilTLS},
 		{"nil Transport means DefaultTransport", nil},
 		{"wrapped secure inner", unwrapTransport{inner: secure}},
-		{"opaque wrapper cannot prove insecurity", opaqueTransport{inner: insecure}},
+		{"exported-field wrapper around secure inner", fieldTransport{Inner: secure}},
+		{"unexported-field wrapper around secure inner", opaqueTransport{inner: secure}},
 	} {
 		t.Run("allows/"+tc.name, func(t *testing.T) {
 			var hc *http.Client
@@ -189,6 +221,100 @@ func TestNewClientRefusesInsecureSkipVerify(t *testing.T) {
 			}
 			if _, err := NewClient(Config{ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox, HTTPClient: hc}); err != nil {
 				t.Errorf("NewClient(%s) = %v, want success", tc.name, err)
+			}
+		})
+	}
+}
+
+// hiddenEmbedded is an UNEXPORTED type implementing RoundTripper. Embedded in
+// another wrapper its field name is unexported, so the old walk (which skipped
+// unexported fields) could not see a transport hidden inside it.
+type hiddenEmbedded struct{ inner http.RoundTripper }
+
+func (h hiddenEmbedded) RoundTrip(r *http.Request) (*http.Response, error) {
+	return h.inner.RoundTrip(r)
+}
+
+// outerWithHiddenEmbedded embeds the unexported type: its only field is an
+// unexported embedded field carrying the inner transport.
+type outerWithHiddenEmbedded struct{ hiddenEmbedded }
+
+func (o outerWithHiddenEmbedded) RoundTrip(r *http.Request) (*http.Response, error) {
+	return o.inner.RoundTrip(r)
+}
+
+// deepTransport exposes its inner transport via Unwrap so the walk must follow
+// a chain; chains deeper than maxTransportWalkDepth must fail closed.
+type deepTransport struct{ next http.RoundTripper }
+
+func (deepTransport) RoundTrip(r *http.Request) (*http.Response, error) { return nil, nil }
+func (d deepTransport) Unwrap() http.RoundTripper                       { return d.next }
+
+// panicTransport panics from Unwrap to prove a hostile wrapper cannot crash
+// NewClient (H-5): the walk must treat the panic as unknown and refuse.
+type panicTransport struct{}
+
+func (panicTransport) RoundTrip(r *http.Request) (*http.Response, error) { return nil, nil }
+func (panicTransport) Unwrap() http.RoundTripper                         { panic("boom") }
+
+// H-2/H-5: the walk must refuse insecure transports hidden in unexported
+// fields or unexported embedded types, chains past the depth bound, and a
+// panicking Unwrap — while still accepting legitimate secure transports.
+func TestTransportWalkFailsClosedOnEvasiveWrappers(t *testing.T) {
+	insecure := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	secure := &http.Transport{}
+
+	// A 34-deep Unwrap chain ending in a SECURE transport: the old walk walked
+	// the whole chain and allowed it; the bounded walk must refuse.
+	var deep http.RoundTripper = secure
+	for i := 0; i < 34; i++ {
+		deep = deepTransport{next: deep}
+	}
+
+	for _, tc := range []struct {
+		name string
+		rt   http.RoundTripper
+	}{
+		{"unexported field", opaqueTransport{inner: insecure}},
+		{"unexported embedded type", outerWithHiddenEmbedded{hiddenEmbedded{inner: insecure}}},
+		{"depth 34 chain", deep},
+		{"panicking Unwrap", panicTransport{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !transportDisablesVerification(tc.rt) {
+				t.Error("transportDisablesVerification = false, want true (refuse)")
+			}
+			_, err := NewClient(Config{
+				ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox,
+				HTTPClient: &http.Client{Transport: tc.rt},
+			})
+			if err == nil {
+				t.Fatal("NewClient accepted an evasive wrapper, want refusal")
+			}
+			if !strings.Contains(err.Error(), "InsecureSkipVerify") {
+				t.Fatalf("err = %v, want the InsecureSkipVerify refusal", err)
+			}
+		})
+	}
+
+	// The same hiding techniques around a SECURE transport stay accepted —
+	// the fix must not reject legitimate secure wrappers.
+	for name, rt := range map[string]http.RoundTripper{
+		"unexported field around secure":    opaqueTransport{inner: secure},
+		"unexported embedded around secure": outerWithHiddenEmbedded{hiddenEmbedded{inner: secure}},
+		"unwrap around secure":              unwrapTransport{inner: secure},
+		"field around secure":               fieldTransport{Inner: secure},
+		"embedded secure":                   embeddedTransport{Transport: secure},
+	} {
+		t.Run("allows/"+name, func(t *testing.T) {
+			if transportDisablesVerification(rt) {
+				t.Fatal("transportDisablesVerification = true, want false (allow secure)")
+			}
+			if _, err := NewClient(Config{
+				ConsumerKey: "test-key", ConsumerSecret: "test-secret", Environment: Sandbox,
+				HTTPClient: &http.Client{Transport: rt},
+			}); err != nil {
+				t.Fatalf("NewClient rejected a legitimate secure transport: %v", err)
 			}
 		})
 	}
@@ -349,10 +475,10 @@ func TestClassifyTrimOrderSpacesQuotesSpaces(t *testing.T) {
 		code string
 		want ResultClass
 	}{
-		{` "0" `, ResultClassSuccess},   // the NEW-2 vector
-		{`"0"`, ResultClassSuccess},     // unpadded quoted still works
-		{`  0  `, ResultClassSuccess},   // unquoted padding still works
-		{` "1" `, ResultClassFailure},   // padded quoted failure
+		{` "0" `, ResultClassSuccess}, // the NEW-2 vector
+		{`"0"`, ResultClassSuccess},   // unpadded quoted still works
+		{`  0  `, ResultClassSuccess}, // unquoted padding still works
+		{` "1" `, ResultClassFailure}, // padded quoted failure
 		{` "1032" `, ResultClassFailure},
 		{` " 0 " `, ResultClassSuccess}, // inner padding after quote strip
 	}

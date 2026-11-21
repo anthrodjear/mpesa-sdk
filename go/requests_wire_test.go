@@ -305,6 +305,24 @@ func TestRequireURL(t *testing.T) {
 	}
 }
 
+// requireURL rejects oversized URLs before handing them to url.Parse. The
+// message reports lengths only — it must not echo the URL (a callback URL can
+// carry a capability token or control runes).
+func TestRequireURLLengthCap(t *testing.T) {
+	base := "https://example.com/cb?"
+	atLen := base + strings.Repeat("x", maxURLLen-len(base))
+	if err := requireURL("TestURL", atLen); err != nil {
+		t.Fatalf("URL at the %d-byte cap was rejected: %v", maxURLLen, err)
+	}
+	err := requireURL("TestURL", atLen+"x")
+	if err == nil {
+		t.Fatal("overlong URL was accepted")
+	}
+	if !strings.Contains(err.Error(), "exceeds") || strings.Contains(err.Error(), "xxxx") {
+		t.Fatalf("length-cap error must report only lengths, got %q", err)
+	}
+}
+
 func TestNormalizeNumericHostWidths(t *testing.T) {
 	tests := []struct {
 		host    string
