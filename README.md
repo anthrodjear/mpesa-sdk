@@ -6,7 +6,7 @@
 [![npm](https://img.shields.io/npm/v/@mpesa-sdk/core?label=npm)](https://www.npmjs.com/package/@mpesa-sdk/core)
 [![CI](https://github.com/anthrodjear/mpesa-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/anthrodjear/mpesa-sdk/actions/workflows/ci.yml)
 
-A production-grade SDK for the Safaricom **M-Pesa Daraja API** in three languages — Go, Python, and TypeScript — sharing one contract: identical wire behaviour, identical test vectors, and identical safety rules. All nine business endpoints are covered (STK Push, STK Query, B2C payouts, C2B register/simulate, Transaction Status, Reversal, Account Balance, Dynamic QR) plus OAuth token lifecycle management.
+A production-grade SDK for the Safaricom **M-Pesa Daraja API** in three languages — Go, Python, and TypeScript — sharing one contract: identical wire behaviour, identical test vectors, and identical safety rules. All twelve business endpoint families — fifteen calls — are covered (STK Push, STK Query, B2C payouts, C2B register/simulate, Transaction Status, Reversal, Account Balance, Dynamic QR, B2B Express Checkout, Tax Remittance and the four Bill Manager operations) plus OAuth token lifecycle management.
 
 ## Requirements & installation
 
@@ -511,7 +511,7 @@ Listed so log inspection doesn't panic you; the SDKs emit/accept these verbatim:
 .
 ├── go/                     # Go engine (module github.com/anthrodjear/mpesa-sdk/go) — version.go, examples/stk_push/, testdata/
 ├── python/                 # PyPI mpesa-sdk — mpesa/ package, examples/, tests/
-├── typescript/             # npm @mpesa-sdk/core (published 0.7.0) — src/, examples/, test/
+├── typescript/             # npm @mpesa-sdk/core (published 0.7.1) — src/, examples/, test/
 ├── docs/apis/              # per-endpoint reference — source of truth for wire contracts
 ├── contract/               # shared cross-engine fixtures + known divergences — the executable form of the "one contract" claim
 ├── assets/certs/           # SandboxCertificate.cer · ProductionCertificate.cer
@@ -583,6 +583,7 @@ longer be satisfied by a push-run result that no PR ever evaluated.
 - [b2c.md](docs/apis/b2c.md) — payout flow, initiator rules, async Result shape · [c2b.md](docs/apis/c2b.md) — registration + simulation
 - [transaction-status.md](docs/apis/transaction-status.md) · [reversal.md](docs/apis/reversal.md) — receipt/conversation queries · C2B-only reversal
 - [account-balance.md](docs/apis/account-balance.md) — balance blob parsing · [dynamic-qr.md](docs/apis/dynamic-qr.md) — TrxCode matrix
+- [b2b.md](docs/apis/b2b.md) · [tax-remittance.md](docs/apis/tax-remittance.md) · [bill-manager.md](docs/apis/bill-manager.md) — the three newer endpoint families (CommandIDs, TaxPayerPIN, bill lifecycle)
 - [oauth.md](docs/apis/oauth.md) — token TTL, invalidation-on-refresh, generation guard, refresh rate limit (`mpesa: refresh rate limited ...`)
 - [testing.md](docs/testing.md) — transport/clock injection seams for testing against a mock (the base-URL allowlist has no override by design)
 
