@@ -21,10 +21,9 @@
 - **TS `MpesaEnum.coerce` error message is safe to build for BigInt inputs** (`safeStringify`).
 - **Python Config warning text updated** (message-only).
 - **TS `NotDispatchedError` now re-exported from the package index** (`typescript/src/index.ts:95`).
-- **Go `dailyLedger.rollback` compares the ledger's authoritative day under the mutex** — a backward clock jump no longer skips a legitimate refund.
 - **Go callback/result URLs are capped at 8192 BYTES** (`requireURL` in go/requests.go) — the divergence row is confirmed accurate: TS still counts UTF-8 bytes (`Buffer.byteLength`), not units (the B1 change was the free-text length counter, not the URL cap).
 - **Go `requirePrintable` on `BillRefNumber` is documented on Bill Query and Bill Delete** (the constraint predates this review — `BillQueryRequest.Validate` requests.go:1419, `BillDeleteRequest.Validate` requests.go:1554; now noted in `docs/apis/bill-manager.md` Query/Delete).
-- **TS `billUpdate` now omits whitespace-only `ExpiryDate`/`CallBackURL` from the wire** (Go/Python blank-and-omit parity); documented in `docs/apis/bill-manager.md` (Update section — bill-manager.md has no Tax Remittance section).
+- **TS `billUpdate` omits whitespace-only `ExpiryDate`/`CallBackURL` from the wire** (Go/Python blank-and-omit parity; the omission itself is pre-existing — the new part is the doc note in `docs/apis/bill-manager.md`, Update section).
 
 ---
 
