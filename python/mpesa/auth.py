@@ -184,7 +184,7 @@ class TokenManager:
                 f"mpesa: refusing untrusted OAuth base_url {base_url!r} "
                 "(want https://sandbox.safaricom.co.ke or "
                 "https://api.safaricom.co.ke from Config.environment)")
-        if not getattr(session, "verify", True):
+        if not getattr(session, "verify", False):
             raise ValueError(
                 "mpesa: TokenManager requires a verifying session for OAuth "
                 "Basic-auth traffic (session.verify is falsy); pass a "

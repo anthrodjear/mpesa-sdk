@@ -391,6 +391,11 @@ function requireURL(field: string, value: string): void {
       `mpesa: ${field} must use http or https scheme, got ${JSON.stringify(u.protocol.slice(0, -1))}`,
     );
   }
+  // Port 0 is unusable as a dial target — Go/Python parity: Go rejects it
+  // in `requireURL` (go/requests.go), Python in requests_sync._url.
+  if (u.port === "0") {
+    throw new Error(`mpesa: ${field} has an invalid port "0" (want 1-65535)`);
+  }
   // Reject embedded credentials — mirrors Go `u.User != nil` (any "@" in authority).
   const schemeEnd = value.indexOf("://");
   const authority = (schemeEnd !== -1 ? value.slice(schemeEnd + 3) : value).split(/[/?#]/, 1)[0] ?? "";
@@ -477,7 +482,7 @@ function requireMinInt(field: string, value: number, min: number): void {
 }
 
 function requireLengthRange(field: string, value: string, min: number, max: number): void {
-  const n = value.trim().length;
+  const n = [...value.trim()].length;
   if (n < min || n > max) {
     throw new Error(`mpesa: ${field} must be ${min}-${max} characters, got ${n}`);
   }
@@ -913,15 +918,15 @@ export class MpesaClient {
    * rejected with a typed error before any parsing attempt.
    *
    * DAILY-LEDGER REFUND RULE (Go `ErrNotDispatched` / Python
-   * `RequestException` parity): the refund hook fires ONLY when a
-   * request provably never got a gateway answer. That covers (a) a
-   * transport failure in the business-leg fetch and (b) a transport
-   * failure in the OAuth token leg when NO business attempt has been
-   * dispatched yet in this call (a cold start / forced refresh). On the
-   * 401 retry path the first business attempt already reached the
-   * gateway and answered 401, so a refresh-leg transport failure there
-   * keeps the reservation — the gateway saw a request. Typed failures
-   * (gateway non-2xx, oversize, decode, rate limit) always keep it.
+   * `RequestException` parity): the refund hook fires when a request
+   * provably never got a gateway answer. That covers (a) a transport
+   * failure in the business-leg fetch, (b) a transport failure in the
+   * OAuth token leg when NO business attempt has been dispatched yet in
+   * this call (a cold start), and (c) a transport failure of the forced
+   * refresh leg on the 401 retry path — Go refunds it (the OAuth GET
+   * raises `ErrNotDispatched`, so `STKPush` matches it) and Python marks
+   * the OAuth GET not-dispatched. Typed failures (gateway non-2xx,
+   * oversize, decode, rate limit) always keep the reservation.
    *
    * @param opts.onTransportError - Refund hook, invoked under the rule above
    *   — never for gateway responses, including 413 oversize and non-2xx
@@ -1026,11 +1031,12 @@ export class MpesaClient {
         try {
           freshTok = await this._tokens.refreshAfterInvalidToken(gen);
         } catch (err) {
-          // 401 RETRY PATH: the first business attempt already got a
-          // gateway answer (the 401), so the request WAS seen by the
-          // gateway. Even if this forced token refresh now fails at the
-          // transport level, the daily reservation is NOT refunded — the
-          // cold-start path above is the only refund point.
+          // 401 RETRY PATH: a refresh-leg transport failure refunds like
+          // Go (the OAuth GET raises ErrNotDispatched — STKPush matches
+          // it) and Python (the OAuth GET is marked not-dispatched).
+          if (isOAuthTransportFailure(err)) {
+            opts?.onTransportError?.();
+          }
           throw err;
         }
         result = await attempt(freshTok);

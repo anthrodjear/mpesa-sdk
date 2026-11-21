@@ -519,6 +519,12 @@ func readCapped(r io.Reader, limit int) ([]byte, error) {
 		capHint = limit
 	}
 	buf := make([]byte, 0, capHint)
+	// Zero-progress guard: a Reader returning (0, nil) forever would spin
+	// this loop indefinitely (no growth, no EOF). io.ReadFull-style guards
+	// (io.ErrNoProgress) exist for exactly this; a short burst of zero
+	// reads is tolerated — only CONSECUTIVE zeros with no progress trip it.
+	const maxConsecutiveZeros = 8
+	zeros := 0
 	for len(buf) < limit {
 		// Grow before reading into a full buffer, never past limit.
 		if len(buf) == cap(buf) {
@@ -532,6 +538,14 @@ func readCapped(r io.Reader, limit int) ([]byte, error) {
 		}
 		n, err := r.Read(buf[len(buf):cap(buf)])
 		buf = buf[:len(buf)+n]
+		if n > 0 {
+			zeros = 0
+		} else if err == nil {
+			zeros++
+			if zeros >= maxConsecutiveZeros {
+				return buf, io.ErrNoProgress
+			}
+		}
 		if err != nil {
 			if err == io.EOF {
 				return buf, nil

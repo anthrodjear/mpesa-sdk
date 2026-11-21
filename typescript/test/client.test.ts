@@ -1528,6 +1528,30 @@ describe("Validation before network", () => {
 
     expect(networkTouched).toBe(false);
   });
+
+  it("counts requireLengthRange in Unicode code points, not UTF-16 units (B1)", async () => {
+    // 7 astral-plane emoji: 14 UTF-16 code units (the old `.trim().length`
+    // counted 14 > 12 and threw) but only 7 code points — the 1-12
+    // AccountReference ceiling counts code points (Go/Python len() parity).
+    const accountReference = "😀😀😀😀😀😀😀";
+    expect(accountReference.length).toBe(14); // pins the old-unit shape
+    expect([...accountReference].length).toBe(7); // and the new-unit truth
+
+    fetchMock.mockImplementation(async (url: string) => {
+      if (new URL(url).pathname === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
+      return jsonResponse({
+        MerchantRequestID: "mr-1",
+        CheckoutRequestID: "ws_CO_1",
+        ResponseCode: "0",
+        ResponseDescription: "accepted",
+        CustomerMessage: "ok",
+      });
+    });
+    const client = testClient("https://sandbox.safaricom.co.ke");
+    await expect(
+      client.stkPush({ ...validSTKPushRequest(), accountReference }),
+    ).resolves.toMatchObject({ ResponseCode: "0" });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2863,6 +2887,17 @@ describe("Callback URL host blocklist (SSRF table)", () => {
         callBackURL: "https://user:pass@hook.example.com/callback",
       }),
     ).rejects.toThrow("mpesa: CallBackURL must not contain embedded credentials");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a zero port on the callback URL (Go/Python parity)", async () => {
+    const client = ssrfClient();
+    await expect(
+      client.stkPush({
+        ...validSTKPushRequest(),
+        callBackURL: "https://hook.example.com:0/callback",
+      }),
+    ).rejects.toThrow('mpesa: CallBackURL has an invalid port "0" (want 1-65535)');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
