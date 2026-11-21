@@ -91,7 +91,9 @@ for the single worst-case process, not as an enforced quota. The day rolls at Af
 no DST) midnight in all three engines, and a reservation is refunded **only when the request
 provably never reached a gateway answer** — a transport failure or a failed token acquisition (Go:
 `ErrNotDispatched`; Python: `requests.exceptions.RequestException`; TypeScript: the
-`onTransportError` hook). A gateway rejection, an oversize response or an undecodable 2xx all prove
+`onTransportError` hook — fired on the cold-start OAuth leg and, since the M1 review finding, on
+the 401-refresh-leg OAuth transport failure, matching Go/Python). A gateway rejection, an oversize
+response or an undecodable 2xx all prove
 the gateway answered, so they keep the spend: refunding those let real day-spend exceed `MaxPerDay`
 without bound (fixed in Go for 0.6.0; the three engines now share one rule).
 

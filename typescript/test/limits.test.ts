@@ -857,10 +857,11 @@ describe("daily limits (trackDaily)", () => {
     expect(businessHits).toBe(1);
   });
 
-  it("KEEPS the accrual when the 401-refresh leg transport-fails (gateway already answered)", async () => {
-    // S-1 rule: on the 401 retry path the first business attempt already
-    // got a gateway answer (the 401), so a refresh transport failure there
-    // must NOT refund — unlike the cold-start case above.
+  it("REFUNDS the accrual when the 401-refresh leg transport-fails", async () => {
+    // M1 (Go/Python parity): the forced-refresh leg is an OAuth-leg
+    // transport failure — Go refunds here (`ErrNotDispatched` →
+    // `rollbackDaily`), Python marks the OAuth GET not-dispatched — so TS
+    // must call onTransportError and refund the reservation too.
     const client = makeClient({
       limits: { stk: { maxPerTransaction: 0, maxPerDay: 400_000 } },
       trackDaily: true,
@@ -881,10 +882,12 @@ describe("daily limits (trackDaily)", () => {
     expect(oauthCalls).toBe(2);
     expect(businessHits).toBe(1); // first attempt DID reach the gateway
 
-    // Reservation sticks: 300_000 remains charged, so 150_001 exceeds 400_000.
+    // Refunded: the reservation is back to 0, so a fresh 300_000 push fits
+    // (300_000 + 300_000 would exceed the 400_000 ceiling — a second
+    // successful push proves the refund).
     mockTransport();
-    await expect(client.stkPush(stkReq(150_001))).rejects.toThrow(/daily limit reached/);
-    expect(businessHits).toBe(1);
+    await client.stkPush(stkReq(300_000));
+    expect(businessHits).toBe(2);
   });
 
   it("KEEPS the accrual when the cold-start OAuth leg fails with a typed gateway error", async () => {

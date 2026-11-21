@@ -895,9 +895,10 @@ def test_h3_direct_insecure_session_rejected_at_construction():
         TokenManager(NoTLS([]), "https://sandbox.safaricom.co.ke", "k", "s")
 
 
-def test_h3_wrapper_without_verify_rejected_at_get():
-    """Probe 2: a wrapper with NO verify attribute passes the construction
-    check (getattr default True) but is rejected at GET (fail closed)."""
+def test_h3_wrapper_without_verify_rejected_at_construction():
+    """Probe 2 (A4): a wrapper with NO verify attribute is now refused at
+    CONSTRUCTION — the constructor's getattr default is False, so a session
+    that does not declare verification is rejected before any GET."""
     class NoVerifyWrapper:
         def __init__(self, inner):
             self._inner = inner
@@ -907,13 +908,22 @@ def test_h3_wrapper_without_verify_rejected_at_get():
             self.calls += 1
             return self._inner.get(url, **kwargs)
 
-    inner = FakeSession([ok()])          # underlying session is insecure...
-    inner.verify = False
-    wrapper = NoVerifyWrapper(inner)     # ...but the wrapper exposes no verify
-    tm = TokenManager(wrapper, "https://sandbox.safaricom.co.ke", "k", "s")
+    wrapper = NoVerifyWrapper(FakeSession([]))
     with pytest.raises(ValueError, match="verifying session"):
-        tm.get_token()
-    assert wrapper.calls == 0            # no Basic-auth leg ever ran
+        TokenManager(wrapper, "https://sandbox.safaricom.co.ke", "k", "s")
+    assert wrapper.calls == 0
+
+
+def test_token_manager_wrapper_without_verify_rejected_at_construction():
+    """A4: fail-closed symmetry — a wrapper WITHOUT a verify attribute
+    raises ValueError at construction, matching the request-time check."""
+    class WrapperWithoutVerify:
+        def get(self, url, **kwargs):  # pragma: no cover - must never run
+            raise AssertionError("OAuth leg must never run")
+
+    with pytest.raises(ValueError, match="verifying session"):
+        TokenManager(WrapperWithoutVerify(),
+                     "https://sandbox.safaricom.co.ke", "k", "s")
 
 
 def test_h3_post_construction_verify_mutation_rejected_at_get():

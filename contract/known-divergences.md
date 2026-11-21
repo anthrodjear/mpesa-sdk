@@ -23,7 +23,7 @@ subset of engines:
 | C2B Register/Simulate `ShortCode` | Python only | 5–10 ASCII digits (Go/TS: injected, unchecked) |
 | TxStatus/Reversal identifier length caps | Python only | ≤ 64 printable chars, identifier types ≤ 12 |
 | QR `Size` digit-length cap | Python only | ≤ 12 ASCII digits (Go/TS: numeric parse only) |
-| URL port bounds | Go (0.5.1 patch), Python | `0 < port ≤ 65535`; TypeScript rejects `> 65535` via `new URL` but still accepts port `0` |
+| URL port bounds | Go, Python, TypeScript | `0 < port ≤ 65535` (TS rejects `0` since the B2 review fix; `> 65535` via `new URL`) |
 
 Consequence: an over-long or malformed value that is a *local* error in the
 strict engine is a **gateway `500.001.1001` / `500.002.1001` rejection** in
@@ -262,28 +262,31 @@ no engine-specific test for this.
 
 ## Daily reservation on the 401-refresh transport failure
 
-**The divergence.** All three engines refund the daily reservation when the
-**cold-start** OAuth leg fails with a transport error (no business request was
-sent). On the 401-retry path, the first business attempt already received a
-gateway answer (the 401), so the engines differ when the **forced refresh**
-then fails at the transport layer:
+**Status: CLOSED — all three engines now refund.** The divergence it recorded
+is gone: Go (`notDispatchedError` wrapping on the OAuth leg) and Python
+(`RequestException` from `refresh_after_invalid_token`) refunded on a
+401-refresh-leg transport failure, and TypeScript now matches — the `_post`
+catch on the 401 retry fires `onTransportError` when the forced refresh fails
+at transport (`typescript/src/client.ts`; pinned by
+`typescript/test/limits.test.ts:860`, "REFUNDS the accrual when the
+401-refresh leg transport-fails"). Both rule choices fail toward a
+*conservative* local quota (one keeps more spend room, the other less); no
+money-path corruption either way.
 
-- **TypeScript** keeps the reservation — the documented rule is "refund only
-  when no gateway answer was received in this call"; pinned by
-  `typescript/test/limits.test.ts` (401-refresh transport failure keeps the
-  reservation).
-- **Go** (`notDispatchedError` wrapping on the OAuth leg) and **Python**
-  (`RequestException` from `refresh_after_invalid_token`) refund — they
-  classify the failure by its type, not by whether the call already saw a
-  gateway answer.
+**The divergence, for the record.** All three engines refund the daily
+reservation when the **cold-start** OAuth leg fails with a transport error
+(no business request was sent). On the 401-retry path, the first business
+attempt already received a gateway answer (the 401), so the engines differed
+when the **forced refresh** then failed at the transport layer: TypeScript
+kept the reservation — the documented rule was "refund only when no gateway
+answer was received in this call" — while Go and Python refunded, classifying
+the failure by its type, not by whether the call already saw a gateway answer.
 
 **Why it is not a fixture.** A shared wire fixture cannot express a transport
 failure inside the OAuth leg of a retry.
 
-**What would close it.** Pick one rule: classify by "no gateway answer in this
-call" (TS) or by error type (Go/Python), then align all three and re-pin the
-tests. Both fail toward a *conservative* local quota (one keeps more spend
-room, the other less); no money-path corruption either way.
+**What would close it.** Align the rule (Go/Python error-type classification) —
+done via the M1 review finding (`typescript/src/client.ts` `_post`).
 
 ## Rate-limit attempt clock and free-text length units
 

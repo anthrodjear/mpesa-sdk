@@ -1996,6 +1996,46 @@ func TestReadCappedIncrementalGrowthAndOversize(t *testing.T) {
 	}
 }
 
+// stallingReader serves `stalls` reads of (0, nil) before serving `data`
+// (then EOF forever). `stalls` may be huge — used to prove the guard trips
+// only after a real threshold, not on any single zero read.
+type stallingReader struct {
+	stalls int
+	data   []byte
+	served bool
+}
+
+func (r *stallingReader) Read(p []byte) (int, error) {
+	if r.stalls > 0 {
+		r.stalls--
+		return 0, nil
+	}
+	if !r.served {
+		r.served = true
+		return copy(p, r.data), nil
+	}
+	return 0, io.EOF
+}
+
+func TestReadCappedZeroProgressGuard(t *testing.T) {
+	// (a) A stall burst below the threshold followed by real progress is
+	//     ALLOWED — the guard must not trip on genuine (if slow) readers.
+	got, err := readCapped(&stallingReader{stalls: 3, data: []byte("payload")}, maxResponseLen+1)
+	if err != nil {
+		t.Fatalf("stalled-then-data: readCapped: %v", err)
+	}
+	if string(got) != "payload" {
+		t.Fatalf("stalled-then-data: got %q, want %q", got, "payload")
+	}
+
+	// (b) A reader that stalls forever must be cut off with io.ErrNoProgress
+	//     instead of spinning the readCapped loop indefinitely.
+	_, err = readCapped(&stallingReader{stalls: 1 << 20}, maxResponseLen+1)
+	if !errors.Is(err, io.ErrNoProgress) {
+		t.Fatalf("persistent zeros: err = %v, want io.ErrNoProgress", err)
+	}
+}
+
 // #13: an oversize response must not poison the connection pool.
 //
 // The capped read stops with bytes still unread on the socket, and a

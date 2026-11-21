@@ -48,6 +48,19 @@ describe("MpesaEnum.coerce", () => {
     expect(() => MpesaEnum.coerce(undefined, ["Success", "Fail"] as const)).toThrow(TypeError);
   });
 
+  it("renders a safe message for inputs JSON.stringify cannot stringify (BigInt)", () => {
+    let caught: unknown;
+    try {
+      MpesaEnum.coerce(BigInt(7), ["Success"] as const);
+    } catch (err) {
+      caught = err;
+    }
+    // Building the message must not throw: the TypeError surfaces with a
+    // rendered value (String fallback), so callers can log it safely.
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as Error).message).toContain("got 7");
+  });
+
   it("does not trim or case-fold input", () => {
     expect(() => MpesaEnum.coerce(" success", ["Success"] as const)).toThrow(TypeError);
     expect(() => MpesaEnum.coerce("SUCCESS", ["Success"] as const)).toThrow(TypeError);
