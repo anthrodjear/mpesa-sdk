@@ -363,7 +363,7 @@ func transportWalk(v reflect.Value, depth int, visited map[transportVisit]bool) 
 
 	// Cycle guard on pointer identity before dereferencing: re-inspecting the
 	// same concrete value cannot reveal anything new.
-	if v.Kind() == reflect.Ptr && !v.IsNil() {
+	if v.Kind() == reflect.Pointer && !v.IsNil() {
 		key := transportVisit{typ: v.Type(), ptr: v.Pointer()}
 		if visited[key] {
 			return false
@@ -373,7 +373,7 @@ func transportWalk(v reflect.Value, depth int, visited map[transportVisit]bool) 
 
 	// Reach the concrete value through interface/pointer layers.
 	current := v
-	for current.Kind() == reflect.Interface || current.Kind() == reflect.Ptr {
+	for current.Kind() == reflect.Interface || current.Kind() == reflect.Pointer {
 		if current.IsNil() {
 			return false
 		}

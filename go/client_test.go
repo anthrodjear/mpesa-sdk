@@ -1991,7 +1991,7 @@ func TestReadCappedIncrementalGrowthAndOversize(t *testing.T) {
 	if len(got) != maxResponseLen+1 {
 		t.Fatalf("oversize len = %d, want %d (maxResponseLen+1)", len(got), maxResponseLen+1)
 	}
-	if !(len(got) > maxResponseLen) {
+	if len(got) <= maxResponseLen {
 		t.Fatal("capped body is not flagged oversize by len(body) > maxResponseLen")
 	}
 }

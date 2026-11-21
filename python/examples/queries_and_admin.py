@@ -15,9 +15,17 @@ import os
 import sys
 
 from mpesa import (
-    AccountBalanceRequest, Config, ConversationResponse, Environment,
-    MpesaClient, MpesaError, QRCodeRequest, QRTrxCode, ReversalRequest,
-    TransactionStatusRequest, security_credential,
+    AccountBalanceRequest,
+    Config,
+    ConversationResponse,
+    Environment,
+    MpesaClient,
+    MpesaError,
+    QRCodeRequest,
+    QRTrxCode,
+    ReversalRequest,
+    TransactionStatusRequest,
+    security_credential,
 )
 
 

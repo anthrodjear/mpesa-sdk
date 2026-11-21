@@ -20,8 +20,8 @@ from mpesa import (
     MpesaClient,
     MpesaError,
     ResultClass,
-    STKQueryRequest,
     StkCallbackResult,
+    STKQueryRequest,
 )
 
 # Illustrative captures. In a real handler, cap the POST body in your web

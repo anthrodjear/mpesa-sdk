@@ -17,8 +17,14 @@ import os
 import sys
 
 from mpesa import (
-    B2BRequest, CommandID, Config, Environment, MpesaClient, MpesaError,
-    TaxRemittanceRequest, security_credential,
+    B2BRequest,
+    CommandID,
+    Config,
+    Environment,
+    MpesaClient,
+    MpesaError,
+    TaxRemittanceRequest,
+    security_credential,
 )
 
 
