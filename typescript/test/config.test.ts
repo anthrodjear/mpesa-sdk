@@ -607,17 +607,17 @@ describe("Config — util.inspect redaction", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Non-enumerable secrets — `console.dir` DISABLES the custom inspect hook
+// Hidden secrets — `console.dir` DISABLES the custom inspect hook
 //
 // Node documents `console.dir(obj)` as
 // `util.inspect(obj, { ...options, customInspect: false })`: it turns the
 // custom inspect hook OFF, so the default walk over the own ENUMERABLE
 // properties printed `consumerSecret` and `passkey` in cleartext. The
-// two secret fields are therefore non-enumerable own properties, which
-// the default walk and an object spread both skip.
+// credentials are therefore stored in a module-level WeakMap, never as own
+// properties, so even `{ showHidden:true }` walks cannot surface them.
 // ---------------------------------------------------------------------------
 
-describe("Config — non-enumerable secrets", () => {
+describe("Config — hidden secrets (WeakMap)", () => {
   const RAW_KEY = "0123456789abcdef";
   const RAW_SECRET = "SUPERSECRET";
   const RAW_PASSKEY = "PASSKEY123";
@@ -632,7 +632,7 @@ describe("Config — non-enumerable secrets", () => {
   }
 
   it("the secret and the passkey still read back exactly as passed in", () => {
-    // Non-enumerable does NOT mean private: the public API is unchanged.
+    // WeakMap-backed does NOT mean private: the public API is unchanged.
     const cfg = makeCfg();
     expect(cfg.consumerSecret).toBe(RAW_SECRET);
     expect(cfg.passkey).toBe(RAW_PASSKEY);
@@ -654,24 +654,64 @@ describe("Config — non-enumerable secrets", () => {
     expect(blob).not.toContain(RAW_PASSKEY);
   });
 
-  it("Object.entries and Object.keys carry neither secret nor passkey", () => {
+  it("showHidden:true surfaces no secret — credentials are not own properties (H-4)", () => {
+    const cfg = makeCfg();
+    const deep = inspect(cfg, { customInspect: false, showHidden: true, depth: 5 });
+    expect(deep).not.toContain(RAW_KEY);
+    expect(deep).not.toContain(RAW_SECRET);
+    expect(deep).not.toContain(RAW_PASSKEY);
+    // Even a full own-property sweep finds no credential value.
+    for (const name of Object.getOwnPropertyNames(cfg)) {
+      const value = String((cfg as unknown as Record<string, unknown>)[name]);
+      expect(value).not.toContain(RAW_SECRET);
+      expect(value).not.toContain(RAW_PASSKEY);
+    }
+    // The public read API is unchanged by moving the values off-instance.
+    expect(cfg.consumerKey).toBe(RAW_KEY);
+    expect(cfg.consumerSecret).toBe(RAW_SECRET);
+    expect(cfg.passkey).toBe(RAW_PASSKEY);
+  });
+
+  it("Object.entries and Object.keys carry none of the credential fields", () => {
     const cfg = makeCfg();
     for (const [key, value] of Object.entries(cfg)) {
+      expect(key).not.toBe("consumerKey");
       expect(key).not.toBe("consumerSecret");
       expect(key).not.toBe("passkey");
+      expect(String(value)).not.toContain(RAW_KEY);
       expect(String(value)).not.toContain(RAW_SECRET);
       expect(String(value)).not.toContain(RAW_PASSKEY);
     }
     const keys = Object.keys(cfg);
+    expect(keys).not.toContain("consumerKey");
     expect(keys).not.toContain("consumerSecret");
     expect(keys).not.toContain("passkey");
   });
 
   it("the non-secret fields stay enumerable", () => {
     const keys = Object.keys(makeCfg());
-    for (const key of ["consumerKey", "shortcode", "environment", "limits", "trackDaily"]) {
+    for (const key of ["shortcode", "environment", "limits", "trackDaily"]) {
       expect(keys).toContain(key);
     }
+  });
+
+  it("consumerKey is not an own property but stays readable and masked", () => {
+    // F-2: a console.dir-style walk and an object spread must not expose
+    // the raw key, while toString/toJSON/logSafe and the accessor still do.
+    const cfg = makeCfg();
+    expect(cfg.consumerKey).toBe(RAW_KEY); // public API unchanged
+    expect(Object.keys(cfg)).not.toContain("consumerKey");
+    const spread = { ...cfg } as unknown as Record<string, unknown>;
+    expect(spread["consumerKey"]).toBeUndefined();
+    const dir = inspect(cfg, { customInspect: false }); // what console.dir does
+    expect(dir).not.toContain(RAW_KEY);
+    expect(dir).not.toContain(RAW_SECRET);
+    expect(dir).not.toContain(RAW_PASSKEY);
+    // The masked rendering survives on every diagnostics surface.
+    expect(cfg.maskedConsumerKey).toBe("0123...cdef");
+    expect(cfg.toString()).toContain("key=0123...cdef");
+    expect(cfg.toJSON().key).toBe("0123...cdef");
+    expect(cfg.logSafe().key).toBe("0123...cdef");
   });
 
   it("the custom-inspect, String() and JSON.stringify redaction still hold", () => {

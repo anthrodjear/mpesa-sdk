@@ -230,10 +230,10 @@ a non-2xx response whose body is NOT a Daraja error envelope (a WAF page, an
 HTML error page, a truncated body) is wired differently by the three engines,
 and the difference is observable on the OAuth leg:
 
-- **Go** — `go/client.go`: `Config.ErrorLogger` is passed on BOTH legs. The
-  business leg (`post`, `go/client.go:881`) and the OAuth leg (`refresh`,
-  `go/client.go:738`) both hand it to `parseError`, so a non-envelope OAuth
-  failure reaches the sink.
+- **Go** — `Client.post` and `Client.refresh`: `Config.ErrorLogger` is passed
+  on BOTH legs; both hand it to `parseError`, so a non-envelope OAuth failure
+  reaches the sink. (Symbol names instead of line numbers — line numbers have
+  drifted with consecutive fixes.)
 - **Python** — there is NO client-level sink at all. The only parameter is
   `MpesaError.from_response(..., error_logger=...)`
   (`python/mpesa/exceptions.py:171`), and `python/mpesa/client.py` never
@@ -259,3 +259,51 @@ The Go side is pinned by `go/errors_test.go`
 `typescript/test/errors.test.ts` (`hands the raw body to the opt-in sink with
 status and content type`). Python has no client-level sink to pin, so it has
 no engine-specific test for this.
+
+## Daily reservation on the 401-refresh transport failure
+
+**The divergence.** All three engines refund the daily reservation when the
+**cold-start** OAuth leg fails with a transport error (no business request was
+sent). On the 401-retry path, the first business attempt already received a
+gateway answer (the 401), so the engines differ when the **forced refresh**
+then fails at the transport layer:
+
+- **TypeScript** keeps the reservation — the documented rule is "refund only
+  when no gateway answer was received in this call"; pinned by
+  `typescript/test/limits.test.ts` (401-refresh transport failure keeps the
+  reservation).
+- **Go** (`notDispatchedError` wrapping on the OAuth leg) and **Python**
+  (`RequestException` from `refresh_after_invalid_token`) refund — they
+  classify the failure by its type, not by whether the call already saw a
+  gateway answer.
+
+**Why it is not a fixture.** A shared wire fixture cannot express a transport
+failure inside the OAuth leg of a retry.
+
+**What would close it.** Pick one rule: classify by "no gateway answer in this
+call" (TS) or by error type (Go/Python), then align all three and re-pin the
+tests. Both fail toward a *conservative* local quota (one keeps more spend
+room, the other less); no money-path corruption either way.
+
+## Rate-limit attempt clock and free-text length units
+
+- **Attempt clock:** Go advances `lastRefreshAttempt` only on refresh failure,
+  Python and TypeScript stamp at attempt start and again on failure. During a
+  slow/hung OAuth attempt the 3-failures/5 s gate measures from a different
+  instant; all settle to the failure instant once the attempt completes.
+- **Free-text cap units:** Go measures with `len(v)` (bytes), Python with
+  `len(text)` (characters), TypeScript with `[...value].length` (code points).
+  A 64-character multibyte `PayerName` is accepted by Python/TS and rejected
+  by Go (stricter, not exploitable). Error-envelope caps likewise differ:
+  512 bytes (Go) vs 512 characters (Python/TS). The **URL cap (8192)** is
+  deliberately UTF-8 **bytes in all three** (`len(v)` /
+  `len(value.encode("utf-8"))` / `Buffer.byteLength(value,"utf8")`) so the
+  parser-work bound is identical; phone-error messages report length only
+  with the engine's own unit wording (`bytes` Go, `characters` Py/TS).
+- **Masked consumer-key rendering shape:** Go renders empty → `""`, ≤8 runes →
+  `"****"`, 9+ → `first4…last4` (U+2026); Python keeps a same-length `"*"` run
+  for 1–7 characters (documented as a deliberate Python-only shape); TypeScript
+  uses ASCII `first4...last4`. Log-only cosmetic difference — the raw key is
+  never emitted by any engine's redaction helpers.
+
+Neither divergence changes a wire value or a gateway-visible outcome.

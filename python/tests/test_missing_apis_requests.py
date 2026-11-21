@@ -400,6 +400,18 @@ def test_bill_manager_drops_whitespace_only_payer_fields(blank):
     assert up_payload == {"ShortCode": "600992", "BillRefNumber": "INV-001"}
 
 
+def test_bill_update_drops_whitespace_only_expiry_and_url():
+    """S-3: whitespace-only optional fields are NOT SUPPLIED on UPDATE.
+    Sending ``"ExpiryDate": "   "`` would overwrite a live bill with
+    spaces; Go/TS blank-and-omit, so _clean must drop both keys.
+    """
+    req = BillUpdateRequest(short_code="600992", bill_ref_number="INV-001",
+                            expiry_date="   ", call_back_url="   ")
+    req.validate()
+    assert req.to_payload() == {"ShortCode": "600992",
+                                "BillRefNumber": "INV-001"}
+
+
 def test_bill_update_omits_amount_when_not_supplied():
     req = BillUpdateRequest(short_code="600992", bill_ref_number="INV-001",
                             expiry_date="2025-01-31")

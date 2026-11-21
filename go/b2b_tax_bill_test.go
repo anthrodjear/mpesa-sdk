@@ -884,6 +884,14 @@ func TestNewFamiliesRejectMalformedInputBeforeAnyNetworkCall(t *testing.T) {
 			_, err := c.BillDelete(ctx, BillDeleteRequest{ShortCode: testShortcode, BillRefNumber: strings.Repeat("r", 33)})
 			return err
 		}, "BillRefNumber"},
+		{"bill query non-printable bill ref", func() error {
+			_, err := c.BillQuery(ctx, BillQueryRequest{ShortCode: testShortcode, BillRefNumber: "INV\n1"})
+			return err
+		}, "non-printable"},
+		{"bill delete non-printable bill ref", func() error {
+			_, err := c.BillDelete(ctx, BillDeleteRequest{ShortCode: testShortcode, BillRefNumber: "INV\n1"})
+			return err
+		}, "non-printable"},
 		{"bill update negative amount", func() error {
 			_, err := c.BillUpdate(ctx, BillUpdateRequest{ShortCode: testShortcode, BillRefNumber: "INV-1", Amount: -5})
 			return err

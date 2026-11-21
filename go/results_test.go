@@ -45,6 +45,54 @@ func TestAsyncResultReferenceDataShapes(t *testing.T) {
 	}
 }
 
+// A parsed async result caches its flattened parameters; each call returns an
+// independent map so caller mutation cannot corrupt the cached view.
+func TestAsyncResultParametersCacheIsIndependent(t *testing.T) {
+	payload := []byte(`{"Result":{"ResultCode":0,"ResultParameters":{"ResultParameter":[` +
+		`{"Key":"Receipt","Value":"AAA"},{"Key":"Receipt","Value":"BBB"},` +
+		`{"Key":"Amount","Value":10}]}}}`)
+	var ar AsyncResult
+	if err := json.Unmarshal(payload, &ar); err != nil {
+		t.Fatal(err)
+	}
+	if ar.Result.paramsCache == nil {
+		t.Fatal("expected parameters to be cached at parse time")
+	}
+	first := ar.Result.Parameters()
+	first["Amount"] = "mutated"
+	first["Injected"] = "x"
+	again := ar.Result.Parameters()
+	if again["Amount"] != "10" {
+		t.Fatalf("caller mutation leaked into the cached view: %v", again)
+	}
+	if _, ok := again["Injected"]; ok {
+		t.Fatalf("caller-added key leaked into the cached view: %v", again)
+	}
+	if again["Receipt"] != "AAA" {
+		t.Fatalf("first-wins broken by caching: %v", again)
+	}
+}
+
+// BenchmarkAsyncResultParameters makes the parse-time cache's constant factor
+// visible: each call returns a fresh map copy but skips the repeated FlexString
+// decoding of every raw Value.
+func BenchmarkAsyncResultParameters(b *testing.B) {
+	payload := []byte(`{"Result":{"ResultType":0,"ResultCode":0,"ResultDesc":"ok",` +
+		`"ResultParameters":{"ResultParameter":[` +
+		`{"Key":"TransactionReceipt","Value":"SG632NMUAB"},` +
+		`{"Key":"TransactionAmount","Value":10},` +
+		`{"Key":"B2CRecipientIsRegisteredCustomer","Value":"Y"},` +
+		`{"Key":"AccountBalance","Value":"12345.67"}]}}}`)
+	var ar AsyncResult
+	if err := json.Unmarshal(payload, &ar); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ar.Result.Parameters()
+	}
+}
+
 func TestParseBalanceSegments(t *testing.T) {
 	in := "Working Account|KES|700000.00|700000.00|0.00|0.00&Utility Account|KES|228037.00|228037.00|0.00|0.00&Charges Paid Account|KES|-1540.00|-1540.00|0.00|0.00&"
 	segs, skipped := ParseBalanceSegments(in)

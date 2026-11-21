@@ -49,6 +49,13 @@ __all__ = ["STKPushRequest", "STKQueryRequest", "C2BRegisterRequest",
 # Case-insensitive scheme per RFC 3986 (scheme is case-insensitive):
 # "HTTP://…" is a valid http URL, not a shape rejection.
 _URL_RE = re.compile(r"https?://[^\s\x00-\x1f]+", re.IGNORECASE)
+#: Absolute URL length ceiling, counted in UTF-8 BYTES (parity with Go's
+#: len([]byte) and TypeScript's Buffer.byteLength). A multi-megabyte URL
+#: must be refused BEFORE the regex/urlsplit work, and the error reports the
+#: LENGTH only: the value is caller-supplied and may embed a signed callback
+#: token, so it must not travel into logs. 8192 bytes is well above any real
+#: Daraja callback URL.
+_MAX_URL_BYTES = 8192
 
 # Blocked host literals, spelled out range-by-range to stay in step with
 # go/requests.go requireURL and typescript/src/client.ts isBlockedIPv4 /
@@ -181,6 +188,25 @@ def _require(field_name: str, value: str) -> None:
         raise ValueError(f"mpesa: {field_name} is required")
 
 
+def _check_length(field_name: str, value: str, limit: int,
+                  unit: str) -> None:
+    """Reject *value* whose measured length exceeds *limit*.
+
+    ``unit`` selects both the measurement and the wording: ``"characters"``
+    counts Unicode code points (``len(value)``, for free text), while
+    ``"bytes"`` counts UTF-8 bytes (``len(value.encode("utf-8"))``, for
+    URLs -- cross-language parity with Go's ``len([]byte)`` and TypeScript's
+    ``Buffer.byteLength``). The error reports only the measured length and
+    the unit, never *value*: it may carry a signed callback token or other
+    caller-supplied data.
+    """
+    measured = (len(value.encode("utf-8")) if unit == "bytes"
+                else len(value))
+    if measured > limit:
+        raise ValueError(
+            f"mpesa: {field_name} exceeds {limit} {unit} (got {measured})")
+
+
 def _printable(field_name: str, value: str, cap: int) -> None:
     """Reject non-printable content and over-length free-text identifiers."""
     if not all(ch.isprintable() for ch in value):
@@ -204,9 +230,7 @@ def _free_text(field_name: str, value: str, cap: int,
     text = (value or "").strip()
     if not all(ch.isprintable() for ch in text):
         raise ValueError(f"mpesa: {field_name} contains non-printable characters")
-    if len(text) > cap:
-        raise ValueError(
-            f"mpesa: {field_name} exceeds {cap} characters (got {len(text)})")
+    _check_length(field_name, text, cap, "characters")
     if len(text) < minimum:
         raise ValueError(f"mpesa: {field_name} must be at least {minimum} "
                          f"characters, got {len(text)}")
@@ -303,8 +327,10 @@ def _url(field_name: str, value: str) -> None:
     before the blocklist runs. The shape gate runs first so a non-http(s)
     scheme keeps its existing message; ``.port`` is touched inside the try
     so a malformed port is reported as an invalid URL rather than exploding
-    at send time.
+    at send time. Overlong values are rejected first, by length only, so
+    neither the regex nor the error message ever sees the raw URL.
     """
+    _check_length(field_name, value, _MAX_URL_BYTES, "bytes")
     if not _URL_RE.fullmatch(value):
         raise ValueError(f"mpesa: {field_name} must be an absolute http(s) URL "
                          "without whitespace/control characters")
@@ -912,10 +938,15 @@ class BillUpdateRequest:
             # Unset means "leave the amount alone": _clean drops None but
             # would keep int 0, which would overwrite the bill's amount.
             self.amount = None
-        if self.expiry_date:
-            _printable("ExpiryDate", self.expiry_date, 10)
-        if self.call_back_url:
+        # Blank-and-omit, not blank-and-send-spaces (Go/TS parity): a
+        # whitespace-only value is "not supplied", so normalize it to "" and
+        # let _clean drop the key. A supplied value is still shape-checked.
+        self.expiry_date = _optional_free_text(
+            "ExpiryDate", self.expiry_date, 10)
+        if (self.call_back_url or "").strip():
             _url("CallBackURL", self.call_back_url)
+        else:
+            self.call_back_url = ""
         self.payer_number = _payer_number_if_set("PayerNumber", self.payer_number)
         self.payer_name = _optional_free_text("PayerName", self.payer_name, 64)
         self._validated = True

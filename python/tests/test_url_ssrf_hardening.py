@@ -301,3 +301,34 @@ def test_b2c_public_urls_still_validate():
     payload = req.to_payload()
     assert payload["QueueTimeOutURL"] == "https://example.com/hook"
     assert payload["ResultURL"] == "https://sandbox.safaricom.co.ke"
+
+
+def test_url_length_cap_rejects_overlong_without_echoing_it():
+    """L-5: cap the URL before regex/urlsplit; the error reports length
+    only, since a callback URL can embed a signed token."""
+    with pytest.raises(ValueError) as excinfo:
+        _url("CallBackURL", "https://example.com/" + "a" * 9_000)
+    message = str(excinfo.value)
+    assert "exceeds 8192 bytes" in message
+    assert "aaa" not in message
+    # Just under the cap still validates (the guard is on the whole URL).
+    _url("CallBackURL", "https://example.com/" + "a" * 8_100)
+
+
+def test_url_length_cap_counts_utf8_bytes_not_codepoints():
+    """L-5 parity: the cap is measured in UTF-8 BYTES (Go ``len([]byte)``,
+    TypeScript ``Buffer.byteLength``), not Unicode code points, so a
+    multibyte URL is judged by its byte count. 8192 bytes is the boundary."""
+    base = "https://example.com/"          # 20 ASCII bytes
+    # "é" is 2 UTF-8 bytes: 20 + 4086 * 2 = 8192 bytes exactly, while the
+    # code-point count (4106) is far below the cap -- a len()-based check
+    # would wrongly accept the over-cap URL below.
+    at_cap = base + "é" * 4086
+    assert len(at_cap.encode("utf-8")) == 8192
+    assert len(at_cap) < 8192
+    _url("CallBackURL", at_cap)            # exactly at the cap: accepted
+
+    over_cap = at_cap + "a"                # 8193 bytes
+    assert len(over_cap.encode("utf-8")) == 8193
+    with pytest.raises(ValueError, match="exceeds 8192 bytes"):
+        _url("CallBackURL", over_cap)

@@ -477,7 +477,7 @@ catch (err) {
 ## Security model
 
 - **Callbacks and async results are unsigned** — anyone who can reach your endpoint can forge a payload. Harden with unguessable URL tokens, `CheckoutRequestID`/`OriginatorConversationID` binding, field validation, and the [gateway IP whitelist](docs/apis/getting-started.md#callback-source-ip-whitelist).
-- **Secrets are redacted in every text form** of `Config` and credential-bearing requests — but `pickle`/`asdict`/raw struct copies still carry them; redact at the log boundary. TypeScript request objects are plain interfaces (no `inspect` hook), so log them through `logSafeRequest(req)` — it masks `securityCredential`/`passkey` and drops callback-token query strings (Go: `req.LogSafe()`, Python: `repr(req)`).
+- **Secrets are redacted in every text form** of `Config` and credential-bearing requests — but `pickle`/`asdict`/raw struct copies still carry them; redact at the log boundary. TypeScript request objects are plain interfaces (no `inspect` hook), so log them through `logSafeRequest(req)` — it redacts whole URL values (a callback token may sit in the path), matches secret/URL keys case-insensitively, and recurses through nested objects and arrays (Go: `req.LogSafe()`, Python: `repr(req)`).
 - **Tokens live in memory only**, generation-guarded against cross-replica invalidation; nothing touches disk.
 - **Transport is hardened**: TLS verification forced on injected sessions (Python), redirects refused (all engines), response sizes capped.
 - **Transport pinning (Go only)** — opt-in SPKI certificate pinning is the flagship transport control. Set `Config.TLSPinningEnabled = true` and register each expected host's pin with `mpesa.PinSPKI(hostname, spkiHash)`, where `spkiHash` is the SHA-256 of the DER-encoded SubjectPublicKeyInfo of the server's RSA public key. A host with no registered pin is unaffected, so you can roll pins one host at a time and keep a current + backup pin per host. Pinning is **additive to** ordinary TLS verification, never a replacement: a chain that fails normal validation is rejected before pinning is consulted, and the client refuses transports with `InsecureSkipVerify`. There is no built-in helper to compute the hash — the practical starting point is to fetch the live endpoint's certificate and hash its SPKI with `openssl x509 -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary`, then verify the derived hash against a channel you trust before registering it. (Go only: `PinSPKI` and `Config.TLSPinningEnabled` exist in no other engine.)
@@ -533,6 +533,24 @@ Testing the SDK against a mock? The base URL is a two-entry allowlist by design 
 | Go         | `cd go && go vet ./... && go test -race -v -count=1 ./...`             |
 | Python     | `cd python && pip install -e ".[dev]" && python -m pytest tests -v`    |
 | TypeScript | `cd typescript && npm ci && npm run typecheck && npm test`             |
+
+### Examples
+
+Runnable examples for every flow live under each engine's `examples/` directory
+(plus the original STK Push example). Fill the `MPESA_*` env vars first; run from
+the engine directory, e.g. `cd go/examples/b2c_payout && go run .`,
+`cd python && python examples/b2c_payout.py`, or
+`cd typescript && npx tsx examples/b2c_payout.ts`.
+
+| Flow | Go | Python | TypeScript |
+|------|----|--------|------------|
+| STK Push | [`stk_push`](go/examples/stk_push/) | [`stk_push.py`](python/examples/stk_push.py) | [`stk_push.ts`](typescript/examples/stk_push.ts) |
+| B2C payout | [`b2c_payout`](go/examples/b2c_payout/) | [`b2c_payout.py`](python/examples/b2c_payout.py) | [`b2c_payout.ts`](typescript/examples/b2c_payout.ts) |
+| C2B register + simulate | [`c2b`](go/examples/c2b/) | [`c2b.py`](python/examples/c2b.py) | [`c2b.ts`](typescript/examples/c2b.ts) |
+| B2B + Tax Remittance | [`b2b_and_tax`](go/examples/b2b_and_tax/) | [`b2b_and_tax.py`](python/examples/b2b_and_tax.py) | [`b2b_and_tax.ts`](typescript/examples/b2b_and_tax.ts) |
+| Bill Manager | [`bill_manager`](go/examples/bill_manager/) | [`bill_manager.py`](python/examples/bill_manager.py) | [`bill_manager.ts`](typescript/examples/bill_manager.ts) |
+| Callbacks + settlement | [`callbacks`](go/examples/callbacks/) | [`callbacks.py`](python/examples/callbacks.py) | [`callbacks.ts`](typescript/examples/callbacks.ts) |
+| Queries + admin | [`queries_and_admin`](go/examples/queries_and_admin/) | [`queries_and_admin.py`](python/examples/queries_and_admin.py) | [`queries_and_admin.ts`](typescript/examples/queries_and_admin.ts) |
 
 Reproduce the exact commands CI runs, including the flags:
 

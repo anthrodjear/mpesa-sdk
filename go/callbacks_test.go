@@ -207,3 +207,67 @@ func TestParseSTKCallbackRejectsMalformed(t *testing.T) {
 		})
 	}
 }
+
+// The single-pass union decode must not regress a body with a valid envelope
+// plus stray bare-side keys of an incompatible type: the old envelope-first
+// decode ignored those extra keys and succeeded, so this must too.
+func TestParseSTKCallbackEnvelopeWinsOverStrayBareField(t *testing.T) {
+	payload := []byte(`{"Body":{"stkCallback":{"CheckoutRequestID":"ws_CO_1","ResultCode":0}},"ResultCode":[]}`)
+	res, err := ParseSTKCallback(payload)
+	if err != nil {
+		t.Fatalf("valid envelope with a stray bare key was rejected: %v", err)
+	}
+	if res.CheckoutRequestID != "ws_CO_1" || res.ResultCode.String() != "0" {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+// A parsed callback has its flattened view cached, and each accessor call
+// returns an independent map: callers may mutate the result freely without
+// corrupting later calls or DuplicateKeys.
+func TestSTKCallbackMetadataCacheIsIndependent(t *testing.T) {
+	payload := []byte(`{"Body":{"stkCallback":{"CheckoutRequestID":"ws_CO_1","ResultCode":0,` +
+		`"CallbackMetadata":{"Item":[{"Name":"Amount","Value":10},` +
+		`{"Name":"Receipt","Value":"AAA"},{"Name":"Receipt","Value":"BBB"}]}}}}`)
+	res, err := ParseSTKCallback(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.metaCache == nil {
+		t.Fatal("expected the metadata view to be cached at parse time")
+	}
+	first := res.MetadataMap()
+	first["Amount"] = "mutated"
+	first["Injected"] = true
+	again := res.MetadataMap()
+	if again["Amount"] != int64(10) {
+		t.Fatalf("caller mutation leaked into the cached view: %v", again)
+	}
+	if _, ok := again["Injected"]; ok {
+		t.Fatalf("caller-added key leaked into the cached view: %v", again)
+	}
+	if res.DuplicateKeys() != 1 {
+		t.Fatalf("DuplicateKeys = %d, want 1", res.DuplicateKeys())
+	}
+}
+
+// BenchmarkSTKCallbackMetadataAccessors makes the parse-time cache's constant
+// factor visible: each accessor call returns a fresh map copy (so callers can
+// mutate it) but no longer re-decodes every item's raw JSON value.
+func BenchmarkSTKCallbackMetadataAccessors(b *testing.B) {
+	body := []byte(`{"Body":{"stkCallback":{"CheckoutRequestID":"ws_CO_1","ResultCode":0,` +
+		`"CallbackMetadata":{"Item":[` +
+		`{"Name":"Amount","Value":1.0},` +
+		`{"Name":"MpesaReceiptNumber","Value":"NLJ7RT61SV"},` +
+		`{"Name":"TransactionDate","Value":20191219102115},` +
+		`{"Name":"PhoneNumber","Value":254708374149}]}}}}`)
+	res, err := ParseSTKCallback(body)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = res.MetadataMap()
+		_ = res.DuplicateKeys()
+	}
+}

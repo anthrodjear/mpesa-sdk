@@ -345,7 +345,11 @@ func (d *dailyLedger) consume(service Service, amount int64, limits TransactionL
 		}
 	}
 	d.used[service] = used
-	return today, nil
+	// Return the ledger's authoritative day, NOT the caller's `today`: on a
+	// backward clock jump the amount was charged against d.day (the code above
+	// deliberately does not rewind the bucket), so rollback must receive that
+	// same day or it will refuse to refund a legitimate reservation.
+	return d.day, nil
 }
 
 // rollback removes amount from the bucket it was charged against after a
@@ -353,26 +357,33 @@ func (d *dailyLedger) consume(service Service, amount int64, limits TransactionL
 // received a gateway answer.
 //
 // accrualDay is the Africa/Nairobi day the amount was charged on ("" when
-// nothing was charged). A refund whose day differs from the CURRENT day is
-// REFUSED: the amount was never counted against the current day's bucket, so
-// crediting it there would hand back quota the payment never consumed — and
-// would wipe a day's real volume (Python _rollback_daily parity: the
-// same rule, the same "no refund across a day change" outcome).
+// nothing was charged). A refund whose day differs from the ledger's CURRENT
+// day (d.day) is REFUSED: the amount was never counted against the current
+// day's bucket, so crediting it there would hand back quota the payment never
+// consumed — and would wipe a day's real volume (Python _rollback_daily parity:
+// the same rule, the same "no refund across a day change" outcome).
+//
+// The day comparison happens UNDER the lock and reads d.day — the ledger's
+// own authoritative day — rather than a caller snapshot taken before locking.
+// A concurrent consume can roll the day forward (and replace d.used) between
+// that snapshot and the lock acquisition; comparing the snapshot would credit
+// the refund to the NEW day's bucket. Reading d.day under the lock closes that
+// window.
 //
 // It is also a no-op when the ledger recorded nothing for the service, and it
 // floors at zero so a double-rollback can never drive the accumulator
 // negative.
-func (d *dailyLedger) rollback(service Service, amount int64, accrualDay string, today string) {
+func (d *dailyLedger) rollback(service Service, amount int64, accrualDay string) {
 	if accrualDay == "" {
 		return // nothing was charged: there is nothing to give back
 	}
-	if today != accrualDay {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.day != accrualDay {
 		// The Nairobi day rolled while the request was in flight: the
 		// reservation belongs to a bucket that is no longer the current one.
 		return
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
 	if d.used == nil {
 		return
 	}

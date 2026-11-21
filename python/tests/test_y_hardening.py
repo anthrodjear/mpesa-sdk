@@ -192,18 +192,23 @@ def test_daily_boundary_rejects_naive_datetime():
     assert _daily_boundary(T0) == "2026-01-01"
 
 
-# ---- Y5b: TokenManager TLS warning -------------------------------------------
+# ---- Y5b: TokenManager TLS fail-closed ---------------------------------------
 
 
-def test_token_manager_warns_on_disabled_verify():
+def test_token_manager_rejects_disabled_verify():
+    """F-4: a falsy verify FAILS CLOSED -- no warn-and-proceed path."""
+    import warnings
+
     class NoTLS:
         verify = False
 
         def get(self, *a, **k):
             raise AssertionError("must not reach network")
 
-    with pytest.warns(UserWarning, match="TLS verification disabled"):
-        TokenManager(NoTLS(), "https://sandbox.safaricom.co.ke", "k", "s")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # no warning-only fallback left
+        with pytest.raises(ValueError, match="verifying session"):
+            TokenManager(NoTLS(), "https://sandbox.safaricom.co.ke", "k", "s")
 
 
 def test_token_manager_silent_when_verifying():
@@ -220,14 +225,14 @@ def test_token_manager_silent_when_verifying():
         TokenManager(TLS(), "https://sandbox.safaricom.co.ke", "k", "s")
 
 
-def test_token_manager_warns_on_falsy_verify_zero():
+def test_token_manager_rejects_falsy_verify_zero():
     class ZeroVerify:
         verify = 0
 
         def get(self, *a, **k):
             raise AssertionError("must not reach network")
 
-    with pytest.warns(UserWarning, match="TLS verification disabled"):
+    with pytest.raises(ValueError, match="verifying session"):
         TokenManager(ZeroVerify(), "https://sandbox.safaricom.co.ke",
                      "k", "s")
 

@@ -87,6 +87,6 @@ Match on the prefix, not on the whole string: the elapsed figure moves with the 
 
 ## SDK Design Notes
 
-- Refresh the cached token transparently when stale — the clients own this internally; there is no public token accessor in Go or Python, and TypeScript's is `MpesaClient.token()` (not `getToken()`).
+- Refresh the cached token transparently when stale — the clients own this internally. Public accessors: Go `Client.Token(ctx)`, TypeScript `MpesaClient.token()` (not `getToken()`); Python exposes none at the client level (only `TokenManager.get_token()` on a separately constructed manager).
 - Never log the full token (redact middle segment).
 - Unit-test: cache hit avoids second HTTP call; concurrent callers produce exactly one fetch (use a counting mock server); expiry boundary triggers refresh at 50 min.

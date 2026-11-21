@@ -215,6 +215,61 @@ describe("MpesaClient construction", () => {
     // The rendering is still the credential-safe toString() form.
     expect(out).toContain(client.toString());
   });
+
+  async function populatedClient(): Promise<MpesaClient> {
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
+      throw new Error("no business call expected");
+    });
+    const client = new MpesaClient({
+      config: new Config({
+        consumerKey: "0123456789abcdef",
+        consumerSecret: "SUPERSECRET",
+        shortcode: SHORTCODE,
+        passkey: PASSKEY,
+      }),
+      timeoutMs: 5000,
+      now: () => nowMs,
+    });
+    await client.token(); // populate the bearer cache before inspecting
+    return client;
+  }
+
+  it("a POPULATED client hides nested secrets from a console.dir-style walk", async () => {
+    // console.dir disables the custom inspect hook; the WeakMap-backed
+    // credential fields (Config + TokenManager) keep this client safe.
+    const client = await populatedClient();
+    expect(client.toString()).toContain("timeout=5000");
+
+    const dir = inspect(client, { customInspect: false });
+    expect(dir).not.toContain("SUPERSECRET");
+    expect(dir).not.toContain("0123456789abcdef");
+    expect(dir).not.toContain("tok-abc123");
+    expect(dir).not.toContain(PASSKEY);
+  });
+
+  it("showHidden:true on a populated client surfaces no nested secret (H-4)", async () => {
+    const client = await populatedClient();
+    const deep = inspect(client, { customInspect: false, showHidden: true, depth: 6 });
+    expect(deep).not.toContain("SUPERSECRET");
+    expect(deep).not.toContain("0123456789abcdef");
+    expect(deep).not.toContain("tok-abc123");
+    expect(deep).not.toContain(PASSKEY);
+  });
+
+  it("a POPULATED client is not carried by an object spread or key listing", async () => {
+    const client = await populatedClient();
+    const spread = { ...client } as unknown as Record<string, unknown>;
+    // The two credential holders are non-enumerable, so a spread cannot
+    // even carry the nested objects (whose secrets are hidden in turn).
+    expect(spread["_config"]).toBeUndefined();
+    expect(spread["_tokens"]).toBeUndefined();
+    expect(Object.keys(client)).not.toContain("_config");
+    expect(Object.keys(client)).not.toContain("_tokens");
+    expect(JSON.stringify(spread)).not.toContain("SUPERSECRET");
+    expect(JSON.stringify(spread)).not.toContain("tok-abc123");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2809,6 +2864,54 @@ describe("Callback URL host blocklist (SSRF table)", () => {
       }),
     ).rejects.toThrow("mpesa: CallBackURL must not contain embedded credentials");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a URL over the shared 8192-byte cap with a length-only message", async () => {
+    const client = ssrfClient();
+    const longURL = "https://hook.example.com/" + "a".repeat(8200);
+    await expect(
+      client.stkPush({ ...validSTKPushRequest(), callBackURL: longURL }),
+    ).rejects.toThrow(`mpesa: CallBackURL exceeds 8192 bytes (got ${Buffer.byteLength(longURL, "utf8")})`);
+    // The offending URL (which may embed a token) is never echoed.
+    try {
+      await client.stkPush({ ...validSTKPushRequest(), callBackURL: longURL });
+    } catch (err) {
+      expect((err as Error).message).not.toContain("hook.example.com");
+      expect((err as Error).message).not.toContain("aaaa");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("measures the URL cap in UTF-8 bytes, not UTF-16 units (8192-byte boundary)", async () => {
+    const prefix = "https://hook.example.com/"; // 25 ASCII bytes
+    const fill = Math.floor((8192 - prefix.length) / 2); // 4083 × 2 bytes = 8166
+    const exact = prefix + "é".repeat(fill) + "a"; // 25 + 8166 + 1 = 8192 bytes
+    expect(Buffer.byteLength(exact, "utf8")).toBe(8192);
+    expect(exact.length).toBeLessThan(8192); // proves the old .length check would pass both
+
+    fetchMock.mockImplementation(async (url: string) => {
+      if (new URL(url).pathname === "/oauth/v1/generate") return jsonResponse(VALID_TOKEN_RESPONSE);
+      return jsonResponse({
+        MerchantRequestID: "mr-1",
+        CheckoutRequestID: "ws_CO_1",
+        ResponseCode: "0",
+        ResponseDescription: "accepted",
+        CustomerMessage: "ok",
+      });
+    });
+    const client = ssrfClient();
+
+    // Exactly 8192 bytes is accepted — no cap error.
+    await expect(
+      client.stkPush({ ...validSTKPushRequest(), callBackURL: exact }),
+    ).resolves.toMatchObject({ ResponseCode: "0" });
+
+    // One byte over is rejected with a byte count, even though .length is still < 8192.
+    const over = exact + "b";
+    expect(Buffer.byteLength(over, "utf8")).toBe(8193);
+    await expect(
+      client.stkPush({ ...validSTKPushRequest(), callBackURL: over }),
+    ).rejects.toThrow("mpesa: CallBackURL exceeds 8192 bytes (got 8193)");
   });
 
   it("accepts the public host table", async () => {

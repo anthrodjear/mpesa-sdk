@@ -198,8 +198,12 @@ def test_config_rejects_non_ascii_credentials(kwargs):
     "https://api.safaricom.co.ke/",
 ])
 def test_token_manager_accepts_trusted_hosts(host):
-    """Construction against either Daraja deployment succeeds (no network)."""
-    TokenManager(FakeSession([]), host, "k", "s")
+    """Construction against either Daraja deployment succeeds (no network).
+
+    F-4: the injected session must verify TLS, so use a real (never-used)
+    Session here rather than the deliberately insecure FakeSession.
+    """
+    TokenManager(requests.Session(), host, "k", "s")
 
 
 @pytest.mark.parametrize("host", [
