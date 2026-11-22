@@ -18,12 +18,16 @@ import (
 // default when zero. Config contains credentials — never log directly;
 // GoString/Format redact and ConsumerKey is masked to its first/last 4 runes.
 type Config struct {
-	ConsumerKey       string
-	ConsumerSecret    string
-	Shortcode         string
-	Passkey           string
-	Environment       Environment
-	Timeout           time.Duration
+	ConsumerKey    string
+	ConsumerSecret string
+	Shortcode      string
+	Passkey        string
+	Environment    Environment
+	Timeout        time.Duration
+	// Now is an optional clock override. A Client is safe for concurrent use,
+	// and calls Now from token-freshness, rate-limit, daily-ledger and
+	// password-generation paths on arbitrary goroutines. An injected Now MUST
+	// therefore be safe for concurrent use (same contract as ErrorLogger).
 	Now               func() time.Time
 	HTTPClient        *http.Client
 	TLSPinningEnabled bool

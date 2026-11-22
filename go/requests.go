@@ -694,10 +694,19 @@ func (r *STKPushRequest) ValidateWithLimits(limits TransactionLimits) error {
 	if err := requireMaxLen("AccountReference", r.AccountReference, 12); err != nil {
 		return err
 	}
+	// These fields are echoed by Daraja and copied into application logs.
+	// Python rejects non-printable text here; do the same so a caller
+	// cannot forge log lines through AccountReference/TransactionDesc.
+	if err := requirePrintable("AccountReference", r.AccountReference); err != nil {
+		return err
+	}
 	if err := requireNonEmpty("TransactionDesc", r.TransactionDesc); err != nil {
 		return err
 	}
-	return requireMaxLen("TransactionDesc", r.TransactionDesc, 13)
+	if err := requireMaxLen("TransactionDesc", r.TransactionDesc, 13); err != nil {
+		return err
+	}
+	return requirePrintable("TransactionDesc", r.TransactionDesc)
 }
 
 // Validate requires a CheckoutRequestID and validates BusinessShortCode

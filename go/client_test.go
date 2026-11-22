@@ -2078,12 +2078,13 @@ func TestOversizeResponseDrainsTheBodySoTheConnectionIsReused(t *testing.T) {
 }
 
 // TestRefreshCadenceOverflowGuard verifies that refreshCadence does not
-// overflow when expires_in is near math.MaxInt64, and that the result is
-// always within [minCadence, maxCadence].
+// overflow when expires_in is near math.MaxInt64, that the result never
+// exceeds maxCadence, and that realistic TTLs refresh before the real
+// expiry (short TTLs legitimately fall below minCadence).
 func TestRefreshCadenceOverflowGuard(t *testing.T) {
 	const (
 		maxCadence = 50 * time.Minute
-		minCadence = time.Minute // 60s parity floor (Python/TS both floor at 60.0s)
+		minCadence = time.Minute // 60s floor for TTLs longer than the safety margin
 		safety     = time.Minute
 	)
 
@@ -2093,12 +2094,17 @@ func TestRefreshCadenceOverflowGuard(t *testing.T) {
 		want      time.Duration
 	}{
 		// Normal values: TTL - 60s safety margin, clamped to [60s, 50min]
+		// except at/below the margin where half the TTL is used.
 		{"normal_3599s", FlexInt64(3599), maxCadence}, // 3539s > 50min, clamped
 		{"normal_3600s", FlexInt64(3600), maxCadence}, // 3540s > 50min, clamped
 		{"normal_120s", FlexInt64(120), 60 * time.Second},
 		{"normal_90s", FlexInt64(90), minCadence}, // 90-60=30s, clamped to the 60s parity floor
 		{"normal_61s", FlexInt64(61), minCadence}, // 61-60=1s, clamped to minCadence
-		{"normal_60s", FlexInt64(60), minCadence}, // 60-60=0s, clamped to minCadence
+		// Sub-minute TTLs must refresh BEFORE the real expiry: a 60s floor
+		// would serve an already-expired bearer for the remaining lifetime.
+		{"normal_60s", FlexInt64(60), 30 * time.Second},
+		{"normal_30s", FlexInt64(30), 15 * time.Second},
+		{"normal_1s", FlexInt64(1), time.Second},
 
 		// Edge: zero and negative fall back to maxCadence
 		{"zero", FlexInt64(0), maxCadence},
@@ -2117,9 +2123,13 @@ func TestRefreshCadenceOverflowGuard(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("refreshCadence(%d) = %v, want %v", int64(tc.expiresIn), got, tc.want)
 			}
-			// Result must always be within [minCadence, maxCadence]
-			if got < minCadence {
-				t.Errorf("refreshCadence(%d) = %v, below minCadence %v", int64(tc.expiresIn), got, minCadence)
+			// For realistic TTLs the cadence must be strictly before the
+			// real expiry, otherwise the cached bearer is served expired.
+			// Overflow-clamped values and 1s (the minimum floor) are exempt.
+			secs := int64(tc.expiresIn)
+			if secs >= 2 && secs <= math.MaxInt64/int64(time.Second) &&
+				got >= time.Duration(secs)*time.Second {
+				t.Errorf("refreshCadence(%d) = %v, not before expiry", secs, got)
 			}
 			if got > maxCadence {
 				t.Errorf("refreshCadence(%d) = %v, above maxCadence %v", int64(tc.expiresIn), got, maxCadence)

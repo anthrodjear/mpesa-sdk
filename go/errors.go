@@ -151,16 +151,18 @@ func parseError(status int, contentType string, body []byte, logger ErrorLogger)
 }
 
 // sanitizeWireString strips control runes — the C0 range and DEL, plus the
-// C1 range (U+0080–U+009F) — and Unicode Cf format characters (zero-width
-// spaces, BOM, directional marks), then truncates to limit bytes on a rune
-// boundary. Tri-language parity with the Python/TypeScript sanitizer engines:
-// hostile gateway output cannot smuggle invisible or log-injecting characters
-// into diagnostics through any binding.
+// C1 range (U+0080–U+009F) — Unicode Cf format characters (zero-width
+// spaces, BOM, directional marks), and the Zl/Zp line/paragraph separators
+// (U+2028/U+2029), which many log viewers render as real newlines.
+// It then truncates to limit bytes on a rune boundary. Tri-language parity
+// with the Python/TypeScript sanitizer engines: hostile gateway output cannot
+// smuggle invisible or log-injecting characters into diagnostics through any
+// binding.
 func sanitizeWireString(s string, limit int) string {
 	var b strings.Builder
 	n := 0
 	for _, r := range s {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029' {
 			continue
 		}
 		// utf8.RuneLen(r) rather than len(string(r)): the latter allocates a
