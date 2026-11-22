@@ -17,7 +17,7 @@
 |---|---|---|
 | `OriginatorConversationID` | string | optional — auto-generated (16-char CSPRNG) when empty |
 | `Initiator` | string | API operator name (**note: `Initiator`, not B2C's `InitiatorName`**) |
-| `SecurityCredential` | string | RSA-encrypted initiator password — see [getting-started.md](getting-started.md#security-credentials) |
+| `SecurityCredential` | string | RSA-encrypted initiator password — see [getting-started.md](getting-started.md#securitycredential-b2c--transaction-status--reversal--account-balance) |
 | `CommandID` | enum | `BusinessPayBill` (paybill receiver) · `BusinessBuyGoods` (till receiver) — anything else is rejected client-side |
 | `SenderIdentifierType` | string | default `"4"` (organization shortcode) |
 | `ReceiverIdentifierType` | string | default `"4"` |

@@ -1,5 +1,14 @@
 # M-Pesa Daraja SDK — Re-Review Report (2026-11-02 · 0.5.1 → 0.6.0)
 
+> **⚠️ HISTORICAL / SUPERSEDED — this report describes the 0.5.1 → 0.6.0
+> review, not the current release.** The current release is **0.7.1**;
+> **B2B Express Checkout, Tax Remittance and Bill Manager shipped in 0.7.0**
+> (see `CHANGES.md:53-77`). Every verdict, scorecard and "remaining gap"
+> below reflects the older 0.6.0 state and is preserved for the record only.
+> Where this report says those endpoint families were still planned or
+> absent, that was true **at the time of this review** and is no longer true
+> in 0.7.x. Do not use this document as a status report for 0.7.1.
+
 **Version reviewed:** 0.5.1 as shipped, then 0.6.0 with the fixes below applied.
 **Scope:** `go/`, `python/mpesa/`, `typescript/src/`, `contract/`, `docs/`, `.github/`, packaging manifests.
 **Method:** every source file re-read in full across all three engines; six specialized review
@@ -66,14 +75,18 @@ phone normalization, balance 2⁵³ textual gate, consumer-key masking.
 | Correctness | **9.5/10** | Money-path coercion unified (2dp), validation parity enforced where the contract is unambiguous; remaining strictness drift documented, not silently changed |
 | Documentation | **8.5/10** | Doc-vs-code contradictions fixed; `docs/testing.md` added; divergence register maintained; a snippet-compiling CI job is still the right next step |
 | Test coverage | **8/10** | All fixes pinned; `coerceAmount` had zero coverage and now has a block; Python/TS coverage still unmeasured (tooling gap, unchanged) |
-| Completeness | **6/10** | Unchanged in kind: B2B/Tax/Bill Manager/C2B parsers/STK poll/publish workflow still absent (planned, tracked) — 9 endpoints + OAuth are complete |
+| Completeness | **6/10** | As of this 0.6.0 review: C2B parsers/STK poll/publish workflow still absent (planned, tracked) — 9 endpoints + OAuth were complete. B2B/Tax/Bill Manager were also absent *then*, but shipped in 0.7.0 — see the banner above |
 | Maintainability | **7.5/10** | Version-parity gate added; central divergence register; bus factor still 1 |
 
-## 4. Remaining gaps (roadmap, unchanged in kind)
+## 4. Remaining gaps (roadmap — as recorded at 0.6.0; see banner)
 
-B2B, Tax Remittance, Bill Manager (planned — deliberately **not** merged to `main` yet),
-C2B validation/confirmation parsers (deferred since 0.2.0), STK poll helper, publish workflow,
-transport-level retry/backoff, no async client. See `docs/IMPLEMENTATION_PLAN_MISSING_APIS*.md`.
+B2B, Tax Remittance and Bill Manager are **no longer gaps**: all three shipped
+in **0.7.0** (`CHANGES.md:61-77`) and are present in 0.7.1. The "planned —
+deliberately **not** merged to `main` yet" status recorded here was true only
+at the time of this 0.6.0 review. Still open as of this review: C2B
+validation/confirmation parsers (deferred since 0.2.0), STK poll helper,
+publish workflow, transport-level retry/backoff, no async client. See
+`docs/IMPLEMENTATION_PLAN_MISSING_APIS*.md`.
 
 ---
 

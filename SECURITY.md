@@ -122,9 +122,19 @@ Brief guidance when integrating this SDK:
 
 ## Security Audit
 
+> **⚠️ HISTORICAL MEASUREMENT — v0.5.1, NOT the current 0.7.1 release.** The
+> capability counts in the table below are reproduced from the
+> [historical v0.5.1 Capslock report](docs/security-audit.md). They were
+> measured against `go/` at `v0.5.1` and have **not** been re-measured for
+> `0.7.1`. In particular, the **B2B Express Checkout, Tax Remittance and
+> Bill Manager** code paths that shipped in `0.7.0` are **not included** in
+> these numbers. Treat the table as a historical baseline only — it is not a
+> statement about the current release's capability footprint, and no new
+> audit result is asserted here.
+
 A static capability analysis using [Google Capslock](https://github.com/google/capslock) was performed on the Go SDK (`go/`). See [docs/security-audit.md](docs/security-audit.md) for the full report.
 
-**Summary:** All capabilities are expected and justified for a payment SDK. No capabilities indicate vulnerabilities or over-privilege.
+**Summary (v0.5.1 report):** All capabilities are expected and justified for a payment SDK. No capabilities indicate vulnerabilities or over-privilege.
 
 | Capability | References | Assessment |
 |------------|------------|------------|
@@ -136,7 +146,7 @@ A static capability analysis using [Google Capslock](https://github.com/google/c
 | UNSAFE_POINTER | 55 | Stdlib internals (TLS, crypto, JSON) |
 | REFLECT | 48 | JSON + FlexString/FlexInt64 coercion |
 
-**No capabilities indicate vulnerabilities or over-privilege.** The SDK implements defense-in-depth at every layer.
+**No capabilities indicate vulnerabilities or over-privilege** *(v0.5.1 report)*. The SDK implements defense-in-depth at every layer.
 
 ---
 
