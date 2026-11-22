@@ -27,8 +27,13 @@ from typing import Any, ClassVar, TypeVar
 # the F401 suppression on the next line is scoped to it deliberately.
 from ._limits import MAX_BODY_BYTES as _MAX_BODY_BYTES  # noqa: F401
 from ._limits import check_body_size as _check_body_size
-from .coercion import (coerce_int, coerce_opaque_str, coerce_str,
-                       coerce_token, safe_json_int)
+from .coercion import (
+    coerce_int,
+    coerce_opaque_str,
+    coerce_str,
+    coerce_token,
+    safe_json_int,
+)
 
 __all__ = ["STKPushResponse", "STKQueryResponse", "ConversationResponse",
            "B2CResponse", "C2BAckResponse", "QRCodeResponse", "OAuthToken",
