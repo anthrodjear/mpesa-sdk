@@ -632,7 +632,7 @@ STK poll helper, `{segments, skipped}` return change,
   limit, EAT single-clock rule, unsigned-callback posture, wire-misspelling
   preservation (`Occassion`, `RecieverIdentifierType`,
   `OriginatorCoversationID`).
-- **`.gitignore`**: added agent/skill/memory patterns (`.agents/`, `agents/`,
+- **`.gitignore`**: added local tooling/skill/memory patterns (`.agents/`, `agents/`,
   `.skills/`, `skills/`, `.claude/`, `.opencode/`, `opencode.json*`,
   `.cursor/`, `MEMORY.md`, `memory/`, `state.md`, `context-snapshot.json`,
   `*.skill`) so assistant workspaces never get pushed to GitHub.
