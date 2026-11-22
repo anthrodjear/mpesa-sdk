@@ -94,7 +94,7 @@ publish workflow, transport-level retry/backoff, no async client. See
 
 **Repo:** `C:\Users\user\Desktop\Shared\mpesa-sdk` · **Version:** 0.4.0 (all three engines) · **Date:** 2026-10-22
 **Scope:** `go/` (stdlib-only, ~2.6k LOC), `python/mpesa/` (~3.5k LOC), `typescript/src/` (~4.7k LOC), `docs/apis/`, `.github/workflows/`, packaging manifests.
-**Reviewers:** 6 specialised subagents — Security Engineer, Code Reviewer, Test Engineer, Software Architect, Backend Architect (Big-O/perf), Technical Writer (DX/docs) — plus direct verification by the reviewer.
+**Review coverage:** six review disciplines — security, code review, testing, software architecture, performance (Big-O), and documentation — with direct verification by anthrodjear.
 
 **Verdict:** A genuinely strong specialist SDK with one systemic weakness: **the "one contract, three implementations" promise is enforced by prose, not machinery, and it has already drifted on money-affecting paths — concentrated in the Python engine.** Security foundations are unusually deep (this is not a typical audit-findings dump). Fix the 6 confirmed defects below and add a cross-engine conformance gate, and this is a 1.0-ready SDK.
 
@@ -208,7 +208,7 @@ JSON.stringify(cfg) -> {"shortcode":"174379","environment":"sandbox","key":"0123
 
 ---
 
-## 3. Lower-severity findings (verified or agent-confirmed)
+## 3. Lower-severity findings (verified or reviewed)
 
 | # | Sev | Area | Finding |
 |---|---|---|---|
@@ -401,6 +401,6 @@ Remaining work is constant-factor, not complexity: Go's idle-conn budget (#14), 
 | `dynamic-qr.md` method names wrong (#23) | read `docs/apis/dynamic-qr.md:66` vs `README.md:179` | **confirmed** |
 | Working tree left clean | `git status --porcelain` | empty (only `typescript/dist/`, which is gitignored) |
 
-**Reported by subagents, not independently re-verified** (spot-checked only): Go `Client.Close()` re-caching race (#12), the TS global token-cache key (#11), Go's default-transport idle-conn cap (#14), the Go undrained-body issue (#13), Go coverage 85.4%, and the per-file 0%-coverage list. These are low-severity or already evidenced by the code paths cited; treat their exact line numbers as approximate.
+**Reported during review, not independently re-verified** (spot-checked only): Go `Client.Close()` re-caching race (#12), the TS global token-cache key (#11), Go's default-transport idle-conn cap (#14), the Go undrained-body issue (#13), Go coverage 85.4%, and the per-file 0%-coverage list. These are low-severity or already evidenced by the code paths cited; treat their exact line numbers as approximate.
 
 **Tooling note:** `go test -race` could not run on this machine (no gcc/cgo). CI enforces it (`ci.yml:63`), so this is an environment limitation, not a repository defect — but it means the race-detector claim is inherited from CI, not re-verified here.

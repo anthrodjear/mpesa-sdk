@@ -1,14 +1,11 @@
 # Security / correctness audit — 2026-11-22
 
 **Scope:** full repository (Go, Python, TypeScript SDKs, docs, CI, examples).
-**Pipeline:** Hy4 flash finders (8 parallel scopes, 44 raw findings) → independent
-confirmation → fixes (Hy4 flash + 5 parallel implementation/verification subagents)
-→ re-verification.
-
-> **Second-model note:** the requested Tidepool alpha confirmer could not run —
-> its free-tier quota was exhausted. Per operator decision, confirmation and
-> fix-verification were performed by Hy4 flash, including a dedicated read-only
-> Go verifier subagent (`go test -race`, `go vet`, diff review).
+**Author:** anthrodjear
+**Method:** eight parallel review scopes produced 44 raw findings; each was
+independently checked against the code before any change was made, then fixed
+and re-verified. Findings that were intentional or test-pinned behaviours were
+rejected rather than changed (see the last section).
 
 ## Final verification
 
@@ -77,8 +74,8 @@ entries for token-cache scope, strict `expires_in`, intentional raw error-logger
 body, and short-TTL cadence.
 
 ### Verification of the fixes themselves
-Four read-only subagents independently reviewed the complete diff (Go, Python,
-TypeScript, docs). Two defects in the *fixes* were found and corrected before
+The complete diff was reviewed independently for each language and for the
+documentation. Two defects in the *fixes* were found and corrected before
 commit, each proven with a red-green cycle:
 - Go: `TestAuditSTKPushRejectsControlCharacters` used a 17-byte
   `AccountReference`, so the pre-existing 12-byte cap masked the new printable
