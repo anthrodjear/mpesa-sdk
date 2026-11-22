@@ -73,6 +73,13 @@ Stale v0.5.1 Capslock claims scoped as historical in `docs/security-audit.md` an
 entries for token-cache scope, strict `expires_in`, intentional raw error-logger
 body, and short-TTL cadence.
 
+`organization-dependencies.json` (H-03) was regenerated: all 75 npm entries
+match `typescript/package-lock.json` (7 version bumps), the missing `requests`
+and `cryptography` runtime dependencies were added, and the stale
+`golang.org/x/crypto` entry was removed because `go/go.mod` declares no
+modules. Socket-specific scores and artifact IDs are left `null` where they
+cannot be recomputed locally.
+
 ### Verification of the fixes themselves
 The complete diff was reviewed independently for each language and for the
 documentation. Two defects in the *fixes* were found and corrected before
@@ -99,9 +106,6 @@ commit, each proven with a red-green cycle:
   cap bounds the work. Left as-is.
 - **Go callback scalar caps (CBK-02):** cross-language cap policy difference;
   changing dedup-key inputs needs a coordinated contract decision. Deferred.
-- **`organization-dependencies.json` (H-03):** untracked and apparently
-  user-owned. Flagged as stale/missing `requests` and `cryptography`, but not
-  regenerated or committed.
 
 ## Test changes
 Three pre-existing tests encoded the old timeout/cadence behavior and were
