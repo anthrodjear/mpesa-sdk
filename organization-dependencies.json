@@ -1,0 +1,1524 @@
+{
+  "dependencies": [
+    {
+      "artifactId": "internal:100000",
+      "direct": false,
+      "ecosystem": "generic",
+      "id": "generic:/Socket SBOM Resolver@",
+      "name": "Socket SBOM Resolver",
+      "namespace": "",
+      "overallScore": null,
+      "package": "Socket SBOM Resolver",
+      "purl": "pkg:generic/Socket%20SBOM%20Resolver",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": ""
+    },
+    {
+      "artifactId": "3998091696",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/assertion-error@2.0.1",
+      "name": "assertion-error",
+      "namespace": "",
+      "overallScore": 79,
+      "package": "assertion-error",
+      "purl": "pkg:npm/assertion-error@2.0.1",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "2.0.1"
+    },
+    {
+      "artifactId": "101950891841",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/ast-v8-to-istanbul@1.0.7",
+      "name": "ast-v8-to-istanbul",
+      "namespace": "",
+      "overallScore": 88,
+      "package": "ast-v8-to-istanbul",
+      "purl": "pkg:npm/ast-v8-to-istanbul@1.0.7",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.0.7"
+    },
+    {
+      "artifactId": "101971320808",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@rolldown/binding-android-arm-eabi@1.2.16",
+      "name": "binding-android-arm-eabi",
+      "namespace": "@rolldown",
+      "overallScore": 40,
+      "package": "@rolldown/binding-android-arm-eabi",
+      "purl": "pkg:npm/%40rolldown/binding-android-arm-eabi@1.2.16",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.16"
+    },
+    {
+      "artifactId": "101971320344",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@rolldown/binding-android-arm64@1.2.16",
+      "name": "binding-android-arm64",
+      "namespace": "@rolldown",
+      "overallScore": 40,
+      "package": "@rolldown/binding-android-arm64",
+      "purl": "pkg:npm/%40rolldown/binding-android-arm64@1.2.16",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.16"
+    },
+    {
+      "artifactId": "101971320435",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@rolldown/binding-darwin-arm64@1.2.16",
+      "name": "binding-darwin-arm64",
+      "namespace": "@rolldown",
+      "overallScore": 40,
+      "package": "@rolldown/binding-darwin-arm64",
+      "purl": "pkg:npm/%40rolldown/binding-darwin-arm64@1.2.16",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.16"
+    },
+    {
+      "artifactId": "101971321113",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@rolldown/binding-darwin-x64@1.2.16",
+      "name": "binding-darwin-x64",
+      "namespace": "@rolldown",
+      "overallScore": 40,
+      "package": "@rolldown/binding-darwin-x64",
+      "purl": "pkg:npm/%40rolldown/binding-darwin-x64@1.2.16",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.16"
+    },
+    {
+      "artifactId": "101971333214",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@rolldown/binding-freebsd-x64@1.2.16",
+      "name": "binding-freebsd-x64",
+      "namespace": "@rolldown",
+      "overallScore": 40,
+      "package": "@rolldown/binding-freebsd-x64",
+      "purl": "pkg:npm/%40rolldown/binding-freebsd-x64@1.2.16",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.16"
+    },
+    {
+      "artifactId": "101971321118",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@rolldown/binding-linux-arm-gnueabihf@1.2.16",
+      "name": "binding-linux-arm-gnueabihf",
+      "namespace": "@rolldown",
+      "overallScore": 40,
+      "package": "@rolldown/binding-linux-arm-gnueabihf",
+      "purl": "pkg:npm/%40rolldown/binding-linux-arm-gnueabihf@1.2.16",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.16"
+    },
+    {
+      "artifactId": "101971321121",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@rolldown/binding-linux-arm64-gnu@1.2.16",
+      "name": "binding-linux-arm64-gnu",
+      "namespace": "@rolldown",
+      "overallScore": 40,
+      "package": "@rolldown/binding-linux-arm64-gnu",
+      "purl": "pkg:npm/%40rolldown/binding-linux-arm64-gnu@1.2.16",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.16"
+    },
+    {
+      "artifactId": "101971320789",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@rolldown/binding-linux-arm64-musl@1.2.16",
+      "name": "binding-linux-arm64-musl",
+      "namespace": "@rolldown",
+      "overallScore": 40,
+      "package": "@rolldown/binding-linux-arm64-musl",
+      "purl": "pkg:npm/%40rolldown/binding-linux-arm64-musl@1.2.16",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.16"
+    },
+    {
+      "artifactId": "101971321119",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@rolldown/binding-linux-ppc64-gnu@1.2.16",
+      "name": "binding-linux-ppc64-gnu",
+      "namespace": "@rolldown",
+      "overallScore": 40,
+      "package": "@rolldown/binding-linux-ppc64-gnu",
+      "purl": "pkg:npm/%40rolldown/binding-linux-ppc64-gnu@1.2.16",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.16"
+    },
+    {
+      "artifactId": "101971321115",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@rolldown/binding-linux-s390x-gnu@1.2.16",
+      "name": "binding-linux-s390x-gnu",
+      "namespace": "@rolldown",
+      "overallScore": 40,
+      "package": "@rolldown/binding-linux-s390x-gnu",
+      "purl": "pkg:npm/%40rolldown/binding-linux-s390x-gnu@1.2.16",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.16"
+    },
+    {
+      "artifactId": "101971321134",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@rolldown/binding-linux-x64-gnu@1.2.16",
+      "name": "binding-linux-x64-gnu",
+      "namespace": "@rolldown",
+      "overallScore": 40,
+      "package": "@rolldown/binding-linux-x64-gnu",
+      "purl": "pkg:npm/%40rolldown/binding-linux-x64-gnu@1.2.16",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.16"
+    },
+    {
+      "artifactId": "101971321120",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@rolldown/binding-linux-x64-musl@1.2.16",
+      "name": "binding-linux-x64-musl",
+      "namespace": "@rolldown",
+      "overallScore": 40,
+      "package": "@rolldown/binding-linux-x64-musl",
+      "purl": "pkg:npm/%40rolldown/binding-linux-x64-musl@1.2.16",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.16"
+    },
+    {
+      "artifactId": "101971321125",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@rolldown/binding-openharmony-arm64@1.2.16",
+      "name": "binding-openharmony-arm64",
+      "namespace": "@rolldown",
+      "overallScore": 40,
+      "package": "@rolldown/binding-openharmony-arm64",
+      "purl": "pkg:npm/%40rolldown/binding-openharmony-arm64@1.2.16",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.16"
+    },
+    {
+      "artifactId": "101971321116",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@rolldown/binding-win32-arm64-msvc@1.2.16",
+      "name": "binding-win32-arm64-msvc",
+      "namespace": "@rolldown",
+      "overallScore": 40,
+      "package": "@rolldown/binding-win32-arm64-msvc",
+      "purl": "pkg:npm/%40rolldown/binding-win32-arm64-msvc@1.2.16",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.16"
+    },
+    {
+      "artifactId": "101971321127",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@rolldown/binding-win32-x64-msvc@1.2.16",
+      "name": "binding-win32-x64-msvc",
+      "namespace": "@rolldown",
+      "overallScore": 40,
+      "package": "@rolldown/binding-win32-x64-msvc",
+      "purl": "pkg:npm/%40rolldown/binding-win32-x64-msvc@1.2.16",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.16"
+    },
+    {
+      "artifactId": "101955368733",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/chai@6.3.0",
+      "name": "chai",
+      "namespace": "",
+      "overallScore": 84,
+      "package": "chai",
+      "purl": "pkg:npm/chai@6.3.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "6.3.0"
+    },
+    {
+      "artifactId": "91290496841",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@types/chai@5.2.3",
+      "name": "chai",
+      "namespace": "@types",
+      "overallScore": 76,
+      "package": "@types/chai",
+      "purl": "pkg:npm/%40types/chai@5.2.3",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "5.2.3"
+    },
+    {
+      "artifactId": "101963198623",
+      "direct": true,
+      "ecosystem": "npm",
+      "id": "npm:@vitest/coverage-v8@5.1.0",
+      "name": "coverage-v8",
+      "namespace": "@vitest",
+      "overallScore": null,
+      "package": "@vitest/coverage-v8",
+      "purl": "pkg:npm/%40vitest/coverage-v8@5.1.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": false,
+      "version": "5.1.0"
+    },
+    {
+      "artifactId": "3480784567",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@types/deep-eql@4.0.2",
+      "name": "deep-eql",
+      "namespace": "@types",
+      "overallScore": 79,
+      "package": "@types/deep-eql",
+      "purl": "pkg:npm/%40types/deep-eql@4.0.2",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "4.0.2"
+    },
+    {
+      "artifactId": "88059129421",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/detect-libc@2.1.2",
+      "name": "detect-libc",
+      "namespace": "",
+      "overallScore": 79,
+      "package": "detect-libc",
+      "purl": "pkg:npm/detect-libc@2.1.2",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "2.1.2"
+    },
+    {
+      "artifactId": "101937544845",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/es-module-lexer@2.3.2",
+      "name": "es-module-lexer",
+      "namespace": "",
+      "overallScore": 91,
+      "package": "es-module-lexer",
+      "purl": "pkg:npm/es-module-lexer@2.3.2",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "2.3.2"
+    },
+    {
+      "artifactId": "101971182425",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@types/estree@1.0.10",
+      "name": "estree",
+      "namespace": "@types",
+      "overallScore": 74,
+      "package": "@types/estree",
+      "purl": "pkg:npm/%40types/estree@1.0.10",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.0.10"
+    },
+    {
+      "artifactId": "51128",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/estree-walker@3.0.3",
+      "name": "estree-walker",
+      "namespace": "",
+      "overallScore": 80,
+      "package": "estree-walker",
+      "purl": "pkg:npm/estree-walker@3.0.3",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "3.0.3"
+    },
+    {
+      "artifactId": "101919375681",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/expect-type@1.4.0",
+      "name": "expect-type",
+      "namespace": "",
+      "overallScore": 81,
+      "package": "expect-type",
+      "purl": "pkg:npm/expect-type@1.4.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.4.0"
+    },
+    {
+      "artifactId": "65207170003",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/fdir@6.5.0",
+      "name": "fdir",
+      "namespace": "",
+      "overallScore": 80,
+      "package": "fdir",
+      "purl": "pkg:npm/fdir@6.5.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "6.5.0"
+    },
+    {
+      "artifactId": "12971",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/fsevents@2.3.3",
+      "name": "fsevents",
+      "namespace": "",
+      "overallScore": 82,
+      "package": "fsevents",
+      "purl": "pkg:npm/fsevents@2.3.3",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "2.3.3"
+    },
+    {
+      "artifactId": "101968427697",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@babel/helper-string-parser@7.29.11",
+      "name": "helper-string-parser",
+      "namespace": "@babel",
+      "overallScore": 73,
+      "package": "@babel/helper-string-parser",
+      "purl": "pkg:npm/%40babel/helper-string-parser@7.29.11",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "7.29.11"
+    },
+    {
+      "artifactId": "101886235241",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@babel/helper-validator-identifier@7.29.7",
+      "name": "helper-validator-identifier",
+      "namespace": "@babel",
+      "overallScore": 72,
+      "package": "@babel/helper-validator-identifier",
+      "purl": "pkg:npm/%40babel/helper-validator-identifier@7.29.7",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "7.29.7"
+    },
+    {
+      "artifactId": "101953648094",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@vitest/istanbul-lib-coverage@2.1.0",
+      "name": "istanbul-lib-coverage",
+      "namespace": "@vitest",
+      "overallScore": null,
+      "package": "@vitest/istanbul-lib-coverage",
+      "purl": "pkg:npm/%40vitest/istanbul-lib-coverage@2.1.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "2.1.0"
+    },
+    {
+      "artifactId": "101953648084",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@vitest/istanbul-lib-report@2.1.0",
+      "name": "istanbul-lib-report",
+      "namespace": "@vitest",
+      "overallScore": null,
+      "package": "@vitest/istanbul-lib-report",
+      "purl": "pkg:npm/%40vitest/istanbul-lib-report@2.1.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "2.1.0"
+    },
+    {
+      "artifactId": "101851877958",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/js-tokens@10.0.0",
+      "name": "js-tokens",
+      "namespace": "",
+      "overallScore": 72,
+      "package": "js-tokens",
+      "purl": "pkg:npm/js-tokens@10.0.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "10.0.0"
+    },
+    {
+      "artifactId": "101927430300",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/lightningcss@1.33.0",
+      "name": "lightningcss",
+      "namespace": "",
+      "overallScore": 70,
+      "package": "lightningcss",
+      "purl": "pkg:npm/lightningcss@1.33.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.33.0"
+    },
+    {
+      "artifactId": "101927430187",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/lightningcss-android-arm64@1.33.0",
+      "name": "lightningcss-android-arm64",
+      "namespace": "",
+      "overallScore": 38,
+      "package": "lightningcss-android-arm64",
+      "purl": "pkg:npm/lightningcss-android-arm64@1.33.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.33.0"
+    },
+    {
+      "artifactId": "101927430365",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/lightningcss-darwin-arm64@1.33.0",
+      "name": "lightningcss-darwin-arm64",
+      "namespace": "",
+      "overallScore": 38,
+      "package": "lightningcss-darwin-arm64",
+      "purl": "pkg:npm/lightningcss-darwin-arm64@1.33.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.33.0"
+    },
+    {
+      "artifactId": "101927430189",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/lightningcss-darwin-x64@1.33.0",
+      "name": "lightningcss-darwin-x64",
+      "namespace": "",
+      "overallScore": 38,
+      "package": "lightningcss-darwin-x64",
+      "purl": "pkg:npm/lightningcss-darwin-x64@1.33.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.33.0"
+    },
+    {
+      "artifactId": "101927430366",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/lightningcss-freebsd-x64@1.33.0",
+      "name": "lightningcss-freebsd-x64",
+      "namespace": "",
+      "overallScore": 38,
+      "package": "lightningcss-freebsd-x64",
+      "purl": "pkg:npm/lightningcss-freebsd-x64@1.33.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.33.0"
+    },
+    {
+      "artifactId": "101927430367",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/lightningcss-linux-arm-gnueabihf@1.33.0",
+      "name": "lightningcss-linux-arm-gnueabihf",
+      "namespace": "",
+      "overallScore": 38,
+      "package": "lightningcss-linux-arm-gnueabihf",
+      "purl": "pkg:npm/lightningcss-linux-arm-gnueabihf@1.33.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.33.0"
+    },
+    {
+      "artifactId": "101927430368",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/lightningcss-linux-arm64-gnu@1.33.0",
+      "name": "lightningcss-linux-arm64-gnu",
+      "namespace": "",
+      "overallScore": 38,
+      "package": "lightningcss-linux-arm64-gnu",
+      "purl": "pkg:npm/lightningcss-linux-arm64-gnu@1.33.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.33.0"
+    },
+    {
+      "artifactId": "101927430369",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/lightningcss-linux-arm64-musl@1.33.0",
+      "name": "lightningcss-linux-arm64-musl",
+      "namespace": "",
+      "overallScore": 38,
+      "package": "lightningcss-linux-arm64-musl",
+      "purl": "pkg:npm/lightningcss-linux-arm64-musl@1.33.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.33.0"
+    },
+    {
+      "artifactId": "101927430370",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/lightningcss-linux-x64-gnu@1.33.0",
+      "name": "lightningcss-linux-x64-gnu",
+      "namespace": "",
+      "overallScore": 38,
+      "package": "lightningcss-linux-x64-gnu",
+      "purl": "pkg:npm/lightningcss-linux-x64-gnu@1.33.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.33.0"
+    },
+    {
+      "artifactId": "101927429116",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/lightningcss-linux-x64-musl@1.33.0",
+      "name": "lightningcss-linux-x64-musl",
+      "namespace": "",
+      "overallScore": 38,
+      "package": "lightningcss-linux-x64-musl",
+      "purl": "pkg:npm/lightningcss-linux-x64-musl@1.33.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.33.0"
+    },
+    {
+      "artifactId": "101927430371",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/lightningcss-win32-arm64-msvc@1.33.0",
+      "name": "lightningcss-win32-arm64-msvc",
+      "namespace": "",
+      "overallScore": 38,
+      "package": "lightningcss-win32-arm64-msvc",
+      "purl": "pkg:npm/lightningcss-win32-arm64-msvc@1.33.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.33.0"
+    },
+    {
+      "artifactId": "101927430372",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/lightningcss-win32-x64-msvc@1.33.0",
+      "name": "lightningcss-win32-x64-msvc",
+      "namespace": "",
+      "overallScore": 38,
+      "package": "lightningcss-win32-x64-msvc",
+      "purl": "pkg:npm/lightningcss-win32-x64-msvc@1.33.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.33.0"
+    },
+    {
+      "artifactId": "101970204996",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/magic-string@1.4.5",
+      "name": "magic-string",
+      "namespace": "",
+      "overallScore": 95,
+      "package": "magic-string",
+      "purl": "pkg:npm/magic-string@1.4.5",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.4.5"
+    },
+    {
+      "artifactId": "101945877233",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/magicast@0.5.5",
+      "name": "magicast",
+      "namespace": "",
+      "overallScore": 86,
+      "package": "magicast",
+      "purl": "pkg:npm/magicast@0.5.5",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "0.5.5"
+    },
+    {
+      "artifactId": "101963197854",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@vitest/mocker@5.1.0",
+      "name": "mocker",
+      "namespace": "@vitest",
+      "overallScore": null,
+      "package": "@vitest/mocker",
+      "purl": "pkg:npm/%40vitest/mocker@5.1.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "5.1.0"
+    },
+    {
+      "artifactId": "101957846821",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/nanoid@3.3.20",
+      "name": "nanoid",
+      "namespace": "",
+      "overallScore": 81,
+      "package": "nanoid",
+      "purl": "pkg:npm/nanoid@3.3.20",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "3.3.20"
+    },
+    {
+      "artifactId": "101970974118",
+      "direct": true,
+      "ecosystem": "npm",
+      "id": "npm:@types/node@26.6.6",
+      "name": "node",
+      "namespace": "@types",
+      "overallScore": 80,
+      "package": "@types/node",
+      "purl": "pkg:npm/%40types/node@26.6.6",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": false,
+      "version": "26.6.6"
+    },
+    {
+      "artifactId": "101945339459",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/obug@3.0.0",
+      "name": "obug",
+      "namespace": "",
+      "overallScore": 90,
+      "package": "obug",
+      "purl": "pkg:npm/obug@3.0.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "3.0.0"
+    },
+    {
+      "artifactId": "101971360703",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@babel/parser@7.29.12",
+      "name": "parser",
+      "namespace": "@babel",
+      "overallScore": 80,
+      "package": "@babel/parser",
+      "purl": "pkg:npm/%40babel/parser@7.29.12",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "7.29.12"
+    },
+    {
+      "artifactId": "15902067903",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/picocolors@1.1.1",
+      "name": "picocolors",
+      "namespace": "",
+      "overallScore": 72,
+      "package": "picocolors",
+      "purl": "pkg:npm/picocolors@1.1.1",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.1.1"
+    },
+    {
+      "artifactId": "101940009382",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/picomatch@4.0.7",
+      "name": "picomatch",
+      "namespace": "",
+      "overallScore": 87,
+      "package": "picomatch",
+      "purl": "pkg:npm/picomatch@4.0.7",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "4.0.7"
+    },
+    {
+      "artifactId": "101883596594",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@rolldown/pluginutils@1.0.1",
+      "name": "pluginutils",
+      "namespace": "@rolldown",
+      "overallScore": 91,
+      "package": "@rolldown/pluginutils",
+      "purl": "pkg:npm/%40rolldown/pluginutils@1.0.1",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.0.1"
+    },
+    {
+      "artifactId": "101970016160",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/postcss@8.5.32",
+      "name": "postcss",
+      "namespace": "",
+      "overallScore": 81,
+      "package": "postcss",
+      "purl": "pkg:npm/postcss@8.5.32",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "8.5.32"
+    },
+    {
+      "artifactId": "101970520549",
+      "direct": true,
+      "ecosystem": "pypi",
+      "id": "pypi:/pytest@9.2.0",
+      "name": "pytest",
+      "namespace": "",
+      "overallScore": 87,
+      "package": "pytest",
+      "purl": "pkg:pypi/pytest@9.2.0?artifact_id=101970520549",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": false,
+      "version": "9.2.0"
+    },
+    {
+      "artifactId": "101870202639",
+      "direct": true,
+      "ecosystem": "pypi",
+      "id": "pypi:/pytest-cov@7.1.0",
+      "name": "pytest-cov",
+      "namespace": "",
+      "overallScore": 98,
+      "package": "pytest-cov",
+      "purl": "pkg:pypi/pytest-cov@7.1.0?artifact_id=101870202639",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": false,
+      "version": "7.1.0"
+    },
+    {
+      "artifactId": "9287418930",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@jridgewell/resolve-uri@3.1.2",
+      "name": "resolve-uri",
+      "namespace": "@jridgewell",
+      "overallScore": 79,
+      "package": "@jridgewell/resolve-uri",
+      "purl": "pkg:npm/%40jridgewell/resolve-uri@3.1.2",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "3.1.2"
+    },
+    {
+      "artifactId": "101971333359",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/rolldown@1.2.16",
+      "name": "rolldown",
+      "namespace": "",
+      "overallScore": 78,
+      "package": "rolldown",
+      "purl": "pkg:npm/rolldown@1.2.16",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.16"
+    },
+    {
+      "artifactId": "101955253869",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/source-map-js@1.2.2",
+      "name": "source-map-js",
+      "namespace": "",
+      "overallScore": 82,
+      "package": "source-map-js",
+      "purl": "pkg:npm/source-map-js@1.2.2",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.2.2"
+    },
+    {
+      "artifactId": "101941437190",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@jridgewell/sourcemap-codec@1.6.0",
+      "name": "sourcemap-codec",
+      "namespace": "@jridgewell",
+      "overallScore": 81,
+      "package": "@jridgewell/sourcemap-codec",
+      "purl": "pkg:npm/%40jridgewell/sourcemap-codec@1.6.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.6.0"
+    },
+    {
+      "artifactId": "101963199170",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@vitest/spy@5.1.0",
+      "name": "spy",
+      "namespace": "@vitest",
+      "overallScore": null,
+      "package": "@vitest/spy",
+      "purl": "pkg:npm/%40vitest/spy@5.1.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "5.1.0"
+    },
+    {
+      "artifactId": "101954646780",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/std-env@4.3.0",
+      "name": "std-env",
+      "namespace": "",
+      "overallScore": 84,
+      "package": "std-env",
+      "purl": "pkg:npm/std-env@4.3.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "4.3.0"
+    },
+    {
+      "artifactId": "101971951311",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/tinybench@6.2.3",
+      "name": "tinybench",
+      "namespace": "",
+      "overallScore": 95,
+      "package": "tinybench",
+      "purl": "pkg:npm/tinybench@6.2.3",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "6.2.3"
+    },
+    {
+      "artifactId": "101943544254",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/tinyexec@1.3.1",
+      "name": "tinyexec",
+      "namespace": "",
+      "overallScore": 85,
+      "package": "tinyexec",
+      "purl": "pkg:npm/tinyexec@1.3.1",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.3.1"
+    },
+    {
+      "artifactId": "101887478116",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/tinyglobby@0.2.17",
+      "name": "tinyglobby",
+      "namespace": "",
+      "overallScore": 77,
+      "package": "tinyglobby",
+      "purl": "pkg:npm/tinyglobby@0.2.17",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "0.2.17"
+    },
+    {
+      "artifactId": "101955179855",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/tinyrainbow@3.2.0",
+      "name": "tinyrainbow",
+      "namespace": "",
+      "overallScore": 75,
+      "package": "tinyrainbow",
+      "purl": "pkg:npm/tinyrainbow@3.2.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "3.2.0"
+    },
+    {
+      "artifactId": "80930558394",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@jridgewell/trace-mapping@0.3.31",
+      "name": "trace-mapping",
+      "namespace": "@jridgewell",
+      "overallScore": 80,
+      "package": "@jridgewell/trace-mapping",
+      "purl": "pkg:npm/%40jridgewell/trace-mapping@0.3.31",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "0.3.31"
+    },
+    {
+      "artifactId": "101968427698",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@babel/types@7.29.11",
+      "name": "types",
+      "namespace": "@babel",
+      "overallScore": 80,
+      "package": "@babel/types",
+      "purl": "pkg:npm/%40babel/types@7.29.11",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "7.29.11"
+    },
+    {
+      "artifactId": "101970154651",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@oxc-project/types@0.156.0",
+      "name": "types",
+      "namespace": "@oxc-project",
+      "overallScore": 71,
+      "package": "@oxc-project/types",
+      "purl": "pkg:npm/%40oxc-project/types@0.156.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "0.156.0"
+    },
+    {
+      "artifactId": "86969026432",
+      "direct": true,
+      "ecosystem": "npm",
+      "id": "npm:/typescript@5.9.3",
+      "name": "typescript",
+      "namespace": "",
+      "overallScore": 89,
+      "package": "typescript",
+      "purl": "pkg:npm/typescript@5.9.3",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": false,
+      "version": "5.9.3"
+    },
+    {
+      "artifactId": "101929352518",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/undici-types@8.9.0",
+      "name": "undici-types",
+      "namespace": "",
+      "overallScore": 74,
+      "package": "undici-types",
+      "purl": "pkg:npm/undici-types@8.9.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "8.9.0"
+    },
+    {
+      "artifactId": "15934807315",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:@bcoe/v8-coverage@1.0.2",
+      "name": "v8-coverage",
+      "namespace": "@bcoe",
+      "overallScore": 73,
+      "package": "@bcoe/v8-coverage",
+      "purl": "pkg:npm/%40bcoe/v8-coverage@1.0.2",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "1.0.2"
+    },
+    {
+      "artifactId": "101967024802",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/vite@8.3.6",
+      "name": "vite",
+      "namespace": "",
+      "overallScore": null,
+      "package": "vite",
+      "purl": "pkg:npm/vite@8.3.6",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "8.3.6"
+    },
+    {
+      "artifactId": "101963197887",
+      "direct": true,
+      "ecosystem": "npm",
+      "id": "npm:/vitest@5.1.0",
+      "name": "vitest",
+      "namespace": "",
+      "overallScore": null,
+      "package": "vitest",
+      "purl": "pkg:npm/vitest@5.1.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": false,
+      "version": "5.1.0"
+    },
+    {
+      "artifactId": "15907326830",
+      "direct": false,
+      "ecosystem": "npm",
+      "id": "npm:/why-is-node-running@3.2.1",
+      "name": "why-is-node-running",
+      "namespace": "",
+      "overallScore": 86,
+      "package": "why-is-node-running",
+      "purl": "pkg:npm/why-is-node-running@3.2.1",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": true,
+      "version": "3.2.1"
+    },
+    {
+      "artifactId": null,
+      "direct": true,
+      "ecosystem": "pypi",
+      "id": "pypi:/requests@2.33.1",
+      "name": "requests",
+      "namespace": "",
+      "overallScore": null,
+      "package": "requests",
+      "purl": "pkg:pypi/requests@2.33.1",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": false,
+      "version": "2.33.1"
+    },
+    {
+      "artifactId": null,
+      "direct": true,
+      "ecosystem": "pypi",
+      "id": "pypi:/cryptography@50.0.0",
+      "name": "cryptography",
+      "namespace": "",
+      "overallScore": null,
+      "package": "cryptography",
+      "purl": "pkg:pypi/cryptography@50.0.0",
+      "repositories": [
+        {
+          "branch": "main",
+          "fullName": "mpesa-sdk"
+        }
+      ],
+      "transitive": false,
+      "version": "50.0.0"
+    }
+  ]
+}
