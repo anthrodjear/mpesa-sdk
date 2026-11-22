@@ -19,7 +19,8 @@ describe("safeJsonInt", () => {
     expect(safeJsonInt("3599")).toBe(3599);
     expect(safeJsonInt("0")).toBe(0);
     expect(safeJsonInt("-7")).toBe(-7);
-    expect(safeJsonInt("+100")).toBeNull(); // JSON rejects leading +
+    expect(safeJsonInt("+100")).toBe(100); // explicit sign — Go/Python parity
+    expect(safeJsonInt("1e3")).toBeNull(); // JSON number form is not an integer string
   });
 
   it("parses raw numbers", () => {
@@ -131,19 +132,13 @@ describe("coerceInt", () => {
     expect(coerceInt(undefined)).toBe(0);
   });
 
-  it("throws RangeError on INT32_MAX sentinel", () => {
-    expect(() => coerceInt(2147483647)).toThrow(RangeError);
+  it("accepts INT32_MAX (2147483647) as an ordinary value (Go/Python parity)", () => {
+    expect(coerceInt(2147483647)).toBe(2147483647);
+    expect(coerceInt("2147483647", { field: "expires_in" })).toBe(2147483647);
   });
 
   it("returns fallback for numbers beyond safe integer range", () => {
     expect(coerceInt("9007199254740993")).toBe(0); // default fallback
-  });
-
-  it("includes field name in RangeError message when provided", () => {
-    expect(() => coerceInt(2147483647, { field: "expires_in" }))
-      .toThrow("expires_in");
-    expect(() => coerceInt(2147483647, { field: "expires_in" }))
-      .toThrow("exceeds 32-bit range");
   });
 });
 

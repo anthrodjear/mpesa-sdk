@@ -17,30 +17,43 @@
  * @packageDocumentation
  */
 
-/** INT32_MAX sentinel — Daraja signals 32-bit overflow with this exact value. */
-const INT32_MAX = 2_147_483_647;
+/**
+ * Signed ASCII integer grammar for {@link safeJsonInt}: optional sign and
+ * 1–19 ASCII digits, fully anchored. Excludes JSON-number forms (`1e3`,
+ * `1.0`), whitespace, Unicode-ND digits and overlong digit runs; leading
+ * zeros are accepted (Go `strconv.ParseInt` / Python `int` parity). The
+ * 19-digit cap is the Go int64 / Python digit-run bound;
+ * {@link Number.isSafeInteger} still rejects magnitudes beyond ±2^53 after
+ * conversion.
+ */
+const SIGNED_ASCII_INT_RE = /^[+-]?[0-9]{1,19}$/;
 
 /**
- * Attempt to parse `value` as a JSON number via `JSON.parse(String(value))`.
- * Returns the result if it is a finite safe integer (±2^53); returns null on
- * failure, overflow, NaN, Infinity, or non-numeric JSON types. Never throws.
+ * Strict signed-integer parse, or null (Go `strconv.ParseInt` / Python `int`
+ * parity). Strings must match {@link SIGNED_ASCII_INT_RE}; bare numbers pass
+ * only when they are finite safe integers. Never throws.
+ *
+ * Unlike the old `JSON.parse(String(value))` implementation, an explicit
+ * sign is accepted and exponent notation is refused — exactly how Go and
+ * Python parse an integer field on the wire.
  *
  * @example
  * ```ts
  * safeJsonInt("3599");  // 3599
+ * safeJsonInt("+100");  // 100  (explicit sign — Go/Python accept it)
+ * safeJsonInt("1e3");   // null (exponent notation is NOT an integer string)
  * safeJsonInt(3599);    // 3599
  * safeJsonInt("abc");   // null
  * safeJsonInt("9007199254740993"); // null (beyond ±2^53)
  * ```
  */
 export function safeJsonInt(value: unknown): number | null {
-  try {
-    const parsed = JSON.parse(String(value));
-    if (typeof parsed !== "number") return null;
-    return Number.isFinite(parsed) && Number.isSafeInteger(parsed) ? parsed : null;
-  } catch {
-    return null;
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? value : null;
   }
+  if (typeof value !== "string" || !SIGNED_ASCII_INT_RE.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 /**
@@ -71,21 +84,25 @@ export function isNumericString(value: unknown): boolean {
 
 /**
  * Coerce `value` to an integer. Uses {@link safeJsonInt} for parsing; falls
- * back to `opts.fallback` (default 0) on failure. Throws `RangeError` when
- * the parsed value equals the INT_MAX sentinel (2^31-1), which Daraja uses
- * to signal 32-bit overflow.
+ * back to `opts.fallback` (default 0) on failure. Any value inside the
+ * ±2^53 safe-integer range is returned verbatim — including 2147483647
+ * (INT32_MAX), which Go and Python accept as an ordinary int. The old
+ * TypeScript-specific sentinel throw is gone: it rejected a legitimate wire
+ * value that the other SDKs happily settle with.
+ *
+ * `opts.field` is retained for call-site readability / future diagnostics;
+ * this function never throws.
  *
  * @param value - Raw input from JSON payload (string, number, null, etc.).
  * @param opts.fallback - Value returned when parsing fails (default: 0).
- * @param opts.field - Field name for the diagnostic message on RangeError.
- * @throws {RangeError} When the value equals INT32_MAX (2^31-1).
+ * @param opts.field - Field name at the call site (no longer used for a throw).
  *
  * @example
  * ```ts
  * coerceInt("3599");                     // 3599
  * coerceInt("abc");                      // 0 (default fallback)
  * coerceInt("abc", { fallback: -1 });   // -1
- * coerceInt(2147483647, { field: "expires_in" }); // throws RangeError
+ * coerceInt(2147483647, { field: "expires_in" }); // 2147483647 (no throw)
  * ```
  */
 export function coerceInt(
@@ -93,13 +110,7 @@ export function coerceInt(
   opts: { fallback?: number; field?: string } = {},
 ): number {
   const n = safeJsonInt(value);
-  if (n === null) return opts.fallback ?? 0;
-  if (n === INT32_MAX) {
-    // TS-specific: Go/Python don't throw here — their int types absorb the value.
-    const field = opts.field ?? "value";
-    throw new RangeError(`mpesa: ${field} exceeds 32-bit range (${n})`);
-  }
-  return n;
+  return n === null ? (opts.fallback ?? 0) : n;
 }
 
 /**
@@ -136,20 +147,27 @@ const MAX_WIRE_STR_LEN = 4096;
  *
  * Guards, in order: booleans → null (bool is not an amount); non-finite
  * numbers (JSON `1e999` → Infinity) → null; |number| > 2^53 → null
- * (precision loss); strings must fully match the ASCII decimal shape
- * (rejects `"1_000"`, `"0x10"`, Unicode digits); every other type → null.
+ * (precision loss); NUMBERS must also render (via `String(value)`, JS's
+ * shortest round-trip form = Python `repr`) to the same ASCII decimal shape
+ * as strings — so `1.123456` and `1e21` are refused instead of silently
+ * rounded; strings must fully match that shape (rejects `"1_000"`,
+ * `"0x10"`, Unicode digits); every other type → null.
  *
  * @example
  * ```ts
- * coerceAmount("10.50");  // 10.5
- * coerceAmount(true);     // null
- * coerceAmount(9e999);    // null (non-finite)
+ * coerceAmount("10.50");   // 10.5
+ * coerceAmount(10.50);     // 10.5
+ * coerceAmount(1.123456);  // null (sub-cent precision refused)
+ * coerceAmount(1e21);      // null (exponent form refused)
+ * coerceAmount(true);      // null
+ * coerceAmount(9e999);     // null (non-finite)
  * ```
  */
 export function coerceAmount(value: unknown): number | null {
   if (typeof value === "boolean") return null;
   if (typeof value === "number") {
-    return Number.isFinite(value) && Math.abs(value) <= 2 ** 53 ? value : null;
+    if (!Number.isFinite(value) || Math.abs(value) > 2 ** 53) return null;
+    return AMOUNT_RE.test(String(value)) ? value : null;
   }
   if (typeof value === "string") {
     const text = value.trim();
@@ -194,6 +212,35 @@ export function coerceWireString(value: unknown): string | null {
     }
   }
   return out.length > MAX_WIRE_STR_LEN ? out.slice(0, MAX_WIRE_STR_LEN) : out;
+}
+
+/**
+ * Non-truncating coercion for OPAQUE payload fields such as a Dynamic QR
+ * `QRCode` data URI (Python `coerce_opaque_str` parity). Unlike
+ * {@link coerceWireString}, the 4096-char diagnostic cap must NOT apply here:
+ * silently clipping a base64/data-URI payload produces a broken QR. The whole
+ * response body is already bounded by the shared ingestion cap, so retaining
+ * the scalar verbatim stays bounded.
+ *
+ * Only JSON scalars are accepted: null/undefined → null; objects, arrays,
+ * functions, symbols, bigint and other non-JSON types → null (refuse to
+ * stringify a structure into a payload). Strings are trimmed, booleans render
+ * as their JSON text, finite numbers use their shortest round-trip text.
+ *
+ * @example
+ * ```ts
+ * coerceOpaqueWireString("  data:image/png;base64,AAAA  "); // "data:image/png;base64,AAAA"
+ * coerceOpaqueWireString({ a: 1 });  // null
+ * coerceOpaqueWireString("x".repeat(10_000)).length; // 10000 (no truncation)
+ * ```
+ */
+export function coerceOpaqueWireString(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : null;
+  // Objects, arrays, functions, symbols, bigint — never a QR/payload scalar.
+  return null;
 }
 
 /**

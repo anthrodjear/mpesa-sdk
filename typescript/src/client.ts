@@ -85,6 +85,7 @@ import type {
   C2BAckResponse,
   QRCodeResponse,
 } from "./types.js";
+import { decodeQRCodeResponse } from "./types.js";
 import { CommandID, TransactionType, QRTrxCode } from "./enums.js";
 
 // ─── Endpoint paths ───────────────────────────────────────────────────────────
@@ -516,6 +517,44 @@ function requireShortcode(field: string, value: string): string {
  * auth.ts — single implementation, tree-shake friendly).
  */
 
+// ─── TLS verification guard ──────────────────────────────────────────────────
+
+/**
+ * Fail-closed construction guard against TLS-downgrade configuration.
+ *
+ * Node's `NODE_TLS_REJECT_UNAUTHORIZED=0` disables certificate verification
+ * for the ENTIRE process, so a machine-in-the-middle could terminate the
+ * Daraja HTTPS connection and read the consumer secret / Bearer token. This
+ * client never sends credentials over an unverified channel: if the variable
+ * is set to a falsy spelling (`"0"`, `"false"`, `""`, `"no"`, `"off"`),
+ * construction throws an actionable error instead of proceeding.
+ *
+ * The check is `typeof process`-guarded so it is a no-op in non-Node
+ * runtimes (browsers, Deno, edge workers) where the variable cannot exist.
+ * It runs at the very top of the constructor, so BOTH default and injected
+ * `fetch` clients are covered — an injected transport cannot opt out of
+ * certificate verification either (see `MpesaClientOptions.fetch`).
+ */
+function assertTLSVerificationEnabled(): void {
+  if (typeof process === "undefined" || !process.env) return;
+  const raw = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  if (raw === undefined) return;
+  const normalized = raw.trim().toLowerCase();
+  if (
+    normalized === "" ||
+    normalized === "0" ||
+    normalized === "false" ||
+    normalized === "no" ||
+    normalized === "off"
+  ) {
+    throw new Error(
+      "mpesa: insecure TLS configuration — NODE_TLS_REJECT_UNAUTHORIZED must not " +
+        "disable certificate verification (use \"1\" or leave it unset); refusing " +
+        "to construct a client that would send credentials over an unverified connection",
+    );
+  }
+}
+
 // ─── MpesaClient ──────────────────────────────────────────────────────────────
 
 // ─── Shared token-cache registry ─────────────────────────────────────────────
@@ -607,6 +646,10 @@ function sharedTokenManager(
  *   cross-origin redirects strip `Authorization` while same-origin 307/308s
  *   would replay the Bearer token to the redirect target). A wrapper that
  *   drops or overrides `redirect` re-opens credential replay on 307/308.
+ *   The injected `fetch` MUST ALSO PRESERVE TLS CERTIFICATE VERIFICATION:
+ *   do not set `rejectUnauthorized: false` on its Agent and do not disable
+ *   verification via `NODE_TLS_REJECT_UNAUTHORIZED`. Construction fails
+ *   closed when the process is in a TLS-downgraded state.
  * @property retryOnUnauthorized - Retry-once on HTTP 401 carrying
  *   `401.003.01` (force-refresh + one re-attempt). Default `true`; set
  *   `false` to surface the 401 immediately with NO second fetch and NO
@@ -693,6 +736,17 @@ export class MpesaClient {
   private readonly _dailyUsed = new Map<LimitService, number>();
   /** Current Nairobi day key (`YYYY-MM-DD`); `""` until first tracked call. */
   private _dailyDay = "";
+  /**
+   * Set by {@link MpesaClient.close}. Once true, `_post` fails fast so a
+   * closed client can never dispatch another request.
+   */
+  private _closed = false;
+  /**
+   * Abort controllers for in-flight requests dispatched by THIS client.
+   * Tracked so {@link MpesaClient.close} can release them; a controller is
+   * removed on its own exit path, so this set only holds live requests.
+   */
+  private readonly _activeControllers = new Set<AbortController>();
 
   /**
    * Build a MpesaClient.
@@ -700,6 +754,9 @@ export class MpesaClient {
    * @throws {Error} When credentials are missing or malformed.
    */
   constructor(opts: MpesaClientOptions) {
+    // Fail closed BEFORE any credential is bound or any transport is
+    // selected — covers default AND injected-fetch clients alike.
+    assertTLSVerificationEnabled();
     this._config = opts.config;
     this._baseUrl = opts.config.environment.baseUrl.replace(/\/+$/, "");
     this._timeoutMs = Number.isFinite(opts.timeoutMs) && (opts.timeoutMs ?? 0) > 0
@@ -828,6 +885,42 @@ export class MpesaClient {
   }
 
   /**
+   * Release resources owned by THIS client. Idempotent.
+   *
+   * - Marks the client closed: every subsequent endpoint call fails fast in
+   *   `_post` with a clear error instead of dispatching a request.
+   * - Aborts all in-flight requests dispatched by this client (their
+   *   timeout timers are cleared on the normal exit path as before).
+   * - Neutralizes this client's own cached token reference if one is ever
+   *   held directly. Today the bearer lives EXCLUSIVELY inside
+   *   {@link TokenManager} in a module-level WeakMap, so there is no direct
+   *   reference to clear here.
+   *
+   * LIMITATION — DELIBERATE: `close()` does NOT clear the token inside
+   * `TokenManager` (auth.ts) and does NOT evict or disturb the process-wide
+   * SHARED token manager. The shared cache is used by sibling clients, so
+   * invalidating it here would break them; the token manager is also owned
+   * by another module whose internals are intentionally private. The only
+   * guarantee `close()` provides is that THIS client issues no further
+   * requests and releases its own in-flight abort controllers.
+   */
+  close(): void {
+    if (this._closed) return;
+    this._closed = true;
+    for (const controller of this._activeControllers) {
+      try {
+        controller.abort();
+      } catch {
+        // An abort listener throwing must not prevent the remaining
+        // controllers from being released.
+      }
+    }
+    this._activeControllers.clear();
+    // No direct bearer reference is held by this client: the token lives in
+    // TokenManager's WeakMap (see limitation above). Nothing to neutralize.
+  }
+
+  /**
    * Redacted object for structured logging (never secrets).
    *
    * @example
@@ -938,6 +1031,11 @@ export class MpesaClient {
     out: (body: string) => T,
     opts?: { onTransportError?: () => void },
   ): Promise<T> {
+    // Fail fast for a closed client — no token read, no fetch, no ledger hit.
+    if (this._closed) {
+      throw new Error("mpesa: MpesaClient is closed; no further requests are accepted");
+    }
+
     // Whether a business attempt has been dispatched in THIS call. The
     // daily-ledger rule (see the _post doc comment) refunds an OAuth-leg
     // transport failure ONLY while this is still false — once a business
@@ -961,7 +1059,14 @@ export class MpesaClient {
     }
 
     const attempt = async (token: string): Promise<{ status: number; contentType: string; body: string }> => {
+      // `close()` may have run while the token promise was pending — never
+      // dispatch after close even if the post-guard check passed earlier.
+      if (this._closed) {
+        throw new Error("mpesa: MpesaClient is closed; request aborted before dispatch");
+      }
       const controller = new AbortController();
+      this._activeControllers.add(controller);
+      if (this._closed) controller.abort();
       const timer = setTimeout(() => controller.abort(), this._timeoutMs);
 
       // One clear, on EVERY exit path: the timeout must cover the BODY read
@@ -1014,6 +1119,7 @@ export class MpesaClient {
         return { status: resp.status, contentType: ct, body: text };
       } finally {
         clearTimeout(timer);
+        this._activeControllers.delete(controller);
       }
     };
 
@@ -1133,10 +1239,14 @@ export class MpesaClient {
     r.partyA = normalizePhone(r.partyA);
     r.phoneNumber = normalizePhone(r.phoneNumber);
     requireURL("CallBackURL", r.callBackURL);
+    // These two fields are echoed into Daraja logs, so apply the same
+    // printable-character gate Python uses here (Python _free_text): a
+    // newline/NUL injected by a caller must never forge a log line.
+    // requireNonEmpty stays for the separate blank-value rule.
     requireNonEmpty("AccountReference", r.accountReference);
-    requireLengthRange("AccountReference", r.accountReference, 1, 12);
+    requirePrintableMaxLen("AccountReference", r.accountReference, 12);
     requireNonEmpty("TransactionDesc", r.transactionDesc);
-    requireLengthRange("TransactionDesc", r.transactionDesc, 1, 13);
+    requirePrintableMaxLen("TransactionDesc", r.transactionDesc, 13);
 
     // Password binds to the ACTUAL shortcode sent — divergent values
     // cause 500.001.1001 credential mismatches.
@@ -2132,8 +2242,12 @@ export class MpesaClient {
       throw new Error(`mpesa: CPI ${JSON.stringify(cpi)} must be digits only`);
     }
     const size = r.size.trim();
-    const sizeNum = parseInt(size, 10);
-    if (!Number.isFinite(sizeNum) || sizeNum <= 0) {
+    // STRICT canonical gate: `parseInt("300px", 10)` is 300 and
+    // `parseInt("3.5", 10)` is 3, so a numeric parse alone let malformed
+    // strings reach the gateway (which echoes Size into logs). Allow an
+    // all-ASCII-digits run only, then check it is positive. The payload
+    // carries this VALIDATED value, never the caller's raw input.
+    if (!/^\d+$/.test(size) || Number(size) <= 0) {
       throw new Error(`mpesa: Size ${JSON.stringify(size)} must be a positive integer`);
     }
     r.cpi = cpi;
@@ -2156,7 +2270,9 @@ export class MpesaClient {
     return this._post(
       QR_CODE_PATH,
       payload,
-      (body) => decodeJsonObject<QRCodeResponse>(body, QR_CODE_PATH),
+      // QRCode is an opaque base64/data-URI payload: decode it with the
+      // non-truncating QR decoder, unlike the generic 4096-capped coercion.
+      (body) => decodeQRCodeResponse(body, QR_CODE_PATH),
       { onTransportError: rollbackDaily },
     );
   }
