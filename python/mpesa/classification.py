@@ -63,6 +63,11 @@ def _coerce_code(raw: Any) -> int | None:
         if not text.isascii():
             return None  # float() accepts Unicode Nd digits ("٠"->0.0); Go
             # ParseFloat doesn't -- non-ASCII can never classify.
+        # Plain decimal syntax only. float("0e0") == 0.0 would settle in
+        # Python/Go while TypeScript's ASCII gate rejects it, so exponent
+        # notation is excluded from this money-path decision everywhere.
+        if not text or any(c not in "+-.0123456789" for c in text):
+            return None
         try:
             value = float(text)
         except ValueError:

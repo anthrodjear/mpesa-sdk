@@ -206,7 +206,10 @@ class TransactionStatusRequest:
                 "mpesa: TransactionStatus CommandID must be TransactionStatusQuery")
         _require("Initiator", self.initiator)
         _require("SecurityCredential", self.security_credential)
-        _shortcode("PartyA", self.party_a)
+        # Store the normalized value: validating a trimmed COPY while
+        # shipping the untrimmed one let whitespace/control chars reach
+        # Daraja and the logs.
+        self.party_a = _shortcode("PartyA", self.party_a)
         if self.identifier_type:
             _printable("IdentifierType", self.identifier_type, 12)
         self.remarks = _free_text("Remarks", self.remarks, 100)
@@ -335,7 +338,10 @@ class AccountBalanceRequest:
                 "mpesa: AccountBalance CommandID must be AccountBalance")
         _require("Initiator", self.initiator)
         _require("SecurityCredential", self.security_credential)
-        _shortcode("PartyA", self.party_a)
+        # Store the normalized value: validating a trimmed COPY while
+        # shipping the untrimmed one let whitespace/control chars reach
+        # Daraja and the logs.
+        self.party_a = _shortcode("PartyA", self.party_a)
         if self.identifier_type:
             _printable("IdentifierType", self.identifier_type, 12)
         self.remarks = _free_text("Remarks", self.remarks, 100)

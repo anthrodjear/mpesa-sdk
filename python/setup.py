@@ -59,8 +59,11 @@ setup(
         # >=2.32.4 fixes CVE-2024-35195 (verify=False persistence) and
         # CVE-2024-47081 (netrc credential leak).
         "requests>=2.32.4,<3",
-        # >=48.0.1 clears bundled-OpenSSL advisory lineage incl.
-        # CVE-2026-34181/12797; upper-bounded before next major line.
+        # Minimum floor for the bundled-OpenSSL advisory lineage; bounded
+        # before the next major line. (An earlier revision cited
+        # CVE-2026-34181/12797 here; 12797 is a litellm advisory and
+        # 34181 is a PKCS#12 PBMAC1 issue this SDK never exercises — the
+        # SDK only parses public DER/PEM X.509 certificates.)
         "cryptography>=48.0.1,<51",
     ],
     extras_require={

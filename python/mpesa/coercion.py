@@ -40,7 +40,7 @@ from typing import Any
 from .exceptions import InvalidTokenError
 
 __all__ = ["coerce_str", "coerce_int", "safe_json_int", "coerce_amount",
-           "coerce_token", "first_wins"]
+           "coerce_token", "first_wins", "coerce_opaque_str"]
 
 _MAX_STR_LEN = 4096
 #: Magnitude bound shared by EVERY money path (int/float/Decimal/str):
@@ -127,6 +127,27 @@ def coerce_str(raw: Any) -> str | None:
         except (TypeError, ValueError, RecursionError):
             return None
     return out[:_MAX_STR_LEN]
+
+
+def coerce_opaque_str(raw: Any) -> str | None:
+    """Non-truncating coercion for opaque payload fields such as ``QRCode``.
+
+    ``coerce_str``'s 4096-char cap is right for diagnostic/log-facing text but
+    wrong for a data-URI/base64 QR payload: truncating it silently produces a
+    broken QR. The whole response body is already bounded by the shared
+    1 MiB ingestion cap, so retaining the field verbatim stays bounded.
+    """
+    if raw is None or isinstance(raw, (dict, list)):
+        return None
+    if isinstance(raw, bool):
+        return "true" if raw else "false"
+    if isinstance(raw, str):
+        return raw.strip()
+    if isinstance(raw, int):
+        return str(raw)
+    if isinstance(raw, float):
+        return repr(raw)
+    return str(raw)
 
 
 def coerce_int(raw: Any) -> int | None:

@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import math
 import threading
+import time
 from datetime import datetime, timezone
 from types import TracebackType
 from typing import Any, TypeVar
@@ -273,16 +275,23 @@ class MpesaClient:
         # except where noted above); TLS stays forced on below.
         self._session.trust_env = False
         self._session.verify = True  # forced on OUR clone only
-        # Timeout clamp: non-positive values fall back to Go's 30s default.
-        # Non-numeric values (e.g. "fast") raise ValueError, not the bare
-        # TypeError that `> 0` would produce on a str/None.
+        # Timeout validation: non-numeric values (e.g. "fast") raise
+        # ValueError, not the bare TypeError that `> 0` would produce on a
+        # str/None; non-positive and non-finite values are rejected below.
         try:
             timeout = float(config.timeout_seconds)
         except (TypeError, ValueError) as exc:
             raise ValueError(
                 "mpesa: Config.timeout_seconds must be a number of seconds, "
                 f"got {config.timeout_seconds!r}") from exc
-        self._timeout = timeout if timeout > 0 else 30.0
+        # A non-finite timeout (inf, 1e309) would be handed to urllib3 and
+        # fail deep inside socket.settimeout; NaN would be silently masked
+        # as the default. Fail fast at configuration time instead.
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError(
+                "mpesa: Config.timeout_seconds must be a finite positive "
+                f"number of seconds, got {config.timeout_seconds!r}")
+        self._timeout = timeout
         self._tokens = TokenManager(
             _OAuthOnlySession(self._session), base_url=self._base_url,
             consumer_key=config.consumer_key,
@@ -466,8 +475,16 @@ class MpesaClient:
         every real request (duck-typed fakes allowed attribute writes
         and masked the crash historically). The connection is released
         inside read_capped's ``finally``, so aborts mid-read never leak
-        sockets.
+        sockets. A monotonic TOTAL deadline (``now + timeout``) is handed
+        to read_capped as well, so a slowloris stream that stays under the
+        byte cap but trickles past the budget raises ``TimeoutError``
+        rather than hanging; that typed error is deliberately NOT wrapped
+        into the 413 oversize ``MpesaError`` below.
         """
+        # Total read budget, captured BEFORE the request so time spent in
+        # connect/headers counts against it too (slowloris defence). The
+        # socket timeout above bounds one chunk; this bounds the whole body.
+        deadline = time.monotonic() + self._timeout
         try:
             response = self._session.request(
                 method, self._base_url + path, json=json_body, params=params,
@@ -481,7 +498,8 @@ class MpesaClient:
             _mark_not_dispatched(exc)
             raise
         try:
-            body = read_capped(response, f"{path} response")
+            body = read_capped(response, f"{path} response",
+                               deadline=deadline)
         except ValueError as exc:
             # Oversize body: the response arrived but exceeds the
             # accumulation bound. Typed MpesaError(413) matches Go/TS
@@ -551,9 +569,12 @@ class MpesaClient:
         if not req.party_b:
             req.party_b = req.business_short_code
         req.validate(self._limits)
-        accrual_day = self._accrue_daily("stk", req.amount)
+        # Derive password FIRST: generate_password can reject a blank passkey
+        # or a naive injected clock. Accruing before that fallible step spent
+        # the daily quota even though no request was ever dispatched.
         password, timestamp = generate_password(
             req.business_short_code, self._cfg.passkey, self._now())
+        accrual_day = self._accrue_daily("stk", req.amount)
         payload = {**req.to_payload(), "Password": password,
                    "Timestamp": timestamp}
         try:

@@ -474,21 +474,15 @@ def test_lifecycle_close_and_context_manager():
     assert closed == [True]
 
 
-def test_zero_timeout_clamps_to_thirty():
-    captured = {}
-    session = FakeSession(oauth_then(FakeResponse(text=STK_OK)))
-    orig_request = session.request
-
-    def spy(method, url, **kwargs):
-        captured["timeout"] = kwargs.get("timeout")
-        return orig_request(method, url, **kwargs)
-
-    session.request = spy                # bound before clone: copied into it
+def test_zero_timeout_rejected():
+    """A non-positive timeout is refused at construction instead of being
+    silently clamped to the 30s default (0 used to mean 'no timeout')."""
+    session = FakeSession([])
     cfg = Config(consumer_key="key", consumer_secret="secret",
                  shortcode="174379", passkey=PASSKEY,
                  now=lambda: T0, http_client=session, timeout_seconds=0)
-    MpesaClient(cfg).stk_push(valid_stk())
-    assert captured["timeout"] == 30.0
+    with pytest.raises(ValueError, match="finite positive"):
+        MpesaClient(cfg)
 
 
 def test_stk_query_default_shortcode_password_binding():

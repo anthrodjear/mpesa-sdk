@@ -109,8 +109,14 @@ class StkCallbackResult:
         if not isinstance(data, dict):
             raise ValueError("mpesa: unexpected STK callback shape: "
                              "missing or malformed Body")
-        body = data.get("Body")
-        inner = body.get("stkCallback") if isinstance(body, dict) else None
+        if "Body" in data:
+            body = data.get("Body")
+            inner = body.get("stkCallback") if isinstance(body, dict) else None
+        else:
+            # Bare shape (already-unwrapped Body.stkCallback): Go's
+            # ParseSTKCallback and TypeScript's StkCallback.parse both
+            # accept it. Replayed captures and upstream forwarders use it.
+            inner = data
         if not isinstance(inner, dict):
             raise ValueError("mpesa: unexpected STK callback shape: "
                              "missing or malformed Body.stkCallback")

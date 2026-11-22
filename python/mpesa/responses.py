@@ -27,7 +27,8 @@ from typing import Any, ClassVar, TypeVar
 # the F401 suppression on the next line is scoped to it deliberately.
 from ._limits import MAX_BODY_BYTES as _MAX_BODY_BYTES  # noqa: F401
 from ._limits import check_body_size as _check_body_size
-from .coercion import coerce_int, coerce_str, coerce_token, safe_json_int
+from .coercion import (coerce_int, coerce_opaque_str, coerce_str,
+                       coerce_token, safe_json_int)
 
 __all__ = ["STKPushResponse", "STKQueryResponse", "ConversationResponse",
            "B2CResponse", "C2BAckResponse", "QRCodeResponse", "OAuthToken",
@@ -39,6 +40,16 @@ __all__ = ["STKPushResponse", "STKQueryResponse", "ConversationResponse",
 # the shared mpesa._limits.check_body_size.
 
 _R = TypeVar("_R", bound="_Response")
+
+
+def _reject_json_constant(token: str) -> None:
+    """Reject non-standard ``NaN``/``Infinity`` literals in response bodies.
+
+    Python's json decoder accepts them by default while Go's and TypeScript's
+    reject the same bytes; accepting them here lets nonsense such as
+    ``response_code == "nan"`` reach classification and caching.
+    """
+    raise ValueError(f"mpesa: non-standard JSON literal {token!r} in response")
 
 
 @dataclass(frozen=True)
@@ -56,7 +67,7 @@ class _Response:
             data = data.decode("utf-8", errors="replace")
         if isinstance(data, str):
             try:
-                data = json.loads(data, parse_int=safe_json_int)
+                data = json.loads(data, parse_int=safe_json_int, parse_constant=_reject_json_constant)
             except json.JSONDecodeError as exc:
                 raise ValueError(f"mpesa: unparseable {cls.__name__} body "
                                  f"({exc.msg} at position {exc.pos})") from None
@@ -268,7 +279,7 @@ class BillAckResponse(_Response):
                 payload = bytes(payload).decode("utf-8", errors="replace")
             if isinstance(payload, str):
                 try:
-                    payload = json.loads(payload, parse_int=safe_json_int)
+                    payload = json.loads(payload, parse_int=safe_json_int, parse_constant=_reject_json_constant)
                 except (ValueError, RecursionError):
                     raise exc from None
             if not isinstance(payload, dict):
@@ -302,6 +313,9 @@ class QRCodeResponse(_Response):
         "response_description": "ResponseDescription",
         "qr_code": "QRCode",
     }
+    # QRCode is an opaque base64/data-URI payload: never truncate it at the
+    # generic 4096-char diagnostic cap (Go returns it verbatim).
+    _COERCE = {"qr_code": lambda v: coerce_opaque_str(v) or ""}
 
 
 @dataclass(frozen=True)
@@ -352,7 +366,7 @@ class OAuthToken(_Response):
                 payload = bytes(payload).decode("utf-8", errors="replace")
             if isinstance(payload, str):
                 try:
-                    payload = json.loads(payload, parse_int=safe_json_int)
+                    payload = json.loads(payload, parse_int=safe_json_int, parse_constant=_reject_json_constant)
                 except (ValueError, RecursionError):
                     raise exc from None
             if not isinstance(payload, dict):
