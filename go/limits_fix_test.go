@@ -957,15 +957,101 @@ func TestDailyRollbackRefusesAcrossADayChangeButRefundsOnTheSameDay(t *testing.T
 
 	// The day-1 reservation is rolled back on day 2: the refund must NOT
 	// touch the day-2 bucket (the day-2 spend has to survive).
-	d.rollback(ServiceSTK, 1_000, day1, "2024-05-02")
+	d.rollback(ServiceSTK, 1_000, day1)
 	if got := d.used[ServiceSTK]; got != 1_000 {
 		t.Fatalf("used after the cross-midnight rollback = %d, want 1000 (the day-2 spend must survive)", got)
 	}
 
 	// A SAME-day rollback still refunds.
-	d.rollback(ServiceSTK, 1_000, day2, "2024-05-02")
+	d.rollback(ServiceSTK, 1_000, day2)
 	if got := d.used[ServiceSTK]; got != 0 {
 		t.Fatalf("used after the same-day rollback = %d, want 0", got)
+	}
+}
+
+// R1 REGRESSION: on a backward Nairobi clock jump, consume charges the ledger's
+// authoritative bucket (d.day) but used to RETURN the earlier `today`. Because
+// rollback compares its accrualDay against d.day, that stale earlier day made
+// it refuse to refund a legitimate reservation. consume must return the day it
+// actually charged, so the reservation can be given back (Python parity).
+func TestDailyConsumeReturnsAuthoritativeDayOnBackwardClock(t *testing.T) {
+	var d dailyLedger
+	limits := TransactionLimits{
+		STK: ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(1_000_000)},
+	}
+
+	// Establish the bucket on day 2.
+	day2, err := d.consume(ServiceSTK, 10_000, limits, "2024-05-02")
+	if err != nil {
+		t.Fatalf("day-2 consume: %v", err)
+	}
+	if day2 != "2024-05-02" {
+		t.Fatalf("first accrual day = %q, want 2024-05-02", day2)
+	}
+
+	// The clock jumps BACKWARD to day 1. The ledger keeps accumulating the
+	// day-2 bucket (roll forward only) and must report the day it charged —
+	// day 2 — not the earlier injected day.
+	accrualDay, err := d.consume(ServiceSTK, 5_000, limits, "2024-05-01")
+	if err != nil {
+		t.Fatalf("backward-clock consume: %v", err)
+	}
+	if accrualDay != "2024-05-02" {
+		t.Fatalf("backward-clock accrual day = %q, want the ledger's authoritative 2024-05-02", accrualDay)
+	}
+	if got := d.used[ServiceSTK]; got != 15_000 {
+		t.Fatalf("used after backward-clock accrual = %d, want 15000", got)
+	}
+
+	// Roll back the second accrual with its RETURNED day: because it is d.day,
+	// the refund is accepted and only the first amount remains.
+	d.rollback(ServiceSTK, 5_000, accrualDay)
+	if got := d.used[ServiceSTK]; got != 10_000 {
+		t.Fatalf("used after rollback with returned accrualDay = %d, want 10000 (the first amount)", got)
+	}
+}
+
+// Regression for the pre-lock snapshot race in rollback: the old code compared
+// a caller-supplied "today" snapshot taken BEFORE acquiring d.mu. A concurrent
+// consume could roll the day forward and replace d.used in that window, so the
+// refund landed in the NEW day's bucket. The injected clock (the day handed to
+// consume) advances between accrual and rollback; the consume runs on its own
+// goroutine so -race also checks the ledger's cross-goroutine access.
+func TestDailyRollbackConcurrentDayRollDoesNotRefundNewBucket(t *testing.T) {
+	var d dailyLedger
+	limits := TransactionLimits{
+		STK: ServiceLimits{MaxPerTransaction: Limit(900_000), MaxPerDay: Limit(1_000_000)},
+	}
+
+	// Accrue on day 1 — this is the reservation the (late) refund refers to.
+	day1, err := d.consume(ServiceSTK, 1_000, limits, "2024-05-01")
+	if err != nil {
+		t.Fatalf("day-1 consume: %v", err)
+	}
+
+	// The clock advances past Nairobi midnight while the refund is in flight:
+	// a concurrent request charges against day 2, rolling the ledger forward.
+	rolled := make(chan struct{})
+	go func() {
+		defer close(rolled)
+		if _, err := d.consume(ServiceSTK, 1_000, limits, "2024-05-02"); err != nil {
+			t.Errorf("day-2 consume: %v", err)
+		}
+	}()
+	<-rolled // force the day roll to land before the refund takes the lock
+
+	// A stale "today" snapshot would have matched accrualDay here and refunded
+	// day 2's bucket. Consulting the ledger's own d.day under the lock refuses
+	// it — the day-2 spend must survive.
+	d.rollback(ServiceSTK, 1_000, day1)
+	if got := d.used[ServiceSTK]; got != 1_000 {
+		t.Fatalf("used after the stale day-1 refund = %d, want 1000 (the day-2 spend must survive)", got)
+	}
+
+	// A same-day refund still works after the roll.
+	d.rollback(ServiceSTK, 1_000, "2024-05-02")
+	if got := d.used[ServiceSTK]; got != 0 {
+		t.Fatalf("used after the same-day refund = %d, want 0", got)
 	}
 }
 
@@ -984,7 +1070,7 @@ func TestDailyRollbackOfAnUnchargedAmountIsANoOp(t *testing.T) {
 	if day != "" {
 		t.Fatalf("accrual day = %q, want \"\" (nothing was charged)", day)
 	}
-	d.rollback(ServiceSTK, 1_000, day, "2024-05-01")
+	d.rollback(ServiceSTK, 1_000, day)
 	if got := d.used[ServiceSTK]; got != 0 {
 		t.Fatalf("used after the rollback of an uncharged amount = %d, want 0", got)
 	}

@@ -38,7 +38,8 @@ to bill against someone else's shortcode.
 ## Query / Delete
 
 `ShortCode` + `BillRefNumber` only. No amount, so no limits gate and no
-daily accrual.
+daily accrual. `BillRefNumber` is required and printable on Query and Delete
+as on Register/Update (control runes refused).
 
 ## Update
 
@@ -58,6 +59,10 @@ moves no money and consumes no daily quota; with an amount it takes the
 
 A whitespace-only `payerNumber`/`payerName` counts as *not supplied* and is
 dropped from the payload in all three engines, never sent as spaces.
+
+A whitespace-only `expiryDate`/`callBackURL` is likewise *not supplied*: TS
+`billUpdate` omits the wire key and skips validation (Go/Python blank-and-omit
+parity — `go/requests.go` `BillUpdateRequest.ValidateWithLimits`).
 
 > TypeScript differs deliberately on the value itself: `amount: 0` is
 > **rejected** as non-positive rather than read as "unset". TypeScript has no

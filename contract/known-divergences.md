@@ -23,7 +23,7 @@ subset of engines:
 | C2B Register/Simulate `ShortCode` | Python only | 5–10 ASCII digits (Go/TS: injected, unchecked) |
 | TxStatus/Reversal identifier length caps | Python only | ≤ 64 printable chars, identifier types ≤ 12 |
 | QR `Size` digit-length cap | Python only | ≤ 12 ASCII digits (Go/TS: numeric parse only) |
-| URL port bounds | Go (0.5.1 patch), Python | `0 < port ≤ 65535`; TypeScript rejects `> 65535` via `new URL` but still accepts port `0` |
+| URL port bounds | Go, Python, TypeScript | `0 < port ≤ 65535` (TS rejects `0` since the B2 review fix; `> 65535` via `new URL`) |
 
 Consequence: an over-long or malformed value that is a *local* error in the
 strict engine is a **gateway `500.001.1001` / `500.002.1001` rejection** in
@@ -230,10 +230,10 @@ a non-2xx response whose body is NOT a Daraja error envelope (a WAF page, an
 HTML error page, a truncated body) is wired differently by the three engines,
 and the difference is observable on the OAuth leg:
 
-- **Go** — `go/client.go`: `Config.ErrorLogger` is passed on BOTH legs. The
-  business leg (`post`, `go/client.go:881`) and the OAuth leg (`refresh`,
-  `go/client.go:738`) both hand it to `parseError`, so a non-envelope OAuth
-  failure reaches the sink.
+- **Go** — `Client.post` and `Client.refresh`: `Config.ErrorLogger` is passed
+  on BOTH legs; both hand it to `parseError`, so a non-envelope OAuth failure
+  reaches the sink. (Symbol names instead of line numbers — line numbers have
+  drifted with consecutive fixes.)
 - **Python** — there is NO client-level sink at all. The only parameter is
   `MpesaError.from_response(..., error_logger=...)`
   (`python/mpesa/exceptions.py:171`), and `python/mpesa/client.py` never
@@ -259,3 +259,154 @@ The Go side is pinned by `go/errors_test.go`
 `typescript/test/errors.test.ts` (`hands the raw body to the opt-in sink with
 status and content type`). Python has no client-level sink to pin, so it has
 no engine-specific test for this.
+
+## Daily reservation on the 401-refresh transport failure
+
+**Status: CLOSED — all three engines now refund.** The divergence it recorded
+is gone: Go (`notDispatchedError` wrapping on the OAuth leg) and Python
+(`RequestException` from `refresh_after_invalid_token`) refunded on a
+401-refresh-leg transport failure, and TypeScript now matches — the `_post`
+catch on the 401 retry fires `onTransportError` when the forced refresh fails
+at transport (`typescript/src/client.ts`; pinned by
+`typescript/test/limits.test.ts:860`, "REFUNDS the accrual when the
+401-refresh leg transport-fails"). Both rule choices fail toward a
+*conservative* local quota (one keeps more spend room, the other less); no
+money-path corruption either way.
+
+**The divergence, for the record.** All three engines refund the daily
+reservation when the **cold-start** OAuth leg fails with a transport error
+(no business request was sent). On the 401-retry path, the first business
+attempt already received a gateway answer (the 401), so the engines differed
+when the **forced refresh** then failed at the transport layer: TypeScript
+kept the reservation — the documented rule was "refund only when no gateway
+answer was received in this call" — while Go and Python refunded, classifying
+the failure by its type, not by whether the call already saw a gateway answer.
+
+**Why it is not a fixture.** A shared wire fixture cannot express a transport
+failure inside the OAuth leg of a retry.
+
+**What would close it.** Align the rule (Go/Python error-type classification) —
+done via the M1 review finding (`typescript/src/client.ts` `_post`).
+
+## Rate-limit attempt clock and free-text length units
+
+- **Attempt clock:** Go advances `lastRefreshAttempt` only on refresh failure,
+  Python and TypeScript stamp at attempt start and again on failure. During a
+  slow/hung OAuth attempt the 3-failures/5 s gate measures from a different
+  instant; all settle to the failure instant once the attempt completes.
+- **Free-text cap units:** Go measures with `len(v)` (bytes), Python with
+  `len(text)` (characters), TypeScript with `[...value].length` (code points).
+  A 64-character multibyte `PayerName` is accepted by Python/TS and rejected
+  by Go (stricter, not exploitable). Error-envelope caps likewise differ:
+  512 bytes (Go) vs 512 characters (Python/TS). The **URL cap (8192)** is
+  deliberately UTF-8 **bytes in all three** (`len(v)` /
+  `len(value.encode("utf-8"))` / `Buffer.byteLength(value,"utf8")`) so the
+  parser-work bound is identical; phone-error messages report length only
+  with the engine's own unit wording (`bytes` Go, `characters` Py/TS).
+- **Masked consumer-key rendering shape:** Go renders empty → `""`, ≤8 runes →
+  `"****"`, 9+ → `first4…last4` (U+2026); Python keeps a same-length `"*"` run
+  for 1–7 characters (documented as a deliberate Python-only shape); TypeScript
+  uses ASCII `first4...last4`. Log-only cosmetic difference — the raw key is
+  never emitted by any engine's redaction helpers.
+
+Neither divergence changes a wire value or a gateway-visible outcome.
+
+## Token cache scope: TypeScript shares one process-wide TokenManager (XLAN-01)
+
+**The divergence.** The bearer-token cache is scoped differently by design:
+
+- **TypeScript** — `typescript/src/client.ts`: a module-level
+  `sharedTokenManagers` map holds **one `TokenManager` per credential tuple**
+  (SHA-256 of base URL + consumer key + consumer secret). Clients built with
+  pure defaults (no injected `fetch`/`now`/`timeoutMs`) share it; a client
+  with ANY injected dependency keeps a private manager so injections cannot
+  leak across instances or outlive a test. The map is bounded (oldest entry
+  evicted past 8).
+- **Go** — the cache lives on the `Client` instance (`tokenBytes`,
+  `tokenExpiry`, generation counter in `go/client.go`): **per client**.
+- **Python** — `python/mpesa/client.py` constructs a `TokenManager` in
+  `MpesaClient.__init__`: **per client**.
+
+**Consequence.** Daraja **invalidates ALL outstanding tokens whenever any
+app mints a new one**, so separate per-instance caches cycle-invalidate each
+other into 401.003.01 storms. Sharing one cache per credential set collapses
+that to one process-wide single-flight mint — TypeScript deliberately
+accepts process-wide cache lifetime (and the need to scope a test's injected
+dependencies) to avoid that storm. Go/Python instead accept that several
+clients in one process each mint their own token; callers sharing a credential
+tuple across many clients there should share the client instance.
+
+**Status: DOCUMENTED DESIGN DIFFERENCE — not a fixture, not a defect.** A
+shared corpus body cannot express object lifetime. Each engine's choice is
+pinned by its own tests outside the corpus: TypeScript's
+`typescript/test/client.test.ts` ("Shared token cache across default
+clients": two `fromEnv()` clients with the same credentials make ONE OAuth
+fetch; plus the `sharedTokenCacheKey` digest tests), Go's
+`go/client_test.go` token/single-flight tests and Python's
+`python/tests/test_auth.py` token-generation tests. Keep those pins in step
+with this entry — do not "fix" either scope.
+
+## OAuth `expires_in` malformed-string handling — CLOSED (XLAN-03)
+
+**Status: CLOSED.** All three engines now parse the wire TTL with a **strict
+full-string integer rule**; a malformed TTL can no longer be partially parsed
+into a working token with a false expiry (previously TypeScript used
+`parseInt`, where `"3599garbage"` silently became `3599`):
+
+- **Go** — `go/coercion.go` `FlexInt64.UnmarshalJSON`: `strconv.ParseInt` on
+  the whole trimmed string (integral floats like `3599.0` also accepted);
+  `null`/`""` → `0`; other malformed strings are a hard error, so the OAuth
+  decode fails closed rather than trusting a bogus TTL.
+- **Python** — `python/mpesa/coercion.py` `coerce_int`:
+  `_INT_RE.fullmatch` (`[+-]?[0-9]{1,19}`); malformed → `None` →
+  `auth.py` `_cadence(None)` falls back to 3000 s.
+- **TypeScript** — `typescript/src/auth.ts` `normalizeExpiresIn`: full-string
+  `/^[+-]?[0-9]+$/` gate plus a safe-integer check; malformed → `0` →
+  `refreshCadence(0)` falls back to the legacy 50-minute cadence.
+
+An unusable TTL therefore resolves to the documented fallback cadence (Go/TS
+50 min, Python 3000 s), with Go additionally failing closed on strings its
+integer parser rejects outright. The `0`/`None` sentinel covers a MISSING
+field too. This is a client-internal parse rule, so it has no corpus fixture;
+the pins are each engine's own coercion/auth tests.
+
+## Error-log sink: Go forwards the FULL raw non-envelope body — intentional
+
+**The divergence, for the record.** For a non-2xx response whose body is NOT
+a Daraja error envelope (a WAF page, HTML, a truncated body, a bare scalar),
+Go's `go/errors.go` `parseError` calls
+`logger.LogError(status, contentType, body)` with the **entire raw body**,
+untruncated. The caller still receives the generic message plus sanitized,
+byte-capped envelope fields (`maxWireFieldBytes = 512` via
+`sanitizeWireString`); the raw bytes go ONLY to the opt-in `ErrorLogger`.
+
+**This is intentional and test-pinned — do NOT "fix" it.** The constant
+`maxSnippetBytes = 200` in `go/errors.go` is **vestigial**: it is declared but
+never used, and the diagnostic sink deliberately receives the full body (the
+old "ASCII snippet" wording in the `parseError` comment is stale). The pin is
+`go/errors_test.go` `TestParseErrorLoggerReceivesDiagnostics`, which asserts
+`logger.body == body` byte-for-byte along with the status and content type.
+Removing the full-body handoff or reviving a 200-byte cap would break that
+contract. This entry complements "Error-log sink: the OAuth leg reaches it in
+Go only" above — there the divergence is *which leg* reaches the sink, here
+it is *what bytes* the sink receives on the Go leg.
+
+## Short-TTL OAuth cadence — CLOSED (half-TTL, 1s floor)
+
+**Status: CLOSED.** All three engines now lower the refresh window when the
+advertised TTL is too short to support the 60-second safety margin:
+
+- **Go** — `go/client.go` `refreshCadence`; **Python** —
+  `python/mpesa/auth.py` `_cadence`; **TypeScript** —
+  `typescript/src/auth.ts` `refreshCadence`.
+- **Normal TTL (> 60 s):** TTL − 60 s safety, clamped to `[60 s, 50 min]`
+  (Python's equivalent ceiling is 3000 s).
+- **Short TTL (≤ 60 s):** the 60 s floor is **dropped in favour of half the
+  real TTL with a 1 s floor**. Clamping a short TTL to 60 s would **serve the
+  bearer past its real expiry** — the old 60 s floor did exactly that.
+- **Unknown / zero TTL:** legacy fallback cadence (Go/TS 50 min, Python 3000 s).
+
+This supersedes the "60 s refresh-cadence floor" baseline recorded in the
+historical review reports and in `CHANGES.md:246`. Each engine's own auth
+tests pin its formula; there is no shared fixture because the value depends
+on the negotiated OAuth TTL, not on a gateway response body.

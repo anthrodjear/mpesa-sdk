@@ -91,7 +91,9 @@ for the single worst-case process, not as an enforced quota. The day rolls at Af
 no DST) midnight in all three engines, and a reservation is refunded **only when the request
 provably never reached a gateway answer** — a transport failure or a failed token acquisition (Go:
 `ErrNotDispatched`; Python: `requests.exceptions.RequestException`; TypeScript: the
-`onTransportError` hook). A gateway rejection, an oversize response or an undecodable 2xx all prove
+`onTransportError` hook — fired on the cold-start OAuth leg and, since the M1 review finding, on
+the 401-refresh-leg OAuth transport failure, matching Go/Python). A gateway rejection, an oversize
+response or an undecodable 2xx all prove
 the gateway answered, so they keep the spend: refunding those let real day-spend exceed `MaxPerDay`
 without bound (fixed in Go for 0.6.0; the three engines now share one rule).
 
@@ -113,15 +115,26 @@ Brief guidance when integrating this SDK:
   4. **Defense-in-depth — IP allowlisting.** Restrict ingress to Safaricom's published gateway ranges (maintained by you; they can change without notice). Never the primary control.
 
   Sign callback bodies yourself **only if you run your own signing relay** between Daraja and your service — Daraja signs nothing. Include a timestamp or nonce in signed payloads and reject stale signatures.
-- **Never log credentials.** Consumer Key, Consumer Secret, Passkey, and Security Credential must never appear in application logs, log aggregation systems, APM traces, or debug output. The SDK's redaction helpers (`repr()`/`log_safe()` in Python, `GoString`/`Format` in Go — including the STK Query dispatch payload, whose `Password` would otherwise expose the passkey — `toString()`/`toJSON()`/`logSafe()` in TypeScript) mask these values automatically — always use them when serializing `Config` or request objects for logging. TypeScript request objects are plain interfaces with no render hook, so pass them through `logSafeRequest(req)`: it masks `SecurityCredential`/`passkey` and drops callback-token query strings, matching Go's `LogSafe()` and Python's redacting `repr()`. Logging raw credentials — even at debug level — creates a persistent record that outlives the process and may be shipped to centralized log stores.
+- **Never log credentials.** Consumer Key, Consumer Secret, Passkey, and Security Credential must never appear in application logs, log aggregation systems, APM traces, or debug output. The SDK's redaction helpers (`repr()`/`log_safe()` in Python, `GoString`/`Format` in Go — including the STK Query dispatch payload, whose `Password` would otherwise expose the passkey — `toString()`/`toJSON()`/`logSafe()` in TypeScript) mask these values automatically — always use them when serializing `Config` or request objects for logging. TypeScript request objects are plain interfaces with no render hook, so pass them through `logSafeRequest(req)`: it redacts the WHOLE URL value (a callback token may sit in the path, not only the query), matches secret/URL field names case-insensitively in camelCase and PascalCase, and recurses through nested objects and arrays, matching Go's `LogSafe()` and Python's redacting `repr()`. Logging raw credentials — even at debug level — creates a persistent record that outlives the process and may be shipped to centralized log stores.
 - **Consumer Keys are secrets, not identifiers.** Treat `MPESA_CONSUMER_KEY` and `MPESA_CONSUMER_SECRET` with the same care as database passwords. They authenticate every OAuth token request and grant full access to your Daraja app. Never embed them in client-side code, commit them to source control, or expose them in error messages. Rotate them immediately if you suspect leakage.
+- **Gateway-echoed error text is sanitized, not secret-redacted.** A non-2xx body's `errorMessage`/`requestId` fields are Cc/Cf-sanitized and length-capped in all three engines, so a hostile gateway cannot inject newlines or ANSI escapes into your logs — but if the gateway *reflects* a credential or a caller's PII into those fields, the SDK forwards that text (it cannot recognize arbitrary secrets without over-broad redaction). Treat error messages as untrusted input at your log boundary; the SDK never interpolates the raw response body itself.
 - **Indeterminate results must not auto-fail.** Timeouts or ambiguous Daraja responses should be recorded as *pending* and reconciled via the transaction status query — auto-marking them as failed risks double-charging customers.
 
 ## Security Audit
 
+> **⚠️ HISTORICAL MEASUREMENT — v0.5.1, NOT the current 0.7.1 release.** The
+> capability counts in the table below are reproduced from the
+> [historical v0.5.1 Capslock report](docs/security-audit.md). They were
+> measured against `go/` at `v0.5.1` and have **not** been re-measured for
+> `0.7.1`. In particular, the **B2B Express Checkout, Tax Remittance and
+> Bill Manager** code paths that shipped in `0.7.0` are **not included** in
+> these numbers. Treat the table as a historical baseline only — it is not a
+> statement about the current release's capability footprint, and no new
+> audit result is asserted here.
+
 A static capability analysis using [Google Capslock](https://github.com/google/capslock) was performed on the Go SDK (`go/`). See [docs/security-audit.md](docs/security-audit.md) for the full report.
 
-**Summary:** All capabilities are expected and justified for a payment SDK. No capabilities indicate vulnerabilities or over-privilege.
+**Summary (v0.5.1 report):** All capabilities are expected and justified for a payment SDK. No capabilities indicate vulnerabilities or over-privilege.
 
 | Capability | References | Assessment |
 |------------|------------|------------|
@@ -133,7 +146,7 @@ A static capability analysis using [Google Capslock](https://github.com/google/c
 | UNSAFE_POINTER | 55 | Stdlib internals (TLS, crypto, JSON) |
 | REFLECT | 48 | JSON + FlexString/FlexInt64 coercion |
 
-**No capabilities indicate vulnerabilities or over-privilege.** The SDK implements defense-in-depth at every layer.
+**No capabilities indicate vulnerabilities or over-privilege** *(v0.5.1 report)*. The SDK implements defense-in-depth at every layer.
 
 ---
 

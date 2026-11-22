@@ -834,6 +834,85 @@ describe("daily limits (trackDaily)", () => {
     await gated.stkPush(stkReq(100_000));
   });
 
+  it("refunds the accrual when the COLD-START OAuth leg fails with a transport error", async () => {
+    // S-1: getTokenWithGen() runs OUTSIDE attempt()'s transport catch. With
+    // no cached token, an OAuth fetch throw means no business request was
+    // ever dispatched, so the daily reservation must be refunded (Go
+    // notDispatchedError / Python RequestException parity).
+    const client = makeClient({
+      limits: { stk: { maxPerTransaction: 0, maxPerDay: 500_000 } },
+      trackDaily: true,
+    });
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") throw new TypeError("fetch failed");
+      throw new Error("business leg must not be reached");
+    });
+    await expect(client.stkPush(stkReq(300_000))).rejects.toThrow(/fetch failed/);
+    expect(businessHits).toBe(0); // nothing reached the gateway
+
+    // Refunded, so the same amount fits on a healthy transport.
+    mockTransport();
+    await client.stkPush(stkReq(300_000));
+    expect(businessHits).toBe(1);
+  });
+
+  it("REFUNDS the accrual when the 401-refresh leg transport-fails", async () => {
+    // M1 (Go/Python parity): the forced-refresh leg is an OAuth-leg
+    // transport failure — Go refunds here (`ErrNotDispatched` →
+    // `rollbackDaily`), Python marks the OAuth GET not-dispatched — so TS
+    // must call onTransportError and refund the reservation too.
+    const client = makeClient({
+      limits: { stk: { maxPerTransaction: 0, maxPerDay: 400_000 } },
+      trackDaily: true,
+    });
+    let oauthCalls = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        oauthCalls++;
+        if (oauthCalls === 1) return jsonResponse(VALID_TOKEN_RESPONSE);
+        throw new TypeError("fetch failed"); // forced refresh after 401
+      }
+      businessHits++;
+      return jsonResponse({ errorCode: "401.003.01", errorMessage: "expired token" }, 401);
+    });
+
+    await expect(client.stkPush(stkReq(300_000))).rejects.toThrow(/fetch failed/);
+    expect(oauthCalls).toBe(2);
+    expect(businessHits).toBe(1); // first attempt DID reach the gateway
+
+    // Refunded: the reservation is back to 0, so a fresh 300_000 push fits
+    // (300_000 + 300_000 would exceed the 400_000 ceiling — a second
+    // successful push proves the refund).
+    mockTransport();
+    await client.stkPush(stkReq(300_000));
+    expect(businessHits).toBe(2);
+  });
+
+  it("KEEPS the accrual when the cold-start OAuth leg fails with a typed gateway error", async () => {
+    // A non-2xx OAuth response is a gateway answer, not a transport
+    // failure — only ErrNotDispatched/RequestException-class failures
+    // refund, so this reservation must stick.
+    const client = makeClient({
+      limits: { stk: { maxPerTransaction: 0, maxPerDay: 500_000 } },
+      trackDaily: true,
+    });
+    fetchMock.mockImplementation(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/oauth/v1/generate") {
+        return jsonResponse({ errorCode: "500.000.01", errorMessage: "gateway down" }, 500);
+      }
+      throw new Error("business leg must not be reached");
+    });
+    await expect(client.stkPush(stkReq(300_000))).rejects.toThrow(MpesaError);
+    expect(businessHits).toBe(0);
+
+    mockTransport();
+    await expect(client.stkPush(stkReq(300_000))).rejects.toThrow(/daily limit reached/);
+    expect(businessHits).toBe(0);
+  });
+
   it("a backward clock step never wipes accumulated budget (forward-only day)", async () => {
     const client = makeClient({
       limits: { stk: { maxPerTransaction: 0, maxPerDay: 300_000 } },

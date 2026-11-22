@@ -36,6 +36,17 @@ import { ConfigError, TRUSTED_BASE_URLS } from "./config.js";
 import { readBodyBounded, bodyTooLargeError } from "./_bounded-read.js";
 import type { OAuthToken } from "./types.js";
 
+/**
+ * TokenManager secret fields live HERE, never on the instance:
+ * `console.dir(tm, { showHidden:true })` walks all own properties, including
+ * non-enumerable ones. Prototype accessors below keep read-back unchanged.
+ */
+const TM_SECRETS = new WeakMap<TokenManager, {
+  consumerKey: string;
+  consumerSecret: string;
+  token: string | null;
+}>();
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /** OAuth endpoint path (docs/apis/oauth.md). */
@@ -62,11 +73,35 @@ const REFRESH_RATE_LIMIT_MS = 5_000;
  * client.ts — single implementation, tree-shake friendly).
  */
 
+// ─── Errors ───────────────────────────────────────────────────────────────────
+
+/**
+ * Typed marker for an OAuth-leg request that never left this process — the
+ * TypeScript counterpart of Go's `notDispatchedError` and Python's
+ * `RequestException`. The transport failure is identified by this CLASS
+ * (via `instanceof`), not by matching a cross-file message prefix.
+ *
+ * The message text is unchanged (`mpesa: oauth request: <cause>`) so every
+ * caller, log assertion and refund semantic stays identical; only the type
+ * now carries the meaning the client's cold-start refund decision needs.
+ */
+export class NotDispatchedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NotDispatchedError";
+    // Restore the prototype chain when downlevelled to ES5 targets so
+    // `err instanceof NotDispatchedError` stays reliable.
+    Object.setPrototypeOf(this, NotDispatchedError.prototype);
+  }
+}
+
 // ─── Refresh cadence ──────────────────────────────────────────────────────────
 
 /**
  * Eager refresh window: TTL minus 60s safety, clamped to [60s, 50min].
- * Unknown/zero TTLs fall back to the legacy 50-minute cadence.
+ * At or below the 60s margin the window is half the TTL (1s floor), because
+ * a 60s floor would serve the bearer past its real expiry. Unknown/zero
+ * TTLs fall back to the 50-minute cadence.
  *
  * NaN-safe by construction: a non-finite `expiresInSec` (garbage string,
  * `1e999` → Infinity) MUST map to the 50-minute fallback, because
@@ -87,6 +122,12 @@ function refreshCadence(expiresInSec: number): number {
   const MAX = 50 * 60_000;
   const SAFETY = 60_000;
   if (!Number.isFinite(expiresInSec) || expiresInSec <= 0) return MAX;
+  // A 60s floor is safe only when the TTL is longer than the safety margin.
+  // For shorter TTLs, refresh at half the real lifetime (1s floor) so the
+  // cached bearer is never served after it has actually expired.
+  if (expiresInSec * 1000 <= SAFETY) {
+    return Math.max(1000, (expiresInSec * 1000) / 2);
+  }
   const ms = expiresInSec * 1000 - SAFETY;
   return Math.max(MIN, Math.min(MAX, ms));
 }
@@ -95,8 +136,8 @@ function refreshCadence(expiresInSec: number): number {
  * Normalize the wire `expires_in` to a usable seconds value.
  *
  * Daraja sends a string (`"3599"`), a number (`120`), or garbage. Every
- * non-finite outcome — non-numeric strings (`parseInt` → NaN),
- * `1e999` (JSON → Infinity), ±Infinity — becomes 0, which
+ * unusable outcome — non-numeric or trailing-garbage strings (strict full
+ * string digit gate), `1e999` (JSON → Infinity), ±Infinity — becomes 0, which
  * {@link refreshCadence} already maps to the documented 50-minute fallback.
  * The same 0 covers a MISSING field (documented fallback, keep it).
  *
@@ -106,8 +147,14 @@ function refreshCadence(expiresInSec: number): number {
 function normalizeExpiresIn(raw: unknown): number {
   if (typeof raw === "number") return Number.isFinite(raw) ? raw : 0;
   if (typeof raw === "string") {
-    const parsed = parseInt(raw, 10);
-    return Number.isFinite(parsed) ? parsed : 0;
+    // Full-string parse, NOT parseInt: parseInt("3599garbage") === 3599
+    // would turn a malformed TTL into a working token with a false expiry.
+    // Anything not a plain signed ASCII integer maps to 0 (fallback cadence),
+    // matching Python's coerce_int regex gate.
+    const text = raw.trim();
+    if (!/^[+-]?[0-9]+$/.test(text)) return 0;
+    const parsed = Number(text);
+    return Number.isSafeInteger(parsed) ? parsed : 0;
   }
   return 0;
 }
@@ -135,11 +182,13 @@ export interface TokenManagerOptions {
 /**
  * Concurrency-safe bearer cache for one Daraja environment.
  *
- * Create one per environment and share it; the token cache is guarded
- * internally. Holds the write lock across the OAuth round-trip — a
- * deliberate ~once-per-refresh-window stall traded for strict
- * single-flight, because requesting a token invalidates every
- * previously issued one.
+ * Create one per environment and share it. Refresh is single-flight via a
+ * shared in-flight Promise: the first stale caller performs the OAuth
+ * round-trip and concurrent stale callers await that same Promise (no
+ * explicit lock — see {@link TokenManager._doRefresh}). Requesting a token
+ * invalidates every previously issued one, so exactly one mint per refresh
+ * window is required; awaiting the shared Promise gives that without
+ * blocking unrelated callers with a held write lock.
  *
  * @example
  * ```ts
@@ -152,14 +201,19 @@ export interface TokenManagerOptions {
  */
 export class TokenManager {
   private readonly _baseUrl: string;
-  private readonly _consumerKey: string;
-  private readonly _consumerSecret: string;
   private readonly _timeoutMs: number;
   private readonly _now: () => number;
   private readonly _fetch: typeof globalThis.fetch;
 
+  /**
+   * Secret fields are WeakMap-backed (see {@link TM_SECRETS}), so they are
+   * prototype accessors — never own properties a `showHidden` walk can see.
+   */
+  private get _consumerKey(): string { return TM_SECRETS.get(this)!.consumerKey; }
+  private get _consumerSecret(): string { return TM_SECRETS.get(this)!.consumerSecret; }
   /** Cached bearer token (null until first fetch). */
-  private _token: string | null = null;
+  private get _token(): string | null { return TM_SECRETS.get(this)!.token; }
+  private set _token(value: string | null) { TM_SECRETS.get(this)!.token = value; }
   /** Wall-clock expiry of the cached token (ms epoch). */
   private _expiresAt: number = 0;
   /** Generation counter — bumped on every successful refresh. */
@@ -200,8 +254,11 @@ export class TokenManager {
     }
 
     this._baseUrl = normalizedBaseUrl;
-    this._consumerKey = key;
-    this._consumerSecret = secret;
+    // Credentials and the cached bearer live in the module-level WeakMap,
+    // NOT as own properties: `console.dir(tm, { showHidden:true })` walks
+    // own properties including non-enumerable ones and would print them.
+    // The prototype accessors above keep read-back and the public API intact.
+    TM_SECRETS.set(this, { consumerKey: key, consumerSecret: secret, token: null });
     this._timeoutMs = Number.isFinite(opts.timeoutMs) && (opts.timeoutMs ?? 0) > 0
       ? opts.timeoutMs!
       : DEFAULT_TIMEOUT_MS;
@@ -230,10 +287,10 @@ export class TokenManager {
    * counter lets callers detect a concurrent refresh later (401.003.01
    * recovery).
    *
-   * Fast path snapshots under the lock and returns immediately when
-   * fresh WITHOUT performing any state mutation (double-checked
-   * pattern); stale callers re-acquire for the single-flight refresh,
-   * whose recheck keeps concurrent refetches at exactly one.
+   * Fast path: a wall-clock-fresh cached token is read directly and
+   * returned with NO state mutation and NO await. Stale callers funnel
+   * into {@link TokenManager._doRefresh}, where a shared in-flight Promise
+   * keeps concurrent refetches at exactly one (single-flight, no lock).
    *
    * @example
    * ```ts
@@ -365,11 +422,13 @@ export class TokenManager {
   /**
    * Hard OAuth round-trip against
    * `{base}/oauth/v1/generate?grant_type=client_credentials`
-   * (docs/apis/oauth.md). Holds the "lock" across the network call —
-   * callers stall ~once per refresh window; that is the deliberate
-   * single-flight tradeoff (see go/client.go).
+   * (docs/apis/oauth.md). This method performs the network call itself;
+   * single-flight dedup is provided by the shared Promise in
+   * {@link TokenManager._doRefresh}, not by a held lock. Concurrent stale
+   * callers await that one Promise, so only one mint happens per refresh
+   * window (see `Client.refresh` in go/client.go for the Go counterpart).
    *
-   * Rate-limit parity with `go/client.go refreshLocked`: non-forced
+   * Rate-limit parity with `Client.refresh` in go/client.go: non-forced
    * refreshes are throttled after 3 consecutive failures inside 5s;
    * 401-triggered refreshes (`force=true`) bypass the guard entirely
    * but still advance its clock.
@@ -449,7 +508,9 @@ export class TokenManager {
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(`mpesa: oauth request: ${msg}`);
+        // Typed, so the client can refund a cold-start reservation by
+        // `instanceof` instead of matching this message across files.
+        throw new NotDispatchedError(`mpesa: oauth request: ${msg}`);
       }
 
       // First guard: honest Content-Length over the cap → cancel without
@@ -521,6 +582,12 @@ export class TokenManager {
  * what `console.log(tm)` does. SECURITY.md forbids cleartext credentials
  * in logs, so the hook routes `inspect` (and therefore `console.log`)
  * through the credential-safe {@link TokenManager.toString} form.
+ *
+ * The hook does NOT cover `console.dir` (which forces `customInspect:
+ * false`) or an object spread. Those paths are safe because the three
+ * secret fields live in a module-level WeakMap, not on the instance at
+ * all — even `showHidden:true` cannot reach them, and `{ ...tm }` carries
+ * no secret values either.
  *
  * Installed with `Symbol.for("nodejs.util.inspect.custom")` rather than an
  * import of `node:util`, so this module keeps no Node-only import. The

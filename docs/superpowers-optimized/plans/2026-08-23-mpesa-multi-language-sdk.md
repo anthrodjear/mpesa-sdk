@@ -1,6 +1,6 @@
 # Multi-Language M-Pesa SDK Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers-optimized:subagent-driven-development (recommended) or superpowers-optimized:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Execution:** implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship production-quality, reusable M-Pesa Daraja SDK engines in Go, Python, and TypeScript with full test suites and CI.
 
@@ -146,7 +146,7 @@ Examples compile/lint but are unauthenticated snippets guarded behind main()/com
 
 **Files:** Modify any engine files found faulty.
 
-Dispatch Code Reviewer subagent with checklist = "Cross-Cutting Casing Traps" table + shared behaviors 1–9 + ADR-010 indeterminate rules; verify all three engines' serialization snapshots contain identical JSON keys per endpoint (diff the golden payloads).
+Run a code review with checklist = "Cross-Cutting Casing Traps" table + shared behaviors 1–9 + ADR-010 indeterminate rules; verify all three engines' serialization snapshots contain identical JSON keys per endpoint (diff the golden payloads).
 
 - [ ] All findings fixed or filed
 - [ ] Commit: `fix: cross-language review findings`

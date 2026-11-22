@@ -98,6 +98,7 @@ class _ScriptedSession:
     def __init__(self, bodies):
         self.bodies = list(bodies)
         self.calls = 0
+        self.verify = True  # H-3: TokenManager re-checks verify before the GET
 
     def get(self, url, **kwargs):
         self.calls += 1
@@ -608,6 +609,7 @@ def test_rate_limit_failure_raises_the_typed_sdk_exception():
     class _Down:
         def __init__(self):
             self.calls = 0
+            self.verify = True  # H-3: TokenManager re-checks verify before GET
 
         def get(self, url, **kwargs):
             self.calls += 1

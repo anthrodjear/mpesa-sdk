@@ -42,6 +42,10 @@ class FakeResponse:
 class FakeSession:
     """Programmable session recording every OAuth call."""
 
+    # H-3: TokenManager re-checks verify before the GET. Class attribute (not
+    # an __init__ assignment) so subclasses can override it with verify=False.
+    verify = True
+
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls: list[dict] = []
@@ -335,16 +339,22 @@ def test_credential_hygiene():
 
 def test_cadence_clamp_edges():
     # Inputs are post-coercion ints (OAuthToken.expires_in_seconds domain).
-    # Floor is 60.0s (TS parity): TTLs below 120s all clamp to the floor.
-    cases = {30: 60.0, 61: 60.0, 62: 60.0, 120: 60.0, 3060: 3000.0, None: 3000.0}
+    # TTLs <= 60s use half the TTL (the 60s floor is DROPPED there -- it
+    # would outlive the token); above 60s the 60s floor / 3000s ceiling
+    # clamp applies.
+    cases = {30: 15.0, 60: 30.0, 61: 60.0, 62: 60.0, 120: 60.0,
+             3060: 3000.0, None: 3000.0}
     for expires, want in cases.items():
         assert TokenManager._cadence(expires) == want
 
 
-def test_cadence_floor_is_sixty_seconds():
-    """TS parity: sub-120s TTLs all collapse to the 60s floor."""
-    # expires=30 -> min(30-60, 3000) = -30 -> max(60.0, -30) = 60.0
-    assert TokenManager._cadence(30) == 60.0
+def test_cadence_short_ttl_uses_half_ttl():
+    """For TTLs at or below the 60s safety margin the floor is dropped:
+    clamping to 60s would serve the bearer after its real expiry."""
+    # expires=30 -> half = 15.0s (NOT the 60s floor)
+    assert TokenManager._cadence(30) == 15.0
+    # expires=60 -> half = 30.0s (still below the 60s floor)
+    assert TokenManager._cadence(60) == 30.0
     # expires=119 -> min(59, 3000) = 59 -> max(60.0, 59) = 60.0
     assert TokenManager._cadence(119) == 60.0
     # expires=120 -> min(60, 3000) = 60 -> max(60.0, 60) = 60.0
@@ -368,6 +378,8 @@ def test_refresh_failure_restamps_attempt_clock():
 
     class SlowFailSession:
         """Fails after advancing the clock 4s (simulated timeout)."""
+
+        verify = True  # H-3: TokenManager re-checks verify before the GET
 
         def __init__(self):
             self.calls = []
@@ -847,3 +859,194 @@ def test_forced_round_failure_is_shared_with_its_own_waiters():
     assert all(type(exc) is type(first) for exc in errors)
     assert all(str(exc) == str(first) for exc in errors)
     assert isinstance(first, MpesaError)
+
+
+# ---- F-4: the public TokenManager fails closed on an insecure session --------
+
+
+def test_public_token_manager_rejects_insecure_session_client_unchanged():
+    """Direct construction refuses verify=False; MpesaClient still hands the
+    manager its own hardened clone, so the client's behavior is unchanged."""
+    from mpesa.client import MpesaClient
+    from mpesa.config import Config
+
+    class Insecure(FakeSession):
+        verify = False
+
+    with pytest.raises(ValueError, match="verifying session"):
+        TokenManager(Insecure([]), "https://sandbox.safaricom.co.ke", "k", "s")
+
+    class ClientSession(FakeSession):
+        verify = False
+        headers = {}
+        adapters = {}
+
+    session = ClientSession([ok()])
+    cfg = Config(consumer_key="k", consumer_secret="s", shortcode="174379",
+                 passkey="p" * 10, now=lambda: T0, http_client=session)
+    client = MpesaClient(cfg)
+    assert client._tokens.get_token() == "tok-1"
+    assert session.calls                     # the OAuth leg still ran
+
+
+# ---- H-3: verify re-checked at GET (wrapper / post-construction mutation) ----
+
+
+def test_h3_direct_insecure_session_rejected_at_construction():
+    """Probe 1: verify=False fails closed immediately, before any GET."""
+    class NoTLS(FakeSession):
+        verify = False
+
+    with pytest.raises(ValueError, match="verifying session"):
+        TokenManager(NoTLS([]), "https://sandbox.safaricom.co.ke", "k", "s")
+
+
+def test_h3_wrapper_without_verify_rejected_at_construction():
+    """Probe 2 (A4): a wrapper with NO verify attribute is now refused at
+    CONSTRUCTION — the constructor's getattr default is False, so a session
+    that does not declare verification is rejected before any GET."""
+    class NoVerifyWrapper:
+        def __init__(self, inner):
+            self._inner = inner
+            self.calls = 0
+
+        def get(self, url, **kwargs):
+            self.calls += 1
+            return self._inner.get(url, **kwargs)
+
+    wrapper = NoVerifyWrapper(FakeSession([]))
+    with pytest.raises(ValueError, match="verifying session"):
+        TokenManager(wrapper, "https://sandbox.safaricom.co.ke", "k", "s")
+    assert wrapper.calls == 0
+
+
+def test_token_manager_wrapper_without_verify_rejected_at_construction():
+    """A4: fail-closed symmetry — a wrapper WITHOUT a verify attribute
+    raises ValueError at construction, matching the request-time check."""
+    class WrapperWithoutVerify:
+        def get(self, url, **kwargs):  # pragma: no cover - must never run
+            raise AssertionError("OAuth leg must never run")
+
+    with pytest.raises(ValueError, match="verifying session"):
+        TokenManager(WrapperWithoutVerify(),
+                     "https://sandbox.safaricom.co.ke", "k", "s")
+
+
+def test_h3_post_construction_verify_mutation_rejected_at_get():
+    """Probe 3: flipping verify to False after construction is caught at GET."""
+    session = FakeSession([ok()])
+    tm = TokenManager(session, "https://sandbox.safaricom.co.ke", "k", "s")
+    assert session.calls == []
+    session.verify = False
+    with pytest.raises(ValueError, match="verifying session"):
+        tm.get_token()
+    assert session.calls == []
+
+
+def test_h3_mpesa_client_normal_flow_still_works():
+    """Probe 4: MpesaClient's OAuth wrapper exposes its clone's verified
+    state, so the hardened client path is unaffected by the re-check."""
+    from mpesa.client import MpesaClient
+    from mpesa.config import Config
+
+    class ClientSession(FakeSession):
+        verify = False
+        headers = {}
+        adapters = {}
+
+    session = ClientSession([ok()])
+    cfg = Config(consumer_key="k", consumer_secret="s", shortcode="174379",
+                 passkey="p" * 10, now=lambda: T0, http_client=session)
+    client = MpesaClient(cfg)
+    assert client._session.verify is True
+    assert client._tokens._session.verify is True   # wrapper exposes verify
+    assert client._tokens.get_token() == "tok-1"
+    assert session.calls                            # OAuth leg still ran
+
+
+# ---- S-5: a waiter must not raise a superseded round's error -----------------
+
+
+class DelayedReacquireCondition(threading.Condition):
+    """Condition holding ONE notified waiter outside the lock on purpose.
+
+    The waiter signals `entered` BEFORE parking (so the leader cannot
+    publish its result first), then after being notified it releases the
+    lock and waits on `release` -- giving another thread time to complete a
+    whole new refresh round before this waiter reads the OLD round's error.
+    """
+
+    def __init__(self, lock):
+        super().__init__(lock)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self._delayed = False
+
+    def wait(self, timeout=None):
+        if not self._delayed:
+            self.entered.set()
+        result = super().wait(timeout)
+        if not self._delayed:
+            self._delayed = True
+            self._lock.release()
+            try:
+                self.release.wait(timeout=10.0)
+            finally:
+                self._lock.acquire()
+        return result
+
+
+def test_waiter_does_not_raise_superseded_round_error():
+    """S-5: W parks on R1; R1 fails; R2 succeeds BEFORE W reacquires the
+    lock. W must adopt R2's token, not re-raise R1's stale error."""
+    session = FakeSession([FakeResponse(status_code=500, body=b"boom"), ok()])
+    tm = GatedRefreshManager(session, "https://sandbox.safaricom.co.ke",
+                             "k", "s")
+    tm.park_non_forced = True
+    cond = DelayedReacquireCondition(tm._lock)
+    tm._cond = cond
+
+    leader_errors: list[BaseException] = []
+    waiter_results: list[str] = []
+    waiter_errors: list[BaseException] = []
+
+    def leader():
+        try:
+            tm.get_token()
+        except Exception as exc:
+            leader_errors.append(exc)
+
+    def waiter():
+        try:
+            waiter_results.append(tm.get_token())
+        except Exception as exc:
+            waiter_errors.append(exc)
+
+    leader_thread = threading.Thread(target=leader)
+    leader_thread.start()
+    assert tm.parked.wait(timeout=5.0), "R1 never claimed its round"
+
+    waiter_thread = threading.Thread(target=waiter)
+    waiter_thread.start()
+    assert cond.entered.wait(timeout=5.0), "the waiter never parked on R1"
+
+    # R1 reaches the wire and fails; the waiter is still held outside the
+    # lock, so it cannot read R1.error yet.
+    tm.park_non_forced = False
+    tm.resume.set()
+    leader_thread.join(timeout=10.0)
+    assert not leader_thread.is_alive(), "R1 hung"
+    assert len(leader_errors) == 1 and isinstance(leader_errors[0], MpesaError)
+
+    # R2 runs to completion before the waiter is allowed back in.
+    second = threading.Thread(target=lambda: tm.get_token())
+    second.start()
+    second.join(timeout=10.0)
+    assert not second.is_alive(), "R2 hung"
+
+    cond.release.set()
+    waiter_thread.join(timeout=10.0)
+    assert not waiter_thread.is_alive(), "the waiter hung"
+    assert waiter_errors == [], waiter_errors   # the stale R1 error leaked
+    assert waiter_results == ["tok-1"]
+    assert len(session.calls) == 2

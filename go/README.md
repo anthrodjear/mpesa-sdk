@@ -90,7 +90,8 @@ verdict arrives on your `CallBackURL` — or poll `STKQuery`. See
 
 OAuth (`/oauth/v1/generate`) is handled internally: the client caches the
 bearer, refreshes eagerly on an `expires_in`-derived cadence (TTL − 60 s,
-clamped to `[60s, 50min]`) under a single-flight leader, and retries a call
+clamped to `[60s, 50min]`; for TTLs ≤ 60 s it uses half the TTL so an
+expired bearer is never served) under a single-flight leader, and retries a call
 exactly once after a forced refresh on `401.003.01`. Opt out with
 `Config.DisableRetryOnUnauthorized`.
 

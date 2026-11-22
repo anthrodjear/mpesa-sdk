@@ -482,16 +482,20 @@ describe("logSafeRequest", () => {
     expect(logSafeRequest({ passkey: "bfb279..." }).passkey).toBe("[REDACTED]");
   });
 
-  it("keeps scheme+host+path of URL fields but drops the callback-token query", () => {
+  it("redacts the WHOLE value of URL fields (callback tokens may live in the PATH)", () => {
+    // SECURITY.md recommends tokens in the URL PATH, so dropping only the
+    // query is not enough — Go's LogSafe redacts the entire value.
     const out = logSafeRequest({
-      callBackURL: "https://example.com/stk/cb?token=0123456789abcdef",
+      callBackURL: "https://example.com/stk/cb/0123456789abcdef",
       resultURL: "https://example.com/payments/result?token=deadbeef",
       queueTimeOutURL: "https://example.com/payments/timeout",
     });
-    expect(out.callBackURL).toBe("https://example.com/stk/cb");
-    expect(out.resultURL).toBe("https://example.com/payments/result");
-    expect(out.queueTimeOutURL).toBe("https://example.com/payments/timeout");
-    expect(JSON.stringify(out)).not.toContain("token");
+    expect(out.callBackURL).toBe("[REDACTED]");
+    expect(out.resultURL).toBe("[REDACTED]");
+    expect(out.queueTimeOutURL).toBe("[REDACTED]");
+    const blob = JSON.stringify(out);
+    expect(blob).not.toContain("token");
+    expect(blob).not.toContain("example.com");
   });
 
   it("passes through non-secret fields untouched", () => {
@@ -565,20 +569,23 @@ describe("logSafeRequest", () => {
     expect(req.payerNumber).toBe("254712345678");
   });
 
-  it("drops the callback-token query from the B2B/Tax/Bill URL fields", () => {
+  it("redacts the WHOLE B2B/Tax/Bill URL value, including a PATH token", () => {
     // queueTimeOutURL / resultURL (B2B + Tax Remittance) and callBackURL
     // (Bill Manager) are already in URL_FIELDS — pin that they stay there,
     // because a bearer capability token leaks wherever URLs are logged.
     const out = logSafeRequest({
-      queueTimeOutURL: "https://mydomain.com/timeout?token=0123456789abcdef",
+      queueTimeOutURL: "https://mydomain.com/timeout/0123456789abcdef",
       resultURL: "https://mydomain.com/result?token=deadbeef",
-      callBackURL: "https://mydomain.com/bill?token=cafebabe",
+      callBackURL: "https://mydomain.com/bill/cafebabe",
       initiator: "testapi",
     });
-    expect(out.queueTimeOutURL).toBe("https://mydomain.com/timeout");
-    expect(out.resultURL).toBe("https://mydomain.com/result");
-    expect(out.callBackURL).toBe("https://mydomain.com/bill");
-    expect(JSON.stringify(out)).not.toContain("token");
+    expect(out.queueTimeOutURL).toBe("[REDACTED]");
+    expect(out.resultURL).toBe("[REDACTED]");
+    expect(out.callBackURL).toBe("[REDACTED]");
+    const blob = JSON.stringify(out);
+    expect(blob).not.toContain("token");
+    expect(blob).not.toContain("mydomain.com");
+    expect(out.initiator).toBe("testapi"); // non-secret fields survive
   });
 
   it("JSON.stringify of a full Tax Remittance request carries no secret at all", () => {
@@ -609,5 +616,133 @@ describe("logSafeRequest", () => {
     expect(json).toContain("TAX-2024-Q3");
     expect(json).toContain("2024Q3");
     expect(json).toContain("[REDACTED]");
+  });
+
+  it("redacts PascalCase wire payloads just like camelCase request objects", () => {
+    // F-5: these are the EXACT keys the SDK puts on the wire. A
+    // camelCase-only lookup left every one of them in cleartext.
+    const out = logSafeRequest({
+      SecurityCredential: "LIVE-CRED",
+      TaxPayerPIN: "A001234567X",
+      Passkey: "bfb279...",
+      CallBackURL: "https://mydomain.com/cb/0123456789abcdef",
+      ResultURL: "https://mydomain.com/result/deadbeef",
+      QueueTimeOutURL: "https://mydomain.com/timeout/cafebabe",
+      PayerName: "Jane Doe",
+      PayerNumber: "254712345678",
+      // Non-secret wire fields stay readable so the log line is debuggable.
+      Amount: 5000,
+      BillRefNumber: "INV-001",
+    });
+    for (const key of [
+      "SecurityCredential", "TaxPayerPIN", "Passkey",
+      "CallBackURL", "ResultURL", "QueueTimeOutURL",
+      "PayerName", "PayerNumber",
+    ]) {
+      expect(out[key], key).toBe("[REDACTED]");
+    }
+    expect(out["Amount"]).toBe(5000);
+    expect(out["BillRefNumber"]).toBe("INV-001");
+    const blob = JSON.stringify(out);
+    expect(blob).not.toContain("LIVE-CRED");
+    expect(blob).not.toContain("A001234567X");
+    expect(blob).not.toContain("Jane Doe");
+    expect(blob).not.toContain("mydomain.com");
+  });
+
+  // ── H-1: the shallow walk leaked secrets below the top level ──────────────
+
+  it("redacts secrets nested inside plain objects", () => {
+    const out = logSafeRequest({
+      outer: {
+        inner: {
+          securityCredential: "LIVE-NESTED",
+          callBackURL: "https://h/cb/TOKEN",
+          amount: 5,
+        },
+      },
+    });
+    const inner = (out["outer"] as Record<string, unknown>)["inner"] as Record<string, unknown>;
+    expect(inner["securityCredential"]).toBe("[REDACTED]");
+    expect(inner["callBackURL"]).toBe("[REDACTED]");
+    expect(inner["amount"]).toBe(5); // non-secret values survive at every depth
+    expect(JSON.stringify(out)).not.toContain("LIVE-NESTED");
+    expect(JSON.stringify(out)).not.toContain("TOKEN");
+  });
+
+  it("redacts secrets inside arrays of request objects", () => {
+    const out = logSafeRequest({
+      batch: [
+        { securityCredential: "LIVE-1", resultURL: "https://h/r/TOKEN", amount: 1 },
+        { Passkey: "PK-2", Amount: 2 },
+      ],
+    });
+    const batch = out["batch"] as Record<string, unknown>[];
+    expect(batch[0]!["securityCredential"]).toBe("[REDACTED]");
+    expect(batch[0]!["resultURL"]).toBe("[REDACTED]");
+    expect(batch[0]!["amount"]).toBe(1);
+    expect(batch[1]!["Passkey"]).toBe("[REDACTED]"); // PascalCase in an array
+    expect(batch[1]!["Amount"]).toBe(2);
+    const blob = JSON.stringify(out);
+    expect(blob).not.toContain("LIVE-1");
+    expect(blob).not.toContain("TOKEN");
+    expect(blob).not.toContain("PK-2");
+  });
+
+  it("redacts a URL field whose value is an object ({href: ...}), regardless of value type", () => {
+    // The old `typeof value === "string"` guard let this object — with a
+    // capability token in its `href` — through in cleartext.
+    const out = logSafeRequest({
+      callBackURL: { href: "https://h/cb/TOKEN" },
+      queueTimeOutURL: ["https://h/to/TOKEN"],
+      resultURL: null,
+      validationURL: 42,
+      amount: 7,
+    });
+    expect(out["callBackURL"]).toBe("[REDACTED]");
+    expect(out["queueTimeOutURL"]).toBe("[REDACTED]");
+    expect(out["resultURL"]).toBe("[REDACTED]");
+    expect(out["validationURL"]).toBe("[REDACTED]");
+    expect(out["amount"]).toBe(7);
+    expect(JSON.stringify(out)).not.toContain("TOKEN");
+  });
+
+  it("redacts mixed-case secret keys at every depth without touching lookalikes", () => {
+    const out = logSafeRequest({
+      Wrapper: {
+        SecurityCredential: "LIVE",
+        TaxPayerPIN: "A001234567X",
+        CallBackURL: { Href: "https://h/cb/TOKEN" },
+        billRefNumber: "INV-001", // deliberately NOT a secret
+        Items: [{ PayerName: "Jane Doe", payerNumber: "254712345678", note: "ok" }],
+      },
+    });
+    const w = out["Wrapper"] as Record<string, unknown>;
+    expect(w["SecurityCredential"]).toBe("[REDACTED]");
+    expect(w["TaxPayerPIN"]).toBe("[REDACTED]");
+    expect(w["CallBackURL"]).toBe("[REDACTED]");
+    expect(w["billRefNumber"]).toBe("INV-001");
+    const item = (w["Items"] as Record<string, unknown>[])[0]!;
+    expect(item["PayerName"]).toBe("[REDACTED]");
+    expect(item["payerNumber"]).toBe("[REDACTED]");
+    expect(item["note"]).toBe("ok");
+    const blob = JSON.stringify(out);
+    expect(blob).not.toContain("LIVE");
+    expect(blob).not.toContain("A001234567X");
+    expect(blob).not.toContain("Jane Doe");
+    expect(blob).not.toContain("TOKEN");
+  });
+
+  it("breaks cycles without throwing and never mutates the caller's nested data", () => {
+    const req: Record<string, unknown> = { amount: 1, nested: { securityCredential: "LIVE" } };
+    req["self"] = req;
+    (req["nested"] as Record<string, unknown>)["back"] = req;
+    const out = logSafeRequest(req);
+    expect(out["self"]).toBe("[CIRCULAR]");
+    expect((out["nested"] as Record<string, unknown>)["back"]).toBe("[CIRCULAR]");
+    expect((out["nested"] as Record<string, unknown>)["securityCredential"]).toBe("[REDACTED]");
+    // The original object is untouched by the deep copy.
+    expect(req["self"]).toBe(req);
+    expect((req["nested"] as Record<string, unknown>)["securityCredential"]).toBe("LIVE");
   });
 });

@@ -18,6 +18,9 @@ casing is contractual because Safaricom's gateway is case-sensitive.
 | [reversal.md](reversal.md) | `POST /mpesa/reversal/v1/request` — C2B reversal only |
 | [account-balance.md](account-balance.md) | `POST /mpesa/accountbalance/v1/query` |
 | [dynamic-qr.md](dynamic-qr.md) | `POST /mpesa/qrcode/v1/generate` |
+| [b2b.md](b2b.md) | `POST /mpesa/b2b/v3/paymentrequest` — BusinessPayBill / BusinessBuyGoods |
+| [tax-remittance.md](tax-remittance.md) | `POST /mpesa/b2b/v1/remittax` — tax obligations to a revenue shortcode |
+| [bill-manager.md](bill-manager.md) | `POST /mpesa/billmanager/v1/{register,query,update,delete}` |
 
 ## Cross-Cutting Casing Traps (SDK-breaking if missed)
 

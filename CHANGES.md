@@ -13,6 +13,17 @@
   (`go/go.mod`, `go/go.sum`): nothing in the module imports it (the Go engine
   is dependency-free), so `go mod tidy` removes it — go.mod now matches the
   documented "none (stdlib only)" runtime dependency claim.
+- **TypeScript now refunds the daily reservation when the 401-refresh-leg OAuth transport fails** (parity with Go/Python).
+- **Go `readCapped` now refuses (io.ErrNoProgress) on readers that make no progress instead of spinning forever** (guard: 8 consecutive zero reads).
+- **Python `TokenManager` now fails closed at construction when the session has no `verify` attribute** (was: only request-time); symmetric with the pre-GET recheck.
+- **TS free-text length caps count code points** (`[...value].length`, unchanged) — kept the documented unit.
+- **TS callback/result URLs now reject port 0** (Go/Python parity).
+- **TS `MpesaEnum.coerce` error message is safe to build for BigInt inputs** (`safeStringify`).
+- **Python Config warning text updated** (message-only).
+- **TS `NotDispatchedError` now re-exported from the package index** (`typescript/src/index.ts:95`).
+- **Go callback/result URLs are capped at 8192 BYTES** (`requireURL` in go/requests.go) — the divergence row is confirmed accurate: TS still counts UTF-8 bytes (`Buffer.byteLength`), not units (the B1 change was the free-text length counter, not the URL cap).
+- **Go `requirePrintable` on `BillRefNumber` is documented on Bill Query and Bill Delete** (the constraint predates this review — `BillQueryRequest.Validate` requests.go:1419, `BillDeleteRequest.Validate` requests.go:1554; now noted in `docs/apis/bill-manager.md` Query/Delete).
+- **TS `billUpdate` omits whitespace-only `ExpiryDate`/`CallBackURL` from the wire** (Go/Python blank-and-omit parity; the omission itself is pre-existing — the new part is the doc note in `docs/apis/bill-manager.md`, Update section).
 
 ---
 
@@ -621,7 +632,7 @@ STK poll helper, `{segments, skipped}` return change,
   limit, EAT single-clock rule, unsigned-callback posture, wire-misspelling
   preservation (`Occassion`, `RecieverIdentifierType`,
   `OriginatorCoversationID`).
-- **`.gitignore`**: added agent/skill/memory patterns (`.agents/`, `agents/`,
+- **`.gitignore`**: added local tooling/skill/memory patterns (`.agents/`, `agents/`,
   `.skills/`, `skills/`, `.claude/`, `.opencode/`, `opencode.json*`,
   `.cursor/`, `MEMORY.md`, `memory/`, `state.md`, `context-snapshot.json`,
   `*.skill`) so assistant workspaces never get pushed to GitHub.

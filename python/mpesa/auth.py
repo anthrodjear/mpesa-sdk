@@ -23,7 +23,7 @@ from __future__ import annotations
 import base64
 import json
 import threading
-import warnings
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
@@ -42,8 +42,9 @@ _CREDENTIALS_MSG = ("mpesa: Config.consumer_key and Config.consumer_secret "
 # Back-compat alias: the historic name for the ingestion cap. New code uses
 # _MAX_BODY_BYTES (imported from mpesa._limits, the single source of truth).
 _MAX_BODY_CHARS = _MAX_BODY_BYTES
-#: OAuth refresh rate-limit parity with go/client.go (`refreshRateLimit` +
-#: `refreshFailures` guard): after this many consecutive failures, non-forced
+#: OAuth refresh rate-limit parity with the guard inside go/client.go
+#: ``refresh`` (``refreshRateLimit`` + ``refreshFailures``, re-stamped by
+#: ``recordRefreshFailure``): after this many consecutive failures, non-forced
 #: refreshes are throttled for ``_REFRESH_RATE_LIMIT_SECONDS``.
 _REFRESH_FAILURE_THRESHOLD = 3
 _REFRESH_RATE_LIMIT_SECONDS = 5.0
@@ -64,6 +65,22 @@ _TRUSTED_BASE_URLS = frozenset({
 #: stale. The leader's own completion wakes every waiter immediately, so
 #: this slice is a safety net, not the normal latency.
 _REFRESH_WAIT_SECONDS = 5.0
+#: Exception attribute set on a transport failure that happened BEFORE any
+#: gateway response was obtained. The client's daily-refund classifier
+#: refunds ONLY marked errors (Go ``ErrNotDispatched`` parity): a body-read
+#: failure after a response arrived proves the gateway answered and is
+#: deliberately left unmarked, so the reservation is kept.
+_NOT_DISPATCHED_ATTR = "_mpesa_not_dispatched"
+
+
+def _mark_not_dispatched(exc: BaseException) -> None:
+    """Tag a pre-response transport failure for the daily-refund classifier."""
+    setattr(exc, _NOT_DISPATCHED_ATTR, True)
+
+
+def _not_dispatched(exc: BaseException) -> bool:
+    """True when *exc* was tagged as a failure before any gateway answer."""
+    return bool(getattr(exc, _NOT_DISPATCHED_ATTR, False))
 
 
 def _fresh_error(exc: BaseException) -> BaseException:
@@ -134,16 +151,23 @@ class TokenManager:
     credentials. Fakes in tests never hit the network, so they use the
     sandbox host too.
 
-    TLS NOTE (client-only guarantee): this manager never mutates
-    ``session.verify`` -- it only warns (``UserWarning``) when handed a
-    session with falsy ``verify``, mirroring the ``Config`` TLS-verify
-    warning. The TLS guarantee lives in :class:`mpesa.client.MpesaClient`,
-    which clones the injected session and forces ``verify=True`` on its
-    own clone before any OAuth or business traffic.
+    TLS NOTE (fail closed): this manager NEVER sends OAuth Basic-auth
+    credentials over an unverified session. A falsy ``session.verify``
+    raises ``ValueError`` at construction, and the EFFECTIVE verify state
+    is re-checked immediately before every OAuth GET: the caller owns the
+    session and could flip ``verify`` to False after construction (or hand
+    over a wrapper with no ``verify`` attribute), so a falsy OR ABSENT
+    ``verify`` fails closed at request time too -- there is no
+    warn-and-proceed path. Callers needing TLS disabled for their own
+    traffic must hand the manager a SEPARATE verifying session;
+    :class:`mpesa.client.MpesaClient` already passes it its own hardened
+    clone (``verify=True``, ``trust_env=False``) via an OAuth wrapper that
+    exposes that verified state as its ``verify`` property. Real
+    ``requests.Session`` objects expose ``verify=True`` by default.
 
     Example::
 
-        tm = TokenManager(session, base_url, key, secret)
+        tm = TokenManager(verifying_session, base_url, key, secret)
         tok, gen = tm.get_token_with_gen()
     """
 
@@ -161,15 +185,12 @@ class TokenManager:
                 f"mpesa: refusing untrusted OAuth base_url {base_url!r} "
                 "(want https://sandbox.safaricom.co.ke or "
                 "https://api.safaricom.co.ke from Config.environment)")
-        if not getattr(session, "verify", True):
-            warnings.warn(
-                "TLS verification disabled on TokenManager session -- "
-                "OAuth would ship Basic-auth credentials without "
-                "peer verification; pass a verifying session (MpesaClient "
-                "forces verify=True on its clone)",
-                UserWarning,
-                stacklevel=2,
-            )
+        if not getattr(session, "verify", False):
+            raise ValueError(
+                "mpesa: TokenManager requires a verifying session for OAuth "
+                "Basic-auth traffic (session.verify is falsy); pass a "
+                "separate verifying session -- MpesaClient hands its own "
+                "clone with verify=True and trust_env=False")
         self._session = session
         self._base_url = normalized
         self._consumer_key = consumer_key
@@ -319,7 +340,14 @@ class TokenManager:
                     # round-trip.
                     refresh_round = self._round
                     self._cond.wait(timeout=_REFRESH_WAIT_SECONDS)
-                    if refresh_round is not None and refresh_round.error is not None:
+                    # A notified waiter may reacquire the lock only AFTER a
+                    # newer round has finished. Raising R1's error then would
+                    # discard R2's good token: only inherit the error of the
+                    # round still installed as current; otherwise loop and
+                    # let recheck() adopt the superseding result.
+                    if (refresh_round is self._round
+                            and refresh_round is not None
+                            and refresh_round.error is not None):
                         if refresh_round.forced or not forced:
                             # The leader failed: every waiter sees the
                             # SAME error instead of stampeding the OAuth
@@ -354,15 +382,17 @@ class TokenManager:
         """Eager window: TTL minus 60s safety, clamped to [60s, 3000s];
         unknown/zero TTL falls back to the legacy 3000s cadence.
 
-        Parity with TypeScript ``client.ts refreshCadence``: the floor is
-        60 seconds, not 1. A token whose TTL is barely above the 60s
-        safety margin still gets a full 60s cadence rather than being
-        re-requested on nearly every call (the old 1s floor produced
-        sub-second refresh storms on short-lived tokens).
+        Parity with TypeScript ``refreshCadence`` and Go ``refreshCadence``:
+        a 60s floor applies when the TTL can support it. For TTLs at or below
+        the 60s safety margin the floor is dropped in favour of half the TTL
+        (1s minimum), because clamping to 60s there would SERVE THE BEARER
+        AFTER ITS REAL EXPIRY.
         """
         seconds = expires_in_seconds or 0
         if seconds <= 0:
             return 3000.0
+        if seconds <= 60:
+            return max(1.0, seconds / 2.0)
         return max(60.0, min(seconds - 60, 3000))
 
     def _refresh(self, force: bool = False) -> str:
@@ -378,8 +408,8 @@ class TokenManager:
         the old behaviour -- froze every thread that needed a token for
         up to the full 30s timeout.
 
-        Rate-limit parity with ``go/client.go refreshLocked``: non-forced
-        refreshes are throttled after ``_REFRESH_FAILURE_THRESHOLD``
+        Rate-limit parity with the guard inside ``go/client.go refresh``:
+        non-forced refreshes are throttled after ``_REFRESH_FAILURE_THRESHOLD``
         consecutive failures inside ``_REFRESH_RATE_LIMIT_SECONDS``;
         401-triggered refreshes (``force=True``) bypass the GUARD entirely
         but still advance the attempt clock, so a crash loop of forced
@@ -421,19 +451,43 @@ class TokenManager:
         try:
             auth = base64.b64encode(
                 f"{self._consumer_key}:{self._consumer_secret}".encode("latin-1"))
+            # H-3: re-check the EFFECTIVE verify state immediately before the
+            # OAuth GET. The caller owns the session and may have flipped
+            # `verify` to False after construction, or handed us a wrapper
+            # with no `verify` attribute at all; fail closed on both, so no
+            # Basic-auth credential is ever sent over an unverified leg.
+            if not getattr(self._session, "verify", False):
+                raise ValueError(
+                    "mpesa: TokenManager requires a verifying session for "
+                    "OAuth Basic-auth traffic (session.verify is falsy or "
+                    "absent at request time)")
             # The OAuth leg runs with NO lock held: a hung endpoint must
-            # not freeze the token cache for every other thread.
-            response = self._session.get(
-                f"{self._base_url}{_OAUTH_PATH}", timeout=self._timeout,
-                headers={"Authorization": f"Basic {auth.decode('ascii')}"},
-                allow_redirects=False, stream=True)
+            # not freeze the token cache for every other thread. Capture
+            # the TOTAL read budget before the GET so header/connect time
+            # counts against it too (slowloris defence).
+            deadline = time.monotonic() + self._timeout
+            try:
+                response = self._session.get(
+                    f"{self._base_url}{_OAUTH_PATH}", timeout=self._timeout,
+                    headers={"Authorization": f"Basic {auth.decode('ascii')}"},
+                    allow_redirects=False, stream=True)
+            except requests.exceptions.RequestException as exc:
+                # No gateway answer yet: mark it so a business request
+                # waiting on this token refunds its daily reservation (Go
+                # notDispatchedError parity). A body-read error below is
+                # deliberately NOT marked -- there the gateway answered.
+                _mark_not_dispatched(exc)
+                raise
             # Bounded streaming read via the shared mpesa._limits.read_capped
             # (Go LimitReader parity): caps the DECOMPRESSED byte count during
             # transfer via iter_content(MAX+1) so a gzip bomb aborts mid-stream
             # instead of being fully materialised by a pre-read .content. The
             # socket is released in ``finally`` inside read_capped so abort
-            # paths never leak it.
-            body = read_capped(response, "oauth/v1/generate response")
+            # paths never leak it. The monotonic deadline above bounds the
+            # TOTAL read: a trickling slowloris body under the byte cap still
+            # raises TimeoutError before the budget expires.
+            body = read_capped(response, "oauth/v1/generate response",
+                               deadline=deadline)
             if not 200 <= response.status_code <= 299:
                 content_type = response.headers.get("content-type", "")
                 raise MpesaError.from_response(

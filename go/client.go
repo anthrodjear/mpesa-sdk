@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -227,7 +228,7 @@ type Client struct {
 
 	mu          sync.RWMutex
 	tokenBytes  []byte    // cached OAuth bearer token; zeroed on refresh/Close
-	tokenExpiry time.Time // now + clamp(ExpiresIn-60s); zero until first fetch
+	tokenExpiry time.Time // now + eager refresh cadence (see refreshCadence); zero until first fetch
 	gen         uint64    // bumped on every successful refresh
 
 	lastRefreshAttempt time.Time // wall-clock of last refresh attempt (for rate limiting)
@@ -303,29 +304,160 @@ func (c *Client) Format(f fmt.State, verb rune) {
 // interface — production tracing/retry/logging wrappers commonly embed a
 // *http.Transport behind Unwrap() http.RoundTripper. Checking only the
 // outermost type with `tr, ok := rt.(*http.Transport)` misses an insecure
-// inner transport entirely. The loop unwraps via
-// `interface{ Unwrap() http.RoundTripper }` until it finds a concrete
-// *http.Transport (terminal verdict) or a RoundTripper that does not
-// unwrap (nothing more to inspect → safe). A nil Transport means
-// http.DefaultTransport (verification on) → safe; a *http.Transport with
-// nil TLSClientConfig also verifies → safe.
+// inner transport entirely. The walk descends through both the standard
+// `interface{ Unwrap() http.RoundTripper }` convention AND, by reflection,
+// embedded/exported fields whose type implements http.RoundTripper — a
+// wrapper that hides an insecure *http.Transport in a named field — exported
+// OR unexported — without implementing Unwrap would otherwise slip through.
+// Fail-closed: any reachable insecure *http.Transport is enough to reject the
+// client, as is an Unwrap that panics or a chain deeper than the bound.
+//
+// A nil Transport means http.DefaultTransport (verification on) → safe; a
+// *http.Transport with nil TLSClientConfig also verifies → safe. The walk is
+// depth-bounded and cycle-guarded so a self-referential wrapper cannot hang
+// NewClient; exceeding the bound refuses rather than allows.
 func transportDisablesVerification(rt http.RoundTripper) bool {
-	for rt != nil {
-		if tr, ok := rt.(*http.Transport); ok {
-			// Concrete transport reached: verdict depends solely on its
-			// TLSClientConfig. No further unwrapping is possible.
-			return tr != nil && tr.TLSClientConfig != nil && tr.TLSClientConfig.InsecureSkipVerify
-		}
-		// Not a concrete transport — descend through wrappers that
-		// expose their inner RoundTripper (standard library convention
-		// for Transport wrappers since Go 1.14-adjacent patterns).
-		unwrapper, ok := rt.(interface{ Unwrap() http.RoundTripper })
-		if !ok {
+	budget := maxTransportWalkVisits
+	return transportWalk(reflect.ValueOf(rt), 0, make(map[transportVisit]bool), &budget)
+}
+
+// maxTransportWalkDepth bounds the wrapper walk (defense against cycles in
+// hand-built chains); real tracing/retry stacks are a handful deep. A chain
+// deeper than this is UNKNOWN, so the walk fails closed rather than allow.
+const maxTransportWalkDepth = 32
+
+// maxTransportWalkVisits bounds the TOTAL number of nodes inspected, not just
+// the depth. Depth alone permits O(k^32) work for a wrapper whose fields hold
+// k candidate transports; exhausting the budget fails closed (UNKNOWN chain).
+const maxTransportWalkVisits = 4096
+
+var (
+	// roundTripperType is the reflect type of http.RoundTripper, used to decide
+	// whether a struct field can hide a transport via Type().Implements()
+	// WITHOUT calling Interface() (which panics on unexported-field values).
+	roundTripperType = reflect.TypeOf((*http.RoundTripper)(nil)).Elem()
+	// httpTransportType is the concrete struct type whose TLS config decides
+	// the verdict.
+	httpTransportType = reflect.TypeOf(http.Transport{})
+)
+
+// transportVisit identifies a concrete pointer value for cycle detection.
+type transportVisit struct {
+	typ reflect.Type
+	ptr uintptr
+}
+
+// transportWalk inspects v — a RoundTripper or any value reachable from one —
+// for an insecure *http.Transport, and FAILS CLOSED: anything it cannot fully
+// account for (a chain deeper than maxTransportWalkDepth, or a custom Unwrap
+// that panics) is reported as insecure so NewClient refuses the client.
+//
+// It descends through BOTH the standard Unwrap() http.RoundTripper convention
+// AND struct fields whose type can hold a RoundTripper — INCLUDING UNEXPORTED
+// fields, which are inspected purely via reflect.Value. Interface() is never
+// called on a value obtained through an unexported field (it would panic); the
+// field's type is checked with Type().Implements() and the Field value is
+// recursed on directly. Exported fields such as TLSClientConfig remain
+// readable on such read-only values, so a hidden insecure transport is found.
+func transportWalk(v reflect.Value, depth int, visited map[transportVisit]bool, budget *int) bool {
+	if *budget <= 0 {
+		return true // fail closed: too many nodes to inspect safely
+	}
+	*budget--
+	if depth > maxTransportWalkDepth {
+		return true // fail closed: an unbounded/unknown wrapper chain
+	}
+	if !v.IsValid() {
+		return false
+	}
+
+	// Cycle guard on pointer identity before dereferencing: re-inspecting the
+	// same concrete value cannot reveal anything new.
+	if v.Kind() == reflect.Pointer && !v.IsNil() {
+		key := transportVisit{typ: v.Type(), ptr: v.Pointer()}
+		if visited[key] {
 			return false
 		}
-		rt = unwrapper.Unwrap()
+		visited[key] = true
+	}
+
+	// Reach the concrete value through interface/pointer layers.
+	current := v
+	for current.Kind() == reflect.Interface || current.Kind() == reflect.Pointer {
+		if current.IsNil() {
+			return false
+		}
+		current = current.Elem()
+	}
+	if !current.IsValid() {
+		return false
+	}
+
+	// Concrete transport: the verdict is its TLS config. Every field read here
+	// is exported, so this also works on a read-only value reached through an
+	// unexported field.
+	if current.Type() == httpTransportType {
+		tc := current.FieldByName("TLSClientConfig")
+		if !tc.IsValid() || tc.IsNil() {
+			return false // nil TLS config verifies by default
+		}
+		skip := tc.Elem().FieldByName("InsecureSkipVerify")
+		return skip.IsValid() && skip.Bool()
+	}
+
+	// Standard Unwrap() chain. Call it only where we hold a usable interface
+	// value; a panic is treated as "unknown" → refuse. Values reached through
+	// unexported fields cannot be interfaced, but their fields are still
+	// inspected below, so no transport is missed.
+	if v.CanInterface() {
+		if rt, ok := v.Interface().(http.RoundTripper); ok && rt != nil {
+			unwrapped, called, panicked := callUnwrap(rt)
+			if panicked {
+				return true
+			}
+			if called && transportWalk(reflect.ValueOf(unwrapped), depth+1, visited, budget) {
+				return true
+			}
+		}
+	}
+
+	// Reflection descent over fields that can hold a RoundTripper, including
+	// UNEXPORTED ones. We recurse on the Field value and rely on the field's
+	// declared type — never Interface() — so private fields are safe to walk.
+	if current.Kind() == reflect.Struct {
+		t := current.Type()
+		for i := 0; i < current.NumField(); i++ {
+			if fieldMayHoldRoundTripper(t.Field(i).Type) {
+				if transportWalk(current.Field(i), depth+1, visited, budget) {
+					return true
+				}
+			}
+		}
 	}
 	return false
+}
+
+// fieldMayHoldRoundTripper reports whether a struct field's declared type can
+// carry a RoundTripper: either it implements the interface outright, or it is
+// an interface whose dynamic value might.
+func fieldMayHoldRoundTripper(ft reflect.Type) bool {
+	return ft.Kind() == reflect.Interface || ft.Implements(roundTripperType)
+}
+
+// callUnwrap invokes rt.Unwrap() when available, recovering a panic so a
+// hostile custom wrapper cannot crash NewClient. A panic is reported as
+// "panicked" and the caller fails closed.
+func callUnwrap(rt http.RoundTripper) (unwrapped http.RoundTripper, called, panicked bool) {
+	u, ok := rt.(interface{ Unwrap() http.RoundTripper })
+	if !ok {
+		return nil, false, false
+	}
+	defer func() {
+		if recover() != nil {
+			unwrapped, called, panicked = nil, false, true
+		}
+	}()
+	return u.Unwrap(), true, false
 }
 
 // tunedTransport returns the transport the SDK owns: a clone of the
@@ -383,6 +515,57 @@ func drainOversize(r io.Reader) {
 	_, _ = io.Copy(io.Discard, io.LimitReader(r, oversizeDrainLimit))
 }
 
+// readCapped reads at most limit bytes from r, growing the buffer
+// incrementally instead of preallocating the full limit. The old code made a
+// single cap(limit) buffer (~1 MiB per response here), which wasted memory on
+// the common small-JSON path. Growth starts small and is capped at limit, so
+// the exact "at most limit bytes, plus a read error" contract is unchanged:
+// callers still detect oversize with len(body) > maxResponseLen and drain the
+// rest via drainOversize.
+func readCapped(r io.Reader, limit int) ([]byte, error) {
+	const initialCap = 32 << 10 // 32 KiB covers virtually every Daraja response
+	capHint := initialCap
+	if capHint > limit {
+		capHint = limit
+	}
+	buf := make([]byte, 0, capHint)
+	// Zero-progress guard: a Reader returning (0, nil) forever would spin
+	// this loop indefinitely (no growth, no EOF). io.ReadFull-style guards
+	// (io.ErrNoProgress) exist for exactly this; a short burst of zero
+	// reads is tolerated — only CONSECUTIVE zeros with no progress trip it.
+	const maxConsecutiveZeros = 8
+	zeros := 0
+	for len(buf) < limit {
+		// Grow before reading into a full buffer, never past limit.
+		if len(buf) == cap(buf) {
+			grown := cap(buf) * 2
+			if grown > limit {
+				grown = limit
+			}
+			next := make([]byte, len(buf), grown)
+			copy(next, buf)
+			buf = next
+		}
+		n, err := r.Read(buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if n > 0 {
+			zeros = 0
+		} else if err == nil {
+			zeros++
+			if zeros >= maxConsecutiveZeros {
+				return buf, io.ErrNoProgress
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return buf, nil
+			}
+			return buf, err
+		}
+	}
+	return buf, nil
+}
+
 // NewClient returns a Client for cfg. Timeout defaults to 30s and Now to
 // time.Now when unset. An injected Config.HTTPClient is cloned (never
 // mutated) and always gets the never-follow-redirects policy: Daraja never
@@ -395,13 +578,14 @@ func drainOversize(r io.Reader) {
 //
 // Security: an injected Transport with InsecureSkipVerify=true is refused
 // outright (fail-closed, Python verify=True parity), including when hidden
-// behind wrapper RoundTrippers (tracing, retry, logging) that implement
-// Unwrap() http.RoundTripper. A test-only insecure transport accidentally
-// wired in production would otherwise MITM the OAuth Basic credential,
-// bearer tokens, SecurityCredential and PII. Custom RoundTrippers must
-// preserve TLS verification — never set InsecureSkipVerify, even on an
-// inner *http.Transport, and wrappers must expose Unwrap() so the check
-// can see through them.
+// behind wrapper RoundTrippers (tracing, retry, logging) — whether they
+// implement Unwrap() http.RoundTripper or keep the inner transport in an
+// embedded/exported field (transportDisablesVerification checks both). A
+// test-only insecure transport accidentally wired in production would
+// otherwise MITM the OAuth Basic credential, bearer tokens,
+// SecurityCredential and PII. Custom RoundTrippers must preserve TLS
+// verification — never set InsecureSkipVerify, even on an inner
+// *http.Transport.
 //
 // TLS pinning (cfg.TLSPinningEnabled) is enforced, never simulated: the pin
 // set for the configured host is snapshotted once here, and NewClient fails
@@ -527,12 +711,14 @@ func (c *Client) checkDaily(service Service, amount int64) (string, error) {
 // accrualDay is the Nairobi day the amount was charged on: a refund that
 // lands on a DIFFERENT day is skipped, because the amount was never counted
 // against the current day's bucket, so crediting it there would hand back
-// quota the payment never consumed (Python _rollback_daily parity).
+// quota the payment never consumed (Python _rollback_daily parity). The
+// ledger re-checks its own current day under the lock, so a concurrent day
+// roll cannot redirect the refund to a new bucket.
 func (c *Client) rollbackDaily(service Service, amount int64, accrualDay string) {
 	if !c.cfg.TrackDaily {
 		return
 	}
-	c.daily.rollback(service, amount, accrualDay, nairobiDay(c.cfg.Now()))
+	c.daily.rollback(service, amount, accrualDay)
 }
 
 // Token returns the cached Bearer token, refreshing it single-flight before
@@ -719,10 +905,11 @@ func (c *Client) tokenFresh() bool {
 }
 
 // refreshCadence converts the OAuth TTL into an eager refresh window:
-// TTL minus a 60s safety margin, clamped to [60s, 50min]. Unknown/zero TTLs
-// fall back to the legacy 50-minute cadence. The 60s floor mirrors Python
-// and TypeScript (both clamp the eager window at 60.0s), so all three
-// engines refresh on the same cadence for a given expires_in.
+// TTL minus a 60s safety margin, clamped to [60s, 50min]. For TTLs at or
+// below the 60s margin the window is half the TTL (1s floor) instead — a
+// 60s floor there would serve the bearer past its real expiry. Unknown/zero
+// TTLs fall back to the 50-minute cadence. Python and TypeScript apply the
+// same short-TTL rule, so all three engines agree.
 func refreshCadence(expiresIn FlexInt64) time.Duration {
 	const (
 		maxCadence = 50 * time.Minute
@@ -742,7 +929,16 @@ func refreshCadence(expiresIn FlexInt64) time.Duration {
 		secs = maxSecs
 	}
 	d := time.Duration(secs)*time.Second - safety
-	if d < minCadence {
+	if secs <= int64(safety/time.Second) {
+		// A TTL at or below the safety margin cannot support a 60s floor:
+		// clamping to it would serve the bearer PAST its real expiry.
+		// Refresh at half the TTL instead (1s floor) so the cached token
+		// is always replaced while it is still valid.
+		d = time.Duration(secs) * time.Second / 2
+		if d < time.Second {
+			d = time.Second
+		}
+	} else if d < minCadence {
 		d = minCadence
 	}
 	if d > maxCadence {
@@ -787,11 +983,12 @@ func (c *Client) refresh(ctx context.Context, force bool) (string, error) {
 	limited := !force && c.refreshFailures >= 3 && !c.lastRefreshAttempt.IsZero() && now.Sub(c.lastRefreshAttempt) < refreshRateLimit
 	failures, since := c.refreshFailures, now.Sub(c.lastRefreshAttempt)
 	c.mu.Unlock()
-	// A closed client must not reach the OAuth endpoint. This is the LAST
-	// gate before the Basic-auth credential would be put on the wire: the
-	// leader may have been elected before Close() ran, and the credential
-	// is long-lived (it authenticates every token request), so a closed
-	// client stops here rather than making one more round-trip.
+	// A closed client must not reach the OAuth endpoint. This is a PRE-FLIGHT
+	// snapshot, not an atomic "last gate": the network leg below is
+	// deliberately lock-free, so Close() can still land after this check. A
+	// best-effort re-check immediately before Do shrinks that window, and the
+	// commit phase is the authoritative refusal — no credential is ever
+	// cached or served in a closed client.
 	if closed {
 		return "", ErrClientClosed
 	}
@@ -816,6 +1013,17 @@ func (c *Client) refresh(ctx context.Context, force bool) (string, error) {
 		return fail(err)
 	}
 	req.SetBasicAuth(c.cfg.ConsumerKey, c.cfg.ConsumerSecret)
+	// Best-effort re-check of the close flag right before the wire call
+	// (under RLock so the race detector sees a synchronised read). This is
+	// NOT a guarantee — Close can still land between here and Do — but it
+	// keeps a client closed well before the request from issuing one more
+	// OAuth round-trip; the commit-phase refusal remains authoritative.
+	c.mu.RLock()
+	justClosed := c.closed
+	c.mu.RUnlock()
+	if justClosed {
+		return "", ErrClientClosed
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		c.recordRefreshFailure()
@@ -829,7 +1037,7 @@ func (c *Client) refresh(ctx context.Context, force bool) (string, error) {
 	// discarded explicitly rather than left unchecked.
 	defer func() { _ = resp.Body.Close() }()
 	contentType := resp.Header.Get("Content-Type")
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseLen+1))
+	body, err := readCapped(resp.Body, maxResponseLen+1)
 	if err != nil {
 		c.recordRefreshFailure()
 		return fail(fmt.Errorf("mpesa: read oauth response: %w", err))
@@ -949,7 +1157,7 @@ func (c *Client) attempt(ctx context.Context, token, path string, payload any) (
 	// content type or bytes already returned to the caller.
 	defer func() { _ = resp.Body.Close() }()
 	ct := resp.Header.Get("Content-Type")
-	body, err = io.ReadAll(io.LimitReader(resp.Body, maxResponseLen+1))
+	body, err = readCapped(resp.Body, maxResponseLen+1)
 	if err != nil {
 		return 0, ct, nil, fmt.Errorf("mpesa: read %s response: %w", path, err)
 	}

@@ -181,6 +181,7 @@ def test_real_response_non_2xx_typed_error_keeps_upstream_body_private():
 def test_oauth_refresh_with_real_response_releases_connection():
     oauth_resp = RealResponse(body=OAUTH_OK)
     session = RealSession([oauth_resp])
+    session.verify = True  # F-4: TokenManager refuses an insecure session
     tm = TokenManager(session, "https://sandbox.safaricom.co.ke",
                       "key", "secret")
 

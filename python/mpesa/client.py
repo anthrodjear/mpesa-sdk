@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import math
 import threading
+import time
 from datetime import datetime, timezone
 from types import TracebackType
 from typing import Any, TypeVar
@@ -45,7 +47,7 @@ from requests.adapters import DEFAULT_POOLSIZE, HTTPAdapter
 # F401 suppression on the next line is scoped to it deliberately.
 from ._limits import MAX_BODY_BYTES as _MAX_RESPONSE_BYTES  # noqa: F401
 from ._limits import read_capped
-from .auth import TokenManager
+from .auth import TokenManager, _mark_not_dispatched, _not_dispatched
 from .config import Config
 from .enums import CommandID
 from .exceptions import MpesaError
@@ -166,6 +168,14 @@ class _OAuthOnlySession:
     def __init__(self, session: Any) -> None:
         self._session = session
 
+    @property
+    def verify(self) -> bool:
+        # H-3: expose the underlying session's LIVE verify state so the
+        # TokenManager's pre-GET fail-closed check sees the real value.
+        # MpesaClient forces verify=True on its own clone before wrapping
+        # it here, so this is True on the normal path.
+        return bool(getattr(self._session, "verify", False))
+
     def get(self, url: str, **kwargs: Any) -> Any:
         kwargs["allow_redirects"] = False
         return self._session.get(url, **kwargs)
@@ -265,16 +275,23 @@ class MpesaClient:
         # except where noted above); TLS stays forced on below.
         self._session.trust_env = False
         self._session.verify = True  # forced on OUR clone only
-        # Timeout clamp: non-positive values fall back to Go's 30s default.
-        # Non-numeric values (e.g. "fast") raise ValueError, not the bare
-        # TypeError that `> 0` would produce on a str/None.
+        # Timeout validation: non-numeric values (e.g. "fast") raise
+        # ValueError, not the bare TypeError that `> 0` would produce on a
+        # str/None; non-positive and non-finite values are rejected below.
         try:
             timeout = float(config.timeout_seconds)
         except (TypeError, ValueError) as exc:
             raise ValueError(
                 "mpesa: Config.timeout_seconds must be a number of seconds, "
                 f"got {config.timeout_seconds!r}") from exc
-        self._timeout = timeout if timeout > 0 else 30.0
+        # A non-finite timeout (inf, 1e309) would be handed to urllib3 and
+        # fail deep inside socket.settimeout; NaN would be silently masked
+        # as the default. Fail fast at configuration time instead.
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError(
+                "mpesa: Config.timeout_seconds must be a finite positive "
+                f"number of seconds, got {config.timeout_seconds!r}")
+        self._timeout = timeout
         self._tokens = TokenManager(
             _OAuthOnlySession(self._session), base_url=self._base_url,
             consumer_key=config.consumer_key,
@@ -335,12 +352,14 @@ class MpesaClient:
         dispatch (every ``stk_push``/``b2c_payout``/``c2b_simulate``/
         ``reversal``/``generate_qr_code`` accrues, then calls
         :meth:`_post_model`). A failed send AFTER accrue does NOT roll
-        back -- gateway rejections and 401-retry failures all keep their
-        reservation. Transport-level failures
-        (``requests.exceptions.RequestException``) DO roll back via
-        :meth:`_rollback_daily`, so a network blip does not permanently
-        drain the budget for a payment that never reached Daraja.
-        Only a pre-dispatch rejection (validation or daily-ceiling
+        back -- gateway rejections, 401-retry failures and body-read errors
+        after a response arrived all keep their reservation: the gateway
+        answered, so only a transport failure BEFORE any answer (the
+        initial OAuth GET or the business POST, tagged by
+        :func:`mpesa.auth._mark_not_dispatched`) rolls back via
+        :meth:`_rollback_daily`. A truncated 2xx stream is therefore NOT a
+        refund -- "sent" is proved by the response object, not by a clean
+        body. Only a pre-dispatch rejection (validation or daily-ceiling
         ``ValueError``) costs nothing, because it never accrues.
 
         BUCKETS: ``reversal``, ``generate_qr_code``, ``b2b_payment``,
@@ -388,11 +407,13 @@ class MpesaClient:
                         accrual_day: "str | None") -> None:
         """Return *amount* to *service*'s daily quota after a transport error.
 
-        Called only on ``requests.exceptions.RequestException`` (Go
-        ``recordTransportRollback`` parity): the payment never reached
-        Daraja, so the reservation must not persist. Gateway
-        rejections and validation errors keep their reservation -- the
-        request WAS sent and the gateway's verdict is authoritative.
+        Called by the endpoint methods only for a ``RequestException`` that
+        :func:`mpesa.auth._not_dispatched` marks as a pre-response failure
+        (Go ``ErrNotDispatched`` parity): the payment never reached a
+        gateway answer, so the reservation must not persist. Gateway
+        rejections, validation errors and body-read errors AFTER a response
+        arrived keep their reservation -- the request WAS answered and the
+        gateway's verdict (or the partial body) is authoritative.
         Clamped at zero: concurrent accruals and clock skew can make the
         running total smaller than *amount*; we never drive it negative.
 
@@ -454,15 +475,31 @@ class MpesaClient:
         every real request (duck-typed fakes allowed attribute writes
         and masked the crash historically). The connection is released
         inside read_capped's ``finally``, so aborts mid-read never leak
-        sockets.
+        sockets. A monotonic TOTAL deadline (``now + timeout``) is handed
+        to read_capped as well, so a slowloris stream that stays under the
+        byte cap but trickles past the budget raises ``TimeoutError``
+        rather than hanging; that typed error is deliberately NOT wrapped
+        into the 413 oversize ``MpesaError`` below.
         """
-        response = self._session.request(
-            method, self._base_url + path, json=json_body, params=params,
-            timeout=self._timeout, allow_redirects=False, stream=True,
-            headers={"Authorization": f"Bearer {token}",
-                     "Content-Type": "application/json"})
+        # Total read budget, captured BEFORE the request so time spent in
+        # connect/headers counts against it too (slowloris defence). The
+        # socket timeout above bounds one chunk; this bounds the whole body.
+        deadline = time.monotonic() + self._timeout
         try:
-            body = read_capped(response, f"{path} response")
+            response = self._session.request(
+                method, self._base_url + path, json=json_body, params=params,
+                timeout=self._timeout, allow_redirects=False, stream=True,
+                headers={"Authorization": f"Bearer {token}",
+                         "Content-Type": "application/json"})
+        except requests.exceptions.RequestException as exc:
+            # No response: the request provably never reached a gateway
+            # answer. Tag it so the endpoint's daily refund can tell this
+            # apart from a body-read failure (Go ErrNotDispatched parity).
+            _mark_not_dispatched(exc)
+            raise
+        try:
+            body = read_capped(response, f"{path} response",
+                               deadline=deadline)
         except ValueError as exc:
             # Oversize body: the response arrived but exceeds the
             # accumulation bound. Typed MpesaError(413) matches Go/TS
@@ -496,10 +533,11 @@ class MpesaClient:
 
         ACCOUNTING: callers accrue the daily quota BEFORE this dispatch
         (see :meth:`_accrue_daily`); failures raised here -- gateway
-        non-2xx, transport errors -- do NOT roll the reservation back
-        (consumed-on-attempt). Callers that need rollback on transport
-        errors catch ``requests.exceptions.RequestException`` at the
-        endpoint level and call :meth:`_rollback_daily`.
+        non-2xx, body-read errors -- do NOT roll the reservation back
+        (consumed-on-attempt). Only the pre-response transport failures
+        tagged by :func:`mpesa.auth._mark_not_dispatched` are refunded, by
+        the endpoint-level ``except`` branch calling
+        :meth:`_rollback_daily`.
         """
         token, gen = self._tokens.get_token_with_gen()
         status_code, content_type, body = self._send(
@@ -531,15 +569,19 @@ class MpesaClient:
         if not req.party_b:
             req.party_b = req.business_short_code
         req.validate(self._limits)
-        accrual_day = self._accrue_daily("stk", req.amount)
+        # Derive password FIRST: generate_password can reject a blank passkey
+        # or a naive injected clock. Accruing before that fallible step spent
+        # the daily quota even though no request was ever dispatched.
         password, timestamp = generate_password(
             req.business_short_code, self._cfg.passkey, self._now())
+        accrual_day = self._accrue_daily("stk", req.amount)
         payload = {**req.to_payload(), "Password": password,
                    "Timestamp": timestamp}
         try:
             return self._post_model(STK_PUSH_PATH, payload, STKPushResponse)
-        except requests.exceptions.RequestException:
-            self._rollback_daily("stk", req.amount, accrual_day)
+        except requests.exceptions.RequestException as exc:
+            if _not_dispatched(exc):
+                self._rollback_daily("stk", req.amount, accrual_day)
             raise
 
     def stk_query(self, req: STKQueryRequest) -> STKQueryResponse:
@@ -588,8 +630,9 @@ class MpesaClient:
         accrual_day = self._accrue_daily("b2c", req.amount)
         try:
             return self._post_model(B2C_PATH, req.to_payload(), B2CResponse)
-        except requests.exceptions.RequestException:
-            self._rollback_daily("b2c", req.amount, accrual_day)
+        except requests.exceptions.RequestException as exc:
+            if _not_dispatched(exc):
+                self._rollback_daily("b2c", req.amount, accrual_day)
             raise
 
     def transaction_status(
@@ -631,8 +674,9 @@ class MpesaClient:
         try:
             return self._post_model(REVERSAL_PATH, req.to_payload(),
                                     ConversationResponse)
-        except requests.exceptions.RequestException:
-            self._rollback_daily("reversal", req.amount, accrual_day)
+        except requests.exceptions.RequestException as exc:
+            if _not_dispatched(exc):
+                self._rollback_daily("reversal", req.amount, accrual_day)
             raise
 
     def account_balance(
@@ -684,8 +728,9 @@ class MpesaClient:
         try:
             return self._post_model(C2B_SIMULATE_PATH, req.to_payload(),
                                     C2BAckResponse)
-        except requests.exceptions.RequestException:
-            self._rollback_daily("c2b", req.amount, accrual_day)
+        except requests.exceptions.RequestException as exc:
+            if _not_dispatched(exc):
+                self._rollback_daily("c2b", req.amount, accrual_day)
             raise
 
     def generate_qr_code(self, req: QRCodeRequest) -> QRCodeResponse:
@@ -711,8 +756,9 @@ class MpesaClient:
         try:
             return self._post_model(QR_CODE_PATH, req.to_payload(),
                                     QRCodeResponse)
-        except requests.exceptions.RequestException:
-            self._rollback_daily("qr", req.amount, accrual_day)
+        except requests.exceptions.RequestException as exc:
+            if _not_dispatched(exc):
+                self._rollback_daily("qr", req.amount, accrual_day)
             raise
 
     def b2b_payment(self, req: B2BRequest) -> ConversationResponse:
@@ -740,8 +786,9 @@ class MpesaClient:
         try:
             return self._post_model(B2B_PAYMENT_PATH, req.to_payload(),
                                     ConversationResponse)
-        except requests.exceptions.RequestException:
-            self._rollback_daily("b2b", req.amount, accrual_day)
+        except requests.exceptions.RequestException as exc:
+            if _not_dispatched(exc):
+                self._rollback_daily("b2b", req.amount, accrual_day)
             raise
 
     def tax_remittance(self, req: TaxRemittanceRequest) -> ConversationResponse:
@@ -775,8 +822,9 @@ class MpesaClient:
         try:
             return self._post_model(TAX_REMITTANCE_PATH, req.to_payload(),
                                     ConversationResponse)
-        except requests.exceptions.RequestException:
-            self._rollback_daily("tax", req.amount, accrual_day)
+        except requests.exceptions.RequestException as exc:
+            if _not_dispatched(exc):
+                self._rollback_daily("tax", req.amount, accrual_day)
             raise
 
     def bill_register(self, req: BillRegisterRequest) -> BillAckResponse:
@@ -799,8 +847,9 @@ class MpesaClient:
         try:
             return self._post_model(BILL_REGISTER_PATH, req.to_payload(),
                                     BillAckResponse)
-        except requests.exceptions.RequestException:
-            self._rollback_daily("bill", req.amount, accrual_day)
+        except requests.exceptions.RequestException as exc:
+            if _not_dispatched(exc):
+                self._rollback_daily("bill", req.amount, accrual_day)
             raise
 
     def bill_query(self, req: BillQueryRequest) -> BillAckResponse:
@@ -837,8 +886,8 @@ class MpesaClient:
         try:
             return self._post_model(BILL_UPDATE_PATH, req.to_payload(),
                                     BillAckResponse)
-        except requests.exceptions.RequestException:
-            if amount:
+        except requests.exceptions.RequestException as exc:
+            if amount and _not_dispatched(exc):
                 self._rollback_daily("bill", amount, accrual_day)
             raise
 

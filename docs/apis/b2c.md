@@ -17,7 +17,7 @@ Auth: Bearer token + `SecurityCredential` (see getting-started.md).
 
 | Field | Type | Constraints |
 |---|---|---|
-| `OriginatorConversationID` | string | merchant-generated unique ID (<20 chars); duplicate ⇒ `500.002.1001`. Fresh UUID per attempt |
+| `OriginatorConversationID` | string | merchant-generated unique ID (<20 chars); duplicate ⇒ `500.002.1001`. Generate ONCE per business operation with `NewOriginatorID()` (Go) / `new_originator_id()` (Python) / `newOriginatorID()` (TS) and **reuse it on retries**: the SDK's automatic key is minted on an internal copy and is not returned, so a timeout retry with an empty field becomes a NEW payout |
 | `InitiatorName` | string | API operator username from portal (⚠️ NOT `Initiator` — TxStatus/Reversal use that) |
 | `SecurityCredential` | string | RSA PKCS#1 v1.5 + Base64 of initiator password w/ env cert (344 chars) |
 | `CommandID` | enum | `SalaryPayment` \| `BusinessPayment` \| `PromotionPayment` (registered-only except Salary) |

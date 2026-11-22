@@ -1964,6 +1964,78 @@ func TestPinnedClientInheritsTheTunedIdleBudget(t *testing.T) {
 	}
 }
 
+// H-6: readCapped must grow incrementally (no ~1 MiB preallocation per tiny
+// response) while keeping the EXACT oversize semantics callers rely on: it
+// returns at most limit bytes, so `len(body) > maxResponseLen` still flags an
+// oversize body and drainOversize can consume the rest.
+func TestReadCappedIncrementalGrowthAndOversize(t *testing.T) {
+	// Tiny bodies round-trip byte-for-byte.
+	for _, size := range []int{0, 1, 64, 4096} {
+		body := bytes.Repeat([]byte("a"), size)
+		got, err := readCapped(bytes.NewReader(body), maxResponseLen+1)
+		if err != nil {
+			t.Fatalf("size %d: readCapped: %v", size, err)
+		}
+		if !bytes.Equal(got, body) {
+			t.Fatalf("size %d: got %d bytes, want %d", size, len(got), size)
+		}
+	}
+
+	// A body larger than the limit is capped at exactly limit bytes, so the
+	// caller's oversize check still fires.
+	big := bytes.Repeat([]byte("x"), maxResponseLen+4096)
+	got, err := readCapped(bytes.NewReader(big), maxResponseLen+1)
+	if err != nil {
+		t.Fatalf("oversize: readCapped: %v", err)
+	}
+	if len(got) != maxResponseLen+1 {
+		t.Fatalf("oversize len = %d, want %d (maxResponseLen+1)", len(got), maxResponseLen+1)
+	}
+	if len(got) <= maxResponseLen {
+		t.Fatal("capped body is not flagged oversize by len(body) > maxResponseLen")
+	}
+}
+
+// stallingReader serves `stalls` reads of (0, nil) before serving `data`
+// (then EOF forever). `stalls` may be huge — used to prove the guard trips
+// only after a real threshold, not on any single zero read.
+type stallingReader struct {
+	stalls int
+	data   []byte
+	served bool
+}
+
+func (r *stallingReader) Read(p []byte) (int, error) {
+	if r.stalls > 0 {
+		r.stalls--
+		return 0, nil
+	}
+	if !r.served {
+		r.served = true
+		return copy(p, r.data), nil
+	}
+	return 0, io.EOF
+}
+
+func TestReadCappedZeroProgressGuard(t *testing.T) {
+	// (a) A stall burst below the threshold followed by real progress is
+	//     ALLOWED — the guard must not trip on genuine (if slow) readers.
+	got, err := readCapped(&stallingReader{stalls: 3, data: []byte("payload")}, maxResponseLen+1)
+	if err != nil {
+		t.Fatalf("stalled-then-data: readCapped: %v", err)
+	}
+	if string(got) != "payload" {
+		t.Fatalf("stalled-then-data: got %q, want %q", got, "payload")
+	}
+
+	// (b) A reader that stalls forever must be cut off with io.ErrNoProgress
+	//     instead of spinning the readCapped loop indefinitely.
+	_, err = readCapped(&stallingReader{stalls: 1 << 20}, maxResponseLen+1)
+	if !errors.Is(err, io.ErrNoProgress) {
+		t.Fatalf("persistent zeros: err = %v, want io.ErrNoProgress", err)
+	}
+}
+
 // #13: an oversize response must not poison the connection pool.
 //
 // The capped read stops with bytes still unread on the socket, and a
@@ -2006,12 +2078,13 @@ func TestOversizeResponseDrainsTheBodySoTheConnectionIsReused(t *testing.T) {
 }
 
 // TestRefreshCadenceOverflowGuard verifies that refreshCadence does not
-// overflow when expires_in is near math.MaxInt64, and that the result is
-// always within [minCadence, maxCadence].
+// overflow when expires_in is near math.MaxInt64, that the result never
+// exceeds maxCadence, and that realistic TTLs refresh before the real
+// expiry (short TTLs legitimately fall below minCadence).
 func TestRefreshCadenceOverflowGuard(t *testing.T) {
 	const (
 		maxCadence = 50 * time.Minute
-		minCadence = time.Minute // 60s parity floor (Python/TS both floor at 60.0s)
+		minCadence = time.Minute // 60s floor for TTLs longer than the safety margin
 		safety     = time.Minute
 	)
 
@@ -2021,12 +2094,17 @@ func TestRefreshCadenceOverflowGuard(t *testing.T) {
 		want      time.Duration
 	}{
 		// Normal values: TTL - 60s safety margin, clamped to [60s, 50min]
+		// except at/below the margin where half the TTL is used.
 		{"normal_3599s", FlexInt64(3599), maxCadence}, // 3539s > 50min, clamped
 		{"normal_3600s", FlexInt64(3600), maxCadence}, // 3540s > 50min, clamped
 		{"normal_120s", FlexInt64(120), 60 * time.Second},
 		{"normal_90s", FlexInt64(90), minCadence}, // 90-60=30s, clamped to the 60s parity floor
 		{"normal_61s", FlexInt64(61), minCadence}, // 61-60=1s, clamped to minCadence
-		{"normal_60s", FlexInt64(60), minCadence}, // 60-60=0s, clamped to minCadence
+		// Sub-minute TTLs must refresh BEFORE the real expiry: a 60s floor
+		// would serve an already-expired bearer for the remaining lifetime.
+		{"normal_60s", FlexInt64(60), 30 * time.Second},
+		{"normal_30s", FlexInt64(30), 15 * time.Second},
+		{"normal_1s", FlexInt64(1), time.Second},
 
 		// Edge: zero and negative fall back to maxCadence
 		{"zero", FlexInt64(0), maxCadence},
@@ -2045,9 +2123,13 @@ func TestRefreshCadenceOverflowGuard(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("refreshCadence(%d) = %v, want %v", int64(tc.expiresIn), got, tc.want)
 			}
-			// Result must always be within [minCadence, maxCadence]
-			if got < minCadence {
-				t.Errorf("refreshCadence(%d) = %v, below minCadence %v", int64(tc.expiresIn), got, minCadence)
+			// For realistic TTLs the cadence must be strictly before the
+			// real expiry, otherwise the cached bearer is served expired.
+			// Overflow-clamped values and 1s (the minimum floor) are exempt.
+			secs := int64(tc.expiresIn)
+			if secs >= 2 && secs <= math.MaxInt64/int64(time.Second) &&
+				got >= time.Duration(secs)*time.Second {
+				t.Errorf("refreshCadence(%d) = %v, not before expiry", secs, got)
 			}
 			if got > maxCadence {
 				t.Errorf("refreshCadence(%d) = %v, above maxCadence %v", int64(tc.expiresIn), got, maxCadence)

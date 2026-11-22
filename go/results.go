@@ -36,21 +36,34 @@ type AsyncResultBody struct {
 	TransactionID            string            `json:"TransactionID"`
 	ResultParameters         *ResultParameters `json:"ResultParameters,omitempty"`
 	ReferenceData            *ReferenceData    `json:"ReferenceData,omitempty"`
+
+	// paramsCache is built once by UnmarshalJSON (a plain map — value copies
+	// share the same underlying map). It is nil for hand-built values, which
+	// fall back to computing the view on demand in Parameters.
+	paramsCache map[string]string
 }
 
-// Parameters flattens ResultParameters tolerating absent sections; values are
-// rendered leniently as strings since Safaricom mixes types.
-//
-// First-wins: on duplicate Key entries (gateway retries) the FIRST value
-// wins, matching MetadataMap(), Python parameters()/metadata() and
-// TypeScript MetadataMap. Earlier last-wins behavior silently diverged
-// across SDKs on duplicate keys — fixed to first-wins.
-func (r AsyncResultBody) Parameters() map[string]string {
+// UnmarshalJSON decodes the wire shape and eagerly builds the flattened
+// parameter view. The alias avoids recursion and leaves paramsCache unset
+// until we assign it here; the typed fields keep their own decode hooks.
+func (r *AsyncResultBody) UnmarshalJSON(b []byte) error {
+	type plain AsyncResultBody
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*r = AsyncResultBody(p)
+	r.paramsCache = buildParamsCache(r.ResultParameters)
+	return nil
+}
+
+// buildParamsCache flattens ResultParameter entries with first-wins semantics.
+func buildParamsCache(params *ResultParameters) map[string]string {
 	out := make(map[string]string)
-	if r.ResultParameters == nil {
+	if params == nil {
 		return out
 	}
-	for _, p := range r.ResultParameters.ResultParameter {
+	for _, p := range params.ResultParameter {
 		if _, exists := out[p.Key]; exists {
 			continue
 		}
@@ -60,6 +73,29 @@ func (r AsyncResultBody) Parameters() map[string]string {
 			continue
 		}
 		out[p.Key] = fs.String()
+	}
+	return out
+}
+
+// Parameters flattens ResultParameters tolerating absent sections; values are
+// rendered leniently as strings since Safaricom mixes types.
+//
+// First-wins: on duplicate Key entries (gateway retries) the FIRST value
+// wins, matching MetadataMap(), Python parameters()/metadata() and
+// TypeScript MetadataMap. Earlier last-wins behavior silently diverged
+// across SDKs on duplicate keys — fixed to first-wins.
+//
+// The flattened view is built once at parse time; each call returns a fresh
+// map (a shallow copy of the cached view), so callers may freely mutate the
+// result without affecting later calls.
+func (r AsyncResultBody) Parameters() map[string]string {
+	cache := r.paramsCache
+	if cache == nil {
+		cache = buildParamsCache(r.ResultParameters)
+	}
+	out := make(map[string]string, len(cache))
+	for k, v := range cache {
+		out[k] = v
 	}
 	return out
 }
@@ -110,6 +146,33 @@ func (rd *ReferenceData) UnmarshalJSON(b []byte) error {
 type ReferenceItem struct {
 	Key   string `json:"Key"`
 	Value string `json:"Value"`
+}
+
+// UnmarshalJSON coerces a numeric/boolean echoed Value to its wire text,
+// matching Python's coerce_str and TypeScript's coerceWireString. Without it
+// a single numeric Value fails the whole AsyncResultBody decode and drops
+// ResultCode/TransactionID along with the optional reference data.
+func (ri *ReferenceItem) UnmarshalJSON(b []byte) error {
+	var probe struct {
+		Key   string          `json:"Key"`
+		Value json.RawMessage `json:"Value"`
+	}
+	if err := json.Unmarshal(b, &probe); err != nil {
+		return err
+	}
+	ri.Key = probe.Key
+	if len(probe.Value) == 0 || string(probe.Value) == "null" {
+		ri.Value = ""
+		return nil
+	}
+	var fs FlexString
+	if err := json.Unmarshal(probe.Value, &fs); err != nil {
+		// Same fallback as buildParamsCache: keep the raw wire text.
+		ri.Value = string(probe.Value)
+		return nil
+	}
+	ri.Value = fs.String()
+	return nil
 }
 
 // BalanceSegment is one parsed account row of an Account Balance result.

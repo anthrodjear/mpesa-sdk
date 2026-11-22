@@ -40,6 +40,14 @@ func parseResultCode(code string) (int64, bool) {
 	// Trimming spaces first exposes the quotes, trimming quotes exposes any
 	// inner padding, and the final space trim normalizes it.
 	s := strings.TrimSpace(strings.Trim(strings.TrimSpace(code), `"`))
+	// ASCII gate: only digits, sign and decimal point are result-code
+	// syntax. Go's ParseFloat also accepts exponent forms ("0e0") that the
+	// TypeScript gate rejects, which made the same unsigned callback settle
+	// in Go/Python but stay indeterminate in TS. Be conservative: reject
+	// anything that is not a plain decimal before numeric parsing.
+	if !plainDecimal(s) {
+		return 0, false
+	}
 	if v, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return v, true
 	}
@@ -57,6 +65,21 @@ func parseResultCode(code string) (int64, bool) {
 		return 0, false
 	}
 	return v, true
+}
+
+// plainDecimal reports whether s contains only ASCII digits, a sign and a
+// decimal point. It is the shared result-code syntax gate (TypeScript's
+// ASCII_GATE) and keeps exponent notation out of the money-path decision.
+func plainDecimal(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && r != '.' && r != '+' && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 // ClassifyResultCode maps a result code to its safety class. Success is only

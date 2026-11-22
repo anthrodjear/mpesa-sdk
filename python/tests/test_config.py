@@ -185,7 +185,7 @@ def test_post_init_rejects_non_callable_clock():
 def test_post_init_warns_on_tls_verification_disabled():
     session = requests.Session()
     session.verify = False
-    with pytest.warns(UserWarning, match="TLS verification disabled"):
+    with pytest.warns(UserWarning, match="TokenManager refuses OAuth over insecure sessions"):
         Config(http_client=session)
 
 

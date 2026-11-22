@@ -346,9 +346,15 @@ export function newOriginatorID(): string {
  *   reconciles on, not a secret, and masking it would break log-based
  *   debugging.
  * - The five URL fields can carry an unguessable callback capability token
- *   in their query string (see callback-token.ts: a token "leaks wherever
- *   URLs are logged"), so the query component is dropped, not the whole
- *   URL — the host/path stays useful for debugging.
+ *   ANYWHERE in the value — SECURITY.md recommends the token in the URL
+ *   PATH, not only the query string (see callback-token.ts: a token "leaks
+ *   wherever URLs are logged"). The WHOLE value is therefore redacted to
+ *   `"[REDACTED]"`, matching Go's LogSafe — no host/path survives.
+ *
+ * Both sets are matched case-insensitively: the SDK's own wire payloads use
+ * PascalCase (`SecurityCredential`, `CallBackURL`, `TaxPayerPIN`, ...), so a
+ * lowercased lookup covers that style and the camelCase request style with
+ * one rule.
  */
 const REDACTED_FIELDS: ReadonlySet<string> = new Set([
   "securityCredential",
@@ -366,6 +372,14 @@ const URL_FIELDS: ReadonlySet<string> = new Set([
   "confirmationURL",
 ]);
 
+/** Lowercase keys for case-insensitive redaction of both naming styles. */
+const REDACTED_FIELDS_LC: ReadonlySet<string> = new Set(
+  Array.from(REDACTED_FIELDS, (key) => key.toLowerCase()),
+);
+const URL_FIELDS_LC: ReadonlySet<string> = new Set(
+  Array.from(URL_FIELDS, (key) => key.toLowerCase()),
+);
+
 /**
  * A redacted COPY of a request object, safe to `console.log` /
  * `JSON.stringify` — the TypeScript counterpart of Go's `LogSafe()` and
@@ -378,11 +392,22 @@ const URL_FIELDS: ReadonlySet<string> = new Set([
  * value-semantics copy (`{ ...req }`) cannot mask it for the caller. The
  * caller's original object is NEVER mutated.
  *
- * Secrets render as the literal `"[REDACTED]"` (Go's LogSafe spelling);
- * URL fields keep scheme+host+path and drop the query string.
+ * Secrets AND URL fields render as the literal `"[REDACTED]"` (Go's
+ * LogSafe spelling). A callback token may sit in the URL PATH, not just the
+ * query, so the whole value is dropped — no host/path survives. Keys are
+ * matched case-insensitively so camelCase requests and PascalCase wire
+ * payloads are redacted identically.
  *
- * @param req - Any request object (a shallow copy is returned).
- * @returns A new object with the fields above redacted.
+ * Redaction is RECURSIVE over plain objects and arrays: a secret hidden in a
+ * nested request object or an array element is just as live as a top-level
+ * one. A field whose (case-insensitive) name is a secret or URL field is
+ * redacted REGARDLESS of its value type — a `{ href: "https://h/cb/TOKEN" }`
+ * object under `callBackURL` must not survive because it is not a string.
+ * Cycles are broken with an ancestor set; non-plain objects (Date, Buffer,
+ * URL, ...) are left as-is because they are not request containers.
+ *
+ * @param req - Any request object (a deep redacted copy is returned).
+ * @returns A new object with the fields above redacted at every depth.
  *
  * @example
  * ```ts
@@ -392,13 +417,49 @@ const URL_FIELDS: ReadonlySet<string> = new Set([
 export function logSafeRequest<T extends Record<string, unknown>>(
   req: T,
 ): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...req };
-  for (const key of Object.keys(out)) {
-    if (REDACTED_FIELDS.has(key)) {
-      out[key] = "[REDACTED]";
-    } else if (URL_FIELDS.has(key) && typeof out[key] === "string") {
-      out[key] = (out[key] as string).split("?")[0];
-    }
+  const out: Record<string, unknown> = {};
+  // `req` is an ancestor of every nested value; a back-reference to it is a cycle.
+  const ancestors = new Set<object>([req]);
+  for (const key of Object.keys(req)) {
+    out[key] = redactField(key, req[key], ancestors);
   }
   return out;
+}
+
+/** Redact a named field by NAME (regardless of value type), else deep-copy its value. */
+function redactField(key: string, value: unknown, ancestors: Set<object>): unknown {
+  const lower = key.toLowerCase();
+  if (REDACTED_FIELDS_LC.has(lower) || URL_FIELDS_LC.has(lower)) {
+    return "[REDACTED]";
+  }
+  return redactValue(value, ancestors);
+}
+
+/** Deep redacting copy over plain objects and arrays; other values pass through. */
+function redactValue(value: unknown, ancestors: Set<object>): unknown {
+  if (Array.isArray(value)) {
+    if (ancestors.has(value)) return "[CIRCULAR]";
+    ancestors.add(value);
+    try {
+      return value.map((item) => redactValue(item, ancestors));
+    } finally {
+      ancestors.delete(value);
+    }
+  }
+  if (value !== null && typeof value === "object") {
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) return value;
+    if (ancestors.has(value)) return "[CIRCULAR]";
+    ancestors.add(value);
+    try {
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(value)) {
+        out[key] = redactField(key, (value as Record<string, unknown>)[key], ancestors);
+      }
+      return out;
+    } finally {
+      ancestors.delete(value);
+    }
+  }
+  return value;
 }

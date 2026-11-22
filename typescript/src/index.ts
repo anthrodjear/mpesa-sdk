@@ -92,7 +92,7 @@ export type {
 } from "./limits.js";
 
 // ── Auth ────────────────────────────────────────────────────────────────
-export { TokenManager, getAccessToken } from "./auth.js";
+export { TokenManager, NotDispatchedError, getAccessToken } from "./auth.js";
 export type { TokenManagerOptions } from "./auth.js";
 
 // ── Client ──────────────────────────────────────────────────────────────

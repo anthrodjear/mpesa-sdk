@@ -145,7 +145,8 @@ class Config:
             raise TypeError("mpesa: Config.retry_on_unauthorized must be a bool")
         if getattr(self.http_client, "verify", True) is not True:
             warnings.warn(
-                "TLS verification disabled on injected session -- Client will refuse",
+                "TokenManager refuses OAuth over insecure sessions and "
+                "MpesaClient forces a verifying clone for business traffic",
                 UserWarning,
                 stacklevel=2,
             )

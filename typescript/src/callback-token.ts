@@ -60,11 +60,19 @@ export function newCallbackToken(): string {
  * count: non-ASCII inputs can share a string length yet encode to
  * different byte totals. Once lengths match, comparison cost stays flat
  * in byte equality.
+ *
+ * Non-string values (e.g. a repeated query param arriving as an array, or a
+ * route value that is actually a number) fail closed BEFORE the truthiness
+ * guard: {@link Buffer.from} would otherwise coerce them (and throw for
+ * e.g. `Buffer.from(5, "utf8")`) instead of simply denying the hit.
  */
 export function callbackTokenEqual(
   expected: string,
   provided: string,
 ): boolean {
+  if (typeof expected !== "string" || typeof provided !== "string") {
+    return false;
+  }
   if (!expected || !provided) {
     return false;
   }

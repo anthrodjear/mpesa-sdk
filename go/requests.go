@@ -232,6 +232,9 @@ func (r AccountBalanceRequest) LogSafe() map[string]any {
 // bytes so the returned map always mirrors the exact wire shape (including
 // omitempty behavior) without duplicating struct tags. On marshal failure
 // it returns a minimal redacted marker rather than leaking partial state.
+//
+// Cost: a full marshal + unmarshal on EVERY call. Fine for log lines; do not
+// call LogSafe() in tight loops or hot request paths.
 func logSafeRedacted(v any, secretFields ...string) map[string]any {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -504,9 +507,19 @@ func nonRoutableIPReason(ip net.IP) string {
 	return ""
 }
 
+// maxURLLen caps callback URL length before url.Parse. Unbounded URLs make
+// the parser (and the host normalisation below) do work proportional to input
+// size, so reject oversized values cheaply. The error reports only lengths —
+// never the URL text, which may carry a callback capability token or control
+// runes.
+const maxURLLen = 8192
+
 func requireURL(field, v string) error {
 	if err := requireNonEmpty(field, v); err != nil {
 		return err
+	}
+	if len(v) > maxURLLen {
+		return fmt.Errorf("mpesa: %s exceeds %d bytes (got %d)", field, maxURLLen, len(v))
 	}
 	u, err := url.Parse(v)
 	if err != nil {
@@ -681,10 +694,19 @@ func (r *STKPushRequest) ValidateWithLimits(limits TransactionLimits) error {
 	if err := requireMaxLen("AccountReference", r.AccountReference, 12); err != nil {
 		return err
 	}
+	// These fields are echoed by Daraja and copied into application logs.
+	// Python rejects non-printable text here; do the same so a caller
+	// cannot forge log lines through AccountReference/TransactionDesc.
+	if err := requirePrintable("AccountReference", r.AccountReference); err != nil {
+		return err
+	}
 	if err := requireNonEmpty("TransactionDesc", r.TransactionDesc); err != nil {
 		return err
 	}
-	return requireMaxLen("TransactionDesc", r.TransactionDesc, 13)
+	if err := requireMaxLen("TransactionDesc", r.TransactionDesc, 13); err != nil {
+		return err
+	}
+	return requirePrintable("TransactionDesc", r.TransactionDesc)
 }
 
 // Validate requires a CheckoutRequestID and validates BusinessShortCode
@@ -1394,12 +1416,16 @@ type BillQueryRequest struct {
 }
 
 // Validate checks that both bill identifiers are present and well-shaped —
-// safe to call before hand-marshalling.
+// safe to call before hand-marshalling. BillRefNumber is a logged identifier,
+// so control runes are refused (log-line forgery) just as on register/update.
 func (r *BillQueryRequest) Validate() error {
 	if err := requireShortcode("ShortCode", r.ShortCode); err != nil {
 		return err
 	}
 	if err := requireNonEmpty("BillRefNumber", r.BillRefNumber); err != nil {
+		return err
+	}
+	if err := requirePrintable("BillRefNumber", r.BillRefNumber); err != nil {
 		return err
 	}
 	return requireMaxLen("BillRefNumber", r.BillRefNumber, 32)
@@ -1525,12 +1551,16 @@ type BillDeleteRequest struct {
 }
 
 // Validate checks that both bill identifiers are present and well-shaped —
-// safe to call before hand-marshalling.
+// safe to call before hand-marshalling. BillRefNumber is a logged identifier,
+// so control runes are refused (log-line forgery) just as on register/update.
 func (r *BillDeleteRequest) Validate() error {
 	if err := requireShortcode("ShortCode", r.ShortCode); err != nil {
 		return err
 	}
 	if err := requireNonEmpty("BillRefNumber", r.BillRefNumber); err != nil {
+		return err
+	}
+	if err := requirePrintable("BillRefNumber", r.BillRefNumber); err != nil {
 		return err
 	}
 	return requireMaxLen("BillRefNumber", r.BillRefNumber, 32)

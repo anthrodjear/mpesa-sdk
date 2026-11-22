@@ -22,6 +22,25 @@
  * `static readonly ALL` array (memoized — a single array per class, not a
  * fresh allocation per access).
  */
+/**
+ * `JSON.stringify` that cannot itself throw: `JSON.stringify(BigInt)` and
+ * circular structures throw while BUILDING the `coerce` error message —
+ * the `TypeError` for a bad enum value must never itself be a crash.
+ */
+function safeStringify(value: unknown): string {
+  try {
+    const s = JSON.stringify(value);
+    if (s !== undefined) return s;
+  } catch {
+    // fall through to String(value)
+  }
+  try {
+    return String(value);
+  } catch {
+    return typeof value; // Symbols throw on String()
+  }
+}
+
 export class MpesaEnum<T extends string> {
   /** The semantic value (matches the wire key for standard enums). */
   readonly value: T;
@@ -55,7 +74,7 @@ export class MpesaEnum<T extends string> {
       return value as T;
     }
     throw new TypeError(
-      `invalid enum value: expected one of ${JSON.stringify(validSet)}, got ${JSON.stringify(value)}`,
+      `invalid enum value: expected one of ${JSON.stringify(validSet)}, got ${safeStringify(value)}`,
     );
   }
 }

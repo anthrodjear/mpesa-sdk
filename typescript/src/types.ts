@@ -25,7 +25,12 @@ import {
   QRTrxCode,
 } from "./enums.js";
 export { TransactionType, CommandID, ResponseType, QRTrxCode };
-import { coerceAmount, coerceWireInt, coerceWireString } from "./coercion.js";
+import {
+  coerceAmount,
+  coerceOpaqueWireString,
+  coerceWireInt,
+  coerceWireString,
+} from "./coercion.js";
 import { ResultClass, classifyResultCode } from "./classification.js";
 import { MpesaDecodeError, decodeJsonObject } from "./errors.js";
 import { bodyTooLargeError } from "./_bounded-read.js";
@@ -379,6 +384,37 @@ export interface QRCodeResponse {
   readonly RequestID: string;
   readonly ResponseDescription: string;
   readonly QRCode: string;
+}
+
+/**
+ * Decode a dynamic-QR generation response body.
+ *
+ * `ResponseCode`, `RequestID` and `ResponseDescription` are ordinary
+ * diagnostic text and therefore go through the generic 4096-char-capped
+ * {@link coerceWireString}. `QRCode` is an opaque base64/data-URI payload and
+ * goes through the shared non-truncating {@link coerceOpaqueWireString} from
+ * coercion.ts (Python `coerce_opaque_str` parity), which preserves it in
+ * full — never silently truncated at the generic diagnostic cap. The whole
+ * response body is already bounded by the 1 MiB ingestion cap, so keeping
+ * the field verbatim stays bounded. Missing/hostile fields coerce to the
+ * empty string, matching the other response decoders.
+ *
+ * @param body - Raw JSON response body.
+ * @param label - Optional context (endpoint path) for decode errors.
+ * @returns The decoded QR response with an intact `QRCode` payload.
+ * @throws {MpesaDecodeError} When `body` is not a JSON object.
+ */
+export function decodeQRCodeResponse(
+  body: string,
+  label = "QR code response",
+): QRCodeResponse {
+  const raw = decodeJsonObject<Record<string, unknown>>(body, label);
+  return {
+    ResponseCode: coerceWireString(raw["ResponseCode"]) ?? "",
+    RequestID: coerceWireString(raw["RequestID"]) ?? "",
+    ResponseDescription: coerceWireString(raw["ResponseDescription"]) ?? "",
+    QRCode: coerceOpaqueWireString(raw["QRCode"]) ?? "",
+  };
 }
 
 /**

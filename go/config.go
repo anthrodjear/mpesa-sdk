@@ -18,12 +18,16 @@ import (
 // default when zero. Config contains credentials — never log directly;
 // GoString/Format redact and ConsumerKey is masked to its first/last 4 runes.
 type Config struct {
-	ConsumerKey       string
-	ConsumerSecret    string
-	Shortcode         string
-	Passkey           string
-	Environment       Environment
-	Timeout           time.Duration
+	ConsumerKey    string
+	ConsumerSecret string
+	Shortcode      string
+	Passkey        string
+	Environment    Environment
+	Timeout        time.Duration
+	// Now is an optional clock override. A Client is safe for concurrent use,
+	// and calls Now from token-freshness, rate-limit, daily-ledger and
+	// password-generation paths on arbitrary goroutines. An injected Now MUST
+	// therefore be safe for concurrent use (same contract as ErrorLogger).
 	Now               func() time.Time
 	HTTPClient        *http.Client
 	TLSPinningEnabled bool
@@ -59,15 +63,15 @@ type Config struct {
 	// false negative that is worse than no ceiling at all. Enable it only
 	// when you know this process is the sole originator for the service.
 	TrackDaily bool
-// ErrorLogger optionally receives detailed diagnostics for non-standard
-// error responses (content-type, body snippet). When nil, detailed
-// diagnostics are discarded. Not serialized by GoString/Format/MarshalJSON.
-ErrorLogger ErrorLogger
-// DisableRetryOnUnauthorized disables the automatic retry on 401.003.01
-// (invalid/expired token). Default is false (retry enabled). Set to true
-// to surface the 401 immediately without a refresh round-trip — useful for
-// observability or when the caller wants to manage refresh explicitly.
-DisableRetryOnUnauthorized bool
+	// ErrorLogger optionally receives detailed diagnostics for non-standard
+	// error responses (content-type, body snippet). When nil, detailed
+	// diagnostics are discarded. Not serialized by GoString/Format/MarshalJSON.
+	ErrorLogger ErrorLogger
+	// DisableRetryOnUnauthorized disables the automatic retry on 401.003.01
+	// (invalid/expired token). Default is false (retry enabled). Set to true
+	// to surface the 401 immediately without a refresh round-trip — useful for
+	// observability or when the caller wants to manage refresh explicitly.
+	DisableRetryOnUnauthorized bool
 }
 
 // resolvedLimits merges Config.Limits over the Safaricom baseline and returns
@@ -246,6 +250,9 @@ func (c Config) Validate() error {
 // redactCredentials renders r as JSON with the named secret fields replaced
 // by [REDACTED]. It operates on serialized bytes, so it cannot recurse into
 // the type's own Format/GoString hooks.
+//
+// Cost: a full marshal + unmarshal + re-marshal per render. Fine for logging;
+// avoid in tight loops or hot paths.
 func redactCredentials(r any, secretFields ...string) string {
 	b, err := json.Marshal(r)
 	if err != nil {
