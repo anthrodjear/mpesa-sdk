@@ -4,9 +4,9 @@
  * {@link MpesaError}: the `{requestId, errorCode, errorMessage}` envelope when
  * present (docs/apis/getting-started.md, "Standard Error Envelope"), else the
  * generic "unexpected error response from gateway"; members are always
- * sanitized (Unicode Cc/Cf control code points stripped, each field capped at
- * 512 code points) so hostile gateway output can never inject newlines or
- * ANSI escapes into logs.
+ * sanitized (Unicode Cc/Cf controls AND Zl/Zp line/paragraph separators
+ * stripped, each field capped at 512 code points) so hostile gateway output
+ * can never inject newlines or ANSI escapes into logs.
  *
  * **ERROR-BODY ISOLATION** (go/errors.go `parseError` parity): a body that
  * is not the envelope at all yields a GENERIC `errorMessage`. The upstream
@@ -63,23 +63,29 @@ export type ErrorLogger = (
 ) => void | Promise<void>;
 
 /**
- * Control/format detector: Unicode General_Category `Cc` (control) or `Cf`
- * (format) — e.g. `\x1b`, `\n`, `\x07`, zero-width spaces. Uses a Unicode
- * property escape, which REQUIRES the `u` flag (`/\p{Cc}|\p{Cf}/u` without
- * it is a SyntaxError) — see MDN "Unicode character class escape:
- * `\p{...}`, `\P{...}`" (the `u`/`v` flag section). Single source of truth
- * replacing the previous 11-clause code-point OR-chain (same strip set:
- * every Cc/Cf point, astral-safe since `for..of` walks code points).
+ * Log-line forgery detector: Unicode General_Category `Cc` (control), `Cf`
+ * (format) AND `Zl`/`Zp` (LINE SEPARATOR U+2028 / PARAGRAPH SEPARATOR U+2029)
+ * — e.g. `\x1b`, `\n`, `\x07`, zero-width spaces, U+2028/U+2029. `Zl`/`Zp`
+ * are NOT controls, but line-based log processors treat them as line breaks
+ * (`\s`-based splitters match them, and JSON.stringify does not escape them),
+ * so gateway text carrying them could forge extra log lines even though
+ * `\n` itself was stripped. Uses Unicode property
+ * escapes, which REQUIRE the `u` flag (`/[\p{Cc}]/u` without it is a
+ * SyntaxError) — see MDN "Unicode character class escape: `\p{...}`,
+ * `\P{...}`" (the `u`/`v` flag section). Single source of truth replacing the
+ * previous 11-clause code-point OR-chain (same strip set: every Cc/Cf/Zl/Zp
+ * point, astral-safe since `for..of` walks code points).
  */
-const CONTROL_RE = /[\p{Cc}\p{Cf}]/u;
+const CONTROL_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
-/** Is this code point Unicode General_Category Cc (control) or Cf (format)? */
+/** Is this code point Cc (control), Cf (format), Zl or Zp (line/para separator)? */
 function isControlCodePoint(cp: number): boolean {
   return CONTROL_RE.test(String.fromCodePoint(cp));
 }
 
-/** Strip Cc/Cf code points, then cap at `limit` kept code points. Astral-safe:
- *  iteration walks code points (not UTF-16 units), cap counts kept ones. */
+/** Strip Cc/Cf/Zl/Zp code points, then cap at `limit` kept code points.
+ *  Astral-safe: iteration walks code points (not UTF-16 units), cap counts
+ *  kept ones. */
 function sanitizeWireString(value: string, limit: number = MAX_FIELD_CHARS): string {
   let out = "";
   let kept = 0;

@@ -99,7 +99,9 @@ export class NotDispatchedError extends Error {
 
 /**
  * Eager refresh window: TTL minus 60s safety, clamped to [60s, 50min].
- * Unknown/zero TTLs fall back to the legacy 50-minute cadence.
+ * At or below the 60s margin the window is half the TTL (1s floor), because
+ * a 60s floor would serve the bearer past its real expiry. Unknown/zero
+ * TTLs fall back to the 50-minute cadence.
  *
  * NaN-safe by construction: a non-finite `expiresInSec` (garbage string,
  * `1e999` → Infinity) MUST map to the 50-minute fallback, because
@@ -120,6 +122,12 @@ function refreshCadence(expiresInSec: number): number {
   const MAX = 50 * 60_000;
   const SAFETY = 60_000;
   if (!Number.isFinite(expiresInSec) || expiresInSec <= 0) return MAX;
+  // A 60s floor is safe only when the TTL is longer than the safety margin.
+  // For shorter TTLs, refresh at half the real lifetime (1s floor) so the
+  // cached bearer is never served after it has actually expired.
+  if (expiresInSec * 1000 <= SAFETY) {
+    return Math.max(1000, (expiresInSec * 1000) / 2);
+  }
   const ms = expiresInSec * 1000 - SAFETY;
   return Math.max(MIN, Math.min(MAX, ms));
 }
@@ -128,8 +136,8 @@ function refreshCadence(expiresInSec: number): number {
  * Normalize the wire `expires_in` to a usable seconds value.
  *
  * Daraja sends a string (`"3599"`), a number (`120`), or garbage. Every
- * non-finite outcome — non-numeric strings (`parseInt` → NaN),
- * `1e999` (JSON → Infinity), ±Infinity — becomes 0, which
+ * unusable outcome — non-numeric or trailing-garbage strings (strict full
+ * string digit gate), `1e999` (JSON → Infinity), ±Infinity — becomes 0, which
  * {@link refreshCadence} already maps to the documented 50-minute fallback.
  * The same 0 covers a MISSING field (documented fallback, keep it).
  *
@@ -139,8 +147,14 @@ function refreshCadence(expiresInSec: number): number {
 function normalizeExpiresIn(raw: unknown): number {
   if (typeof raw === "number") return Number.isFinite(raw) ? raw : 0;
   if (typeof raw === "string") {
-    const parsed = parseInt(raw, 10);
-    return Number.isFinite(parsed) ? parsed : 0;
+    // Full-string parse, NOT parseInt: parseInt("3599garbage") === 3599
+    // would turn a malformed TTL into a working token with a false expiry.
+    // Anything not a plain signed ASCII integer maps to 0 (fallback cadence),
+    // matching Python's coerce_int regex gate.
+    const text = raw.trim();
+    if (!/^[+-]?[0-9]+$/.test(text)) return 0;
+    const parsed = Number(text);
+    return Number.isSafeInteger(parsed) ? parsed : 0;
   }
   return 0;
 }

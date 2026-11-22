@@ -13,14 +13,16 @@ import {
   MpesaError,
   TransactionType,
 } from "@mpesa-sdk/core";
+import { requiredEnv } from "./_env.js";
 
 async function main(): Promise<void> {
-  // 1. Build config from environment variables.
+  // 1. Build config from environment variables. requiredEnv() names the
+  //    missing variable in its error instead of passing undefined to Config.
   const cfg = new Config({
-    consumerKey:    process.env.MPESA_CONSUMER_KEY!,
-    consumerSecret: process.env.MPESA_CONSUMER_SECRET!,
-    shortcode:      process.env.MPESA_SHORTCODE!,
-    passkey:        process.env.MPESA_PASSKEY!,
+    consumerKey:    requiredEnv("MPESA_CONSUMER_KEY"),
+    consumerSecret: requiredEnv("MPESA_CONSUMER_SECRET"),
+    shortcode:      requiredEnv("MPESA_SHORTCODE"),
+    passkey:        requiredEnv("MPESA_PASSKEY"),
   });
 
   // 2. Create a concurrency-safe client (share across calls).

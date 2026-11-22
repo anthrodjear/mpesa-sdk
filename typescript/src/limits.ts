@@ -85,18 +85,25 @@ export type LimitService = "stk" | "c2b" | "b2c" | "reversal" | "qr" | "b2b" | "
  * B2B / Tax / Bill carry the same numbers the shared `default` bucket
  * historically applied to them, so only explicit `default` overrides
  * observe the split.
+ *
+ * DEEP-FROZEN (root + all nine ServiceLimits): these are process-wide
+ * defaults shared by every Config in the process. A caller mutating
+ * `DEFAULT_TRANSACTION_LIMITS.b2c.maxPerTransaction` would otherwise silently
+ * re-tighten or loosen OTHER merchants' limits. `resolveTransactionLimits`
+ * never mutates the defaults — it reads them and builds fresh resolved
+ * objects — so freezing is safe (and makes the shared invariants explicit).
  */
-export const DEFAULT_TRANSACTION_LIMITS: TransactionLimits = {
-  stk: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
-  c2b: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
-  b2c: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
-  reversal: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
-  qr: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
-  b2b: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
-  tax: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
-  bill: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
-  default: { maxPerTransaction: 250_000, maxPerDay: 500_000 },
-};
+export const DEFAULT_TRANSACTION_LIMITS: TransactionLimits = Object.freeze({
+  stk: Object.freeze({ maxPerTransaction: 250_000, maxPerDay: 500_000 }),
+  c2b: Object.freeze({ maxPerTransaction: 250_000, maxPerDay: 500_000 }),
+  b2c: Object.freeze({ maxPerTransaction: 250_000, maxPerDay: 500_000 }),
+  reversal: Object.freeze({ maxPerTransaction: 250_000, maxPerDay: 500_000 }),
+  qr: Object.freeze({ maxPerTransaction: 250_000, maxPerDay: 500_000 }),
+  b2b: Object.freeze({ maxPerTransaction: 250_000, maxPerDay: 500_000 }),
+  tax: Object.freeze({ maxPerTransaction: 250_000, maxPerDay: 500_000 }),
+  bill: Object.freeze({ maxPerTransaction: 250_000, maxPerDay: 500_000 }),
+  default: Object.freeze({ maxPerTransaction: 250_000, maxPerDay: 500_000 }),
+});
 
 /** Human-readable service names for error messages. */
 const SERVICE_LABELS: Record<LimitService, string> = {

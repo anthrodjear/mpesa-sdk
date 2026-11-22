@@ -339,16 +339,22 @@ def test_credential_hygiene():
 
 def test_cadence_clamp_edges():
     # Inputs are post-coercion ints (OAuthToken.expires_in_seconds domain).
-    # Floor is 60.0s (TS parity): TTLs below 120s all clamp to the floor.
-    cases = {30: 60.0, 61: 60.0, 62: 60.0, 120: 60.0, 3060: 3000.0, None: 3000.0}
+    # TTLs <= 60s use half the TTL (the 60s floor is DROPPED there -- it
+    # would outlive the token); above 60s the 60s floor / 3000s ceiling
+    # clamp applies.
+    cases = {30: 15.0, 60: 30.0, 61: 60.0, 62: 60.0, 120: 60.0,
+             3060: 3000.0, None: 3000.0}
     for expires, want in cases.items():
         assert TokenManager._cadence(expires) == want
 
 
-def test_cadence_floor_is_sixty_seconds():
-    """TS parity: sub-120s TTLs all collapse to the 60s floor."""
-    # expires=30 -> min(30-60, 3000) = -30 -> max(60.0, -30) = 60.0
-    assert TokenManager._cadence(30) == 60.0
+def test_cadence_short_ttl_uses_half_ttl():
+    """For TTLs at or below the 60s safety margin the floor is dropped:
+    clamping to 60s would serve the bearer after its real expiry."""
+    # expires=30 -> half = 15.0s (NOT the 60s floor)
+    assert TokenManager._cadence(30) == 15.0
+    # expires=60 -> half = 30.0s (still below the 60s floor)
+    assert TokenManager._cadence(60) == 30.0
     # expires=119 -> min(59, 3000) = 59 -> max(60.0, 59) = 60.0
     assert TokenManager._cadence(119) == 60.0
     # expires=120 -> min(60, 3000) = 60 -> max(60.0, 60) = 60.0

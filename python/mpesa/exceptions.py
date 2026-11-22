@@ -3,9 +3,10 @@
 Every non-2xx response becomes one :class:`MpesaError`, whether the body
 carried the wire envelope ``{requestId, errorCode, errorMessage}`` or was
 hostile entirely (HTML WAF pages, truncated JSON, binary junk). Envelope
-members are always sanitized -- Unicode Cc/Cf control runes stripped, each
-field capped at 512 characters -- so corrupted gateway output can never
-inject newlines or ANSI escapes into logs.
+members are always sanitized -- Unicode Cc/Cf control runes and Zl/Zp
+line/paragraph separators stripped, each field capped at 512 characters --
+so corrupted gateway output can never inject newlines or ANSI escapes into
+logs.
 
 ERROR-BODY ISOLATION (go/errors.go ``parseError`` parity): a body that is
 not the envelope at all yields a GENERIC ``error_message``. The upstream
@@ -54,8 +55,16 @@ ErrorLogger = Callable[[int, str, bytes], None]
 
 
 def _sanitize(value: str, limit: int = _MAX_FIELD_CHARS) -> str:
-    """Strip ``Cc``/``Cf`` control runes, then cap at *limit* characters."""
-    cleaned = "".join(c for c in value if unicodedata.category(c) not in ("Cc", "Cf"))
+    """Strip ``Cc``/``Cf`` control runes and ``Zl``/``Zp`` separators, then cap.
+
+    U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR are rendered as real
+    line breaks by many log viewers, so leaving them in would defeat the
+    log-injection guarantee this sanitizer exists to provide.
+    """
+    cleaned = "".join(
+        c for c in value
+        if unicodedata.category(c) not in ("Cc", "Cf", "Zl", "Zp")
+    )
     return cleaned[:limit]
 
 

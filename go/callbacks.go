@@ -5,6 +5,7 @@ package mpesa
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -230,6 +231,14 @@ func (m MetadataItem) decodedValue() any {
 	raw := strings.TrimSpace(string(m.Value))
 	if raw == "" || raw == "null" {
 		return nil
+	}
+	// An integral wire token must be parsed as an INTEGER, never routed
+	// through float64: 9007199254740993 rounds to 9007199254740992 there,
+	// which silently corrupts an attacker-controllable Amount/phone value.
+	if !strings.ContainsAny(raw, ".eE") {
+		if v, ierr := strconv.ParseInt(raw, 10, 64); ierr == nil {
+			return v
+		}
 	}
 	var f float64
 	if err := json.Unmarshal(m.Value, &f); err == nil {

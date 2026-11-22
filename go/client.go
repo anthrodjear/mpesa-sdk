@@ -228,7 +228,7 @@ type Client struct {
 
 	mu          sync.RWMutex
 	tokenBytes  []byte    // cached OAuth bearer token; zeroed on refresh/Close
-	tokenExpiry time.Time // now + clamp(ExpiresIn-60s); zero until first fetch
+	tokenExpiry time.Time // now + eager refresh cadence (see refreshCadence); zero until first fetch
 	gen         uint64    // bumped on every successful refresh
 
 	lastRefreshAttempt time.Time // wall-clock of last refresh attempt (for rate limiting)
@@ -317,13 +317,19 @@ func (c *Client) Format(f fmt.State, verb rune) {
 // depth-bounded and cycle-guarded so a self-referential wrapper cannot hang
 // NewClient; exceeding the bound refuses rather than allows.
 func transportDisablesVerification(rt http.RoundTripper) bool {
-	return transportWalk(reflect.ValueOf(rt), 0, make(map[transportVisit]bool))
+	budget := maxTransportWalkVisits
+	return transportWalk(reflect.ValueOf(rt), 0, make(map[transportVisit]bool), &budget)
 }
 
 // maxTransportWalkDepth bounds the wrapper walk (defense against cycles in
 // hand-built chains); real tracing/retry stacks are a handful deep. A chain
 // deeper than this is UNKNOWN, so the walk fails closed rather than allow.
 const maxTransportWalkDepth = 32
+
+// maxTransportWalkVisits bounds the TOTAL number of nodes inspected, not just
+// the depth. Depth alone permits O(k^32) work for a wrapper whose fields hold
+// k candidate transports; exhausting the budget fails closed (UNKNOWN chain).
+const maxTransportWalkVisits = 4096
 
 var (
 	// roundTripperType is the reflect type of http.RoundTripper, used to decide
@@ -353,7 +359,11 @@ type transportVisit struct {
 // field's type is checked with Type().Implements() and the Field value is
 // recursed on directly. Exported fields such as TLSClientConfig remain
 // readable on such read-only values, so a hidden insecure transport is found.
-func transportWalk(v reflect.Value, depth int, visited map[transportVisit]bool) bool {
+func transportWalk(v reflect.Value, depth int, visited map[transportVisit]bool, budget *int) bool {
+	if *budget <= 0 {
+		return true // fail closed: too many nodes to inspect safely
+	}
+	*budget--
 	if depth > maxTransportWalkDepth {
 		return true // fail closed: an unbounded/unknown wrapper chain
 	}
@@ -405,7 +415,7 @@ func transportWalk(v reflect.Value, depth int, visited map[transportVisit]bool) 
 			if panicked {
 				return true
 			}
-			if called && transportWalk(reflect.ValueOf(unwrapped), depth+1, visited) {
+			if called && transportWalk(reflect.ValueOf(unwrapped), depth+1, visited, budget) {
 				return true
 			}
 		}
@@ -418,7 +428,7 @@ func transportWalk(v reflect.Value, depth int, visited map[transportVisit]bool) 
 		t := current.Type()
 		for i := 0; i < current.NumField(); i++ {
 			if fieldMayHoldRoundTripper(t.Field(i).Type) {
-				if transportWalk(current.Field(i), depth+1, visited) {
+				if transportWalk(current.Field(i), depth+1, visited, budget) {
 					return true
 				}
 			}
@@ -895,10 +905,11 @@ func (c *Client) tokenFresh() bool {
 }
 
 // refreshCadence converts the OAuth TTL into an eager refresh window:
-// TTL minus a 60s safety margin, clamped to [60s, 50min]. Unknown/zero TTLs
-// fall back to the legacy 50-minute cadence. The 60s floor mirrors Python
-// and TypeScript (both clamp the eager window at 60.0s), so all three
-// engines refresh on the same cadence for a given expires_in.
+// TTL minus a 60s safety margin, clamped to [60s, 50min]. For TTLs at or
+// below the 60s margin the window is half the TTL (1s floor) instead — a
+// 60s floor there would serve the bearer past its real expiry. Unknown/zero
+// TTLs fall back to the 50-minute cadence. Python and TypeScript apply the
+// same short-TTL rule, so all three engines agree.
 func refreshCadence(expiresIn FlexInt64) time.Duration {
 	const (
 		maxCadence = 50 * time.Minute
@@ -918,7 +929,16 @@ func refreshCadence(expiresIn FlexInt64) time.Duration {
 		secs = maxSecs
 	}
 	d := time.Duration(secs)*time.Second - safety
-	if d < minCadence {
+	if secs <= int64(safety/time.Second) {
+		// A TTL at or below the safety margin cannot support a 60s floor:
+		// clamping to it would serve the bearer PAST its real expiry.
+		// Refresh at half the TTL instead (1s floor) so the cached token
+		// is always replaced while it is still valid.
+		d = time.Duration(secs) * time.Second / 2
+		if d < time.Second {
+			d = time.Second
+		}
+	} else if d < minCadence {
 		d = minCadence
 	}
 	if d > maxCadence {

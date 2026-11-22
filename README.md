@@ -141,13 +141,16 @@ print(resp.response_code, resp.checkout_request_id, resp.customer_message)
 
 ```ts
 import { Config, MpesaClient, TransactionType } from "@mpesa-sdk/core";
+// Repo helper (typescript/examples/_env.ts); copy it into your project as-is.
+// It names the missing variable in its error instead of passing undefined.
+import { requiredEnv } from "./examples/_env.js";
 
 const client = new MpesaClient({
   config: new Config({
-    consumerKey:    process.env.MPESA_CONSUMER_KEY!,
-    consumerSecret: process.env.MPESA_CONSUMER_SECRET!,
-    shortcode:      process.env.MPESA_SHORTCODE!,
-    passkey:        process.env.MPESA_PASSKEY!,
+    consumerKey:    requiredEnv("MPESA_CONSUMER_KEY"),
+    consumerSecret: requiredEnv("MPESA_CONSUMER_SECRET"),
+    shortcode:      requiredEnv("MPESA_SHORTCODE"),
+    passkey:        requiredEnv("MPESA_PASSKEY"),
     // environment: Environment.PRODUCTION, // sandbox is the default
   }),
 });

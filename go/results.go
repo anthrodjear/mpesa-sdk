@@ -148,6 +148,33 @@ type ReferenceItem struct {
 	Value string `json:"Value"`
 }
 
+// UnmarshalJSON coerces a numeric/boolean echoed Value to its wire text,
+// matching Python's coerce_str and TypeScript's coerceWireString. Without it
+// a single numeric Value fails the whole AsyncResultBody decode and drops
+// ResultCode/TransactionID along with the optional reference data.
+func (ri *ReferenceItem) UnmarshalJSON(b []byte) error {
+	var probe struct {
+		Key   string          `json:"Key"`
+		Value json.RawMessage `json:"Value"`
+	}
+	if err := json.Unmarshal(b, &probe); err != nil {
+		return err
+	}
+	ri.Key = probe.Key
+	if len(probe.Value) == 0 || string(probe.Value) == "null" {
+		ri.Value = ""
+		return nil
+	}
+	var fs FlexString
+	if err := json.Unmarshal(probe.Value, &fs); err != nil {
+		// Same fallback as buildParamsCache: keep the raw wire text.
+		ri.Value = string(probe.Value)
+		return nil
+	}
+	ri.Value = fs.String()
+	return nil
+}
+
 // BalanceSegment is one parsed account row of an Account Balance result.
 // The floats are display-only conveniences — Raw preserves the authoritative
 // source segment verbatim.

@@ -1,6 +1,6 @@
 # M-Pesa Daraja SDK — Review Remediation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Execution:** implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Fix every defect confirmed in `CODE_REVIEW_REPORT.md` (D1–D10 and findings #11–#26) without regressing the three-engine wire contract, and install the machine-checked conformance harness that prevents the triplication drift from recurring.
 
@@ -635,7 +635,7 @@ git add python/tests/test_contract.py
 git commit -m "test(python): add contract fixture conformance harness (D1/D3 red)"
 ```
 
-> **Note for the executing agent:** the commit is intentionally red on two cases. Phase 1 turns them green. If your workflow forbids red commits, land the harness with `@pytest.mark.xfail(strict=True)` on exactly those two case ids and remove the marker in Phase 1 — do **not** delete the assertions.
+> **Note for whoever implements this phase:** the commit is intentionally red on two cases. Phase 1 turns them green. If your workflow forbids red commits, land the harness with `@pytest.mark.xfail(strict=True)` on exactly those two case ids and remove the marker in Phase 1 — do **not** delete the assertions.
 
 ---
 
@@ -3081,9 +3081,5 @@ git add typescript/src typescript/test && git commit -m "feat(ts): align public-
 
 Plan complete and saved to `docs/superpowers/plans/2026-10-22-mpesa-sdk-review-fixes.md`.
 
-**Two execution options:**
-
-1. **Subagent-Driven (recommended)** — dispatch a fresh subagent per task, review between tasks, fast iteration
-2. **Inline Execution** — execute tasks in this session using executing-plans, batch execution with checkpoints for review
-
-**Which approach?**
+**Execution approach:** work through the phases in order, completing each task
+before moving to the next and reviewing the result between tasks.

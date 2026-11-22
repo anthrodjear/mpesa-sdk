@@ -31,6 +31,12 @@ func GeneratePassword(shortcode, passkey string, t time.Time) (password, timesta
 	if t.IsZero() {
 		return "", "", fmt.Errorf("mpesa: zero time.Time cannot produce an EAT timestamp")
 	}
+	// Fail fast on a misconfigured passkey instead of emitting a
+	// well-formed-looking base64 password that the gateway rejects with an
+	// opaque 500.001.1001. Python/TypeScript reject blank passkeys too.
+	if strings.TrimSpace(passkey) == "" {
+		return "", "", fmt.Errorf("mpesa: passkey must not be empty")
+	}
 	timestamp = t.In(eatZone).Format(eatLayout)
 	password = base64.StdEncoding.EncodeToString([]byte(shortcode + passkey + timestamp))
 	return password, timestamp, nil
@@ -154,3 +160,11 @@ func newOriginatorID() (string, error) {
 	}
 	return fmt.Sprintf("%x", b), nil
 }
+
+// NewOriginatorID mints a fresh <20-char idempotency key for async APIs.
+// Python and TypeScript already export the same helper. Callers that may
+// RETRY a payout after an ambiguous timeout should generate the key ONCE per
+// business operation and reuse it on every attempt: the auto-generated key
+// applied when the request field is empty is minted on the client's value
+// copy and is never returned, so a retry would otherwise be a new payout.
+func NewOriginatorID() (string, error) { return newOriginatorID() }

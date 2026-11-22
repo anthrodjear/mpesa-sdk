@@ -1,6 +1,16 @@
 # Security Audit Report: M-Pesa Daraja SDK (Go)
 
-**Version:** v0.5.1  
+> **⚠️ HISTORICAL REPORT — v0.5.1 (2026-10-22).** This is the original
+> Capslock capability analysis of the Go SDK **as shipped at v0.5.1**. Every
+> count, control statement and assessment below describes that release only.
+> **B2B Express Checkout, Tax Remittance and Bill Manager shipped in 0.7.0**
+> (see `CHANGES.md`) and the current release is **0.7.1**; those code paths
+> did not exist when these numbers were measured and have **not** been
+> re-measured by Capslock. The 2026-11-02 addendum records a subsequent
+> source review, but it is not a fresh capability run. Do not read the
+> counts here as a statement about the 0.7.1 capability footprint.
+
+**Version:** v0.5.1 (historical — superseded by 0.7.1)  
 **Date:** 2026-10-22  
 **Module:** `github.com/anthrodjear/mpesa-sdk/go`  
 **Analysis Tool:** [Google Capslock](https://github.com/google/capslock) v0.3.4

@@ -4,14 +4,17 @@
  * Success is ONLY wire `ResultCode 0`; failure is limited to documented
  * terminal codes across STK Push (docs/apis/stk-push.md), B2C
  * (docs/apis/b2c.md) and Account Balance (docs/apis/account-balance.md)
- * catalogs; everything else is INCONCLUSIVE — debits have been observed
- * landing minutes after timeout-style codes (see docs/apis/getting-started.md
- * result-code-section). Never auto-fail, never auto-refund, never auto-retry
- * on INCONCLUSIVE — keep querying.
+ * catalogs; everything else is INDETERMINATE (formerly INCONCLUSIVE) — debits
+ * have been observed landing minutes after timeout-style codes (see
+ * docs/apis/getting-started.md result-code-section). Never auto-fail, never
+ * auto-refund, never auto-retry on INDETERMINATE — keep querying.
  *
  * Enum VALUES are lowercase strings matching Go and Python serialization
  * exactly: `"success"`, `"failure"`, `"indeterminate"`. Member names stay
- * idiomatic TypeScript (`ResultClass.SUCCESS`, …).
+ * idiomatic TypeScript (`ResultClass.SUCCESS`, …), with the canonical
+ * third-bucket name `ResultClass.INDETERMINATE` (Go/Python-style callers
+ * compile against it); `INCONCLUSIVE` remains as a deprecated alias with the
+ * SAME value.
  *
  * @packageDocumentation
  */
@@ -23,15 +26,24 @@
  *   present. Serializes as `"success"`.
  * - **FAILURE** — Known terminal failure across all API catalogs; safe to
  *   surface as failed. Serializes as `"failure"`.
- * - **INCONCLUSIVE** — Unknown, non-terminal, or non-numeric: money MAY have
+ * - **INDETERMINATE** — Unknown, non-terminal, or non-numeric: money MAY have
  *   moved. Never auto-fail, never auto-refund, never auto-retry — keep
- *   querying. Serializes as `"indeterminate"`.
+ *   querying. Serializes as `"indeterminate"`. `INCONCLUSIVE` is a deprecated
+ *   alias for this same bucket/value.
  */
 export enum ResultClass {
   SUCCESS = "success",
   FAILURE = "failure",
+  /** Canonical name for the `indeterminate` wire value (Go/Python parity). */
+  INDETERMINATE = "indeterminate",
+  /** @deprecated Use {@link ResultClass.INDETERMINATE} (identical value). */
   INCONCLUSIVE = "indeterminate",
 }
+
+// The alias is a SOURCE-COMPATIBILITY SPELLING, not a fourth bucket: keep it
+// out of Object.keys/Object.values so reflection still reports exactly the
+// three distinct wire values (and duplicate-value checks keep holding).
+Object.defineProperty(ResultClass, "INCONCLUSIVE", { enumerable: false });
 
 // ── Terminal-failure code sets (frozen for O(1) lookup, immutable) ──────────
 
@@ -77,14 +89,14 @@ const ASCII_GATE = /^[+\-.\d]*$/;
  * classifyResultCode(0);        // ResultClass.SUCCESS
  * classifyResultCode('"1032"'); // ResultClass.FAILURE (quote-wrapped)
  * classifyResultCode("1");      // ResultClass.FAILURE
- * classifyResultCode("٠١");    // ResultClass.INCONCLUSIVE (Unicode-ND)
- * classifyResultCode(undefined); // ResultClass.INCONCLUSIVE
+ * classifyResultCode("٠١");    // ResultClass.INDETERMINATE (Unicode-ND)
+ * classifyResultCode(undefined); // ResultClass.INDETERMINATE
  * ```
  */
 export function classifyResultCode(
   code: string | number | null | undefined,
 ): ResultClass {
-  if (code == null) return ResultClass.INCONCLUSIVE;
+  if (code == null) return ResultClass.INDETERMINATE;
 
   let raw = typeof code === "string" ? code.trim() : String(code);
 
@@ -93,13 +105,13 @@ export function classifyResultCode(
   raw = raw.replace(/^"+|"+$/g, "");
 
   // ASCII gate: reject non-ASCII characters (Unicode-ND "٠١", etc.).
-  if (!ASCII_GATE.test(raw) || raw === "") return ResultClass.INCONCLUSIVE;
+  if (!ASCII_GATE.test(raw) || raw === "") return ResultClass.INDETERMINATE;
 
   const n = Number(raw);
-  if (!Number.isFinite(n)) return ResultClass.INCONCLUSIVE;
-  if (Math.trunc(n) !== n) return ResultClass.INCONCLUSIVE; // reject non-integral
+  if (!Number.isFinite(n)) return ResultClass.INDETERMINATE;
+  if (Math.trunc(n) !== n) return ResultClass.INDETERMINATE; // reject non-integral
 
   if (n === 0) return ResultClass.SUCCESS;
   if (FAILURE_CODES.has(n)) return ResultClass.FAILURE;
-  return ResultClass.INCONCLUSIVE;
+  return ResultClass.INDETERMINATE;
 }

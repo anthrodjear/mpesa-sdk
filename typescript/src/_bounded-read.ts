@@ -132,7 +132,9 @@ export async function readBodyBounded(
       if (value && value.byteLength > 0) {
         total += value.byteLength;
         if (total > maxBytes) {
-          await reader.cancel();
+          // A rejecting cancel() must not mask the typed 413 — same guard as
+          // the abort branch above; the oversize error is the useful one.
+          await reader.cancel().catch(() => { /* already errored/closed */ });
           throw bodyTooLargeError(label, maxBytes);
         }
         chunks.push(value);

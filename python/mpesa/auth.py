@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import json
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
@@ -381,15 +382,17 @@ class TokenManager:
         """Eager window: TTL minus 60s safety, clamped to [60s, 3000s];
         unknown/zero TTL falls back to the legacy 3000s cadence.
 
-        Parity with TypeScript ``client.ts refreshCadence``: the floor is
-        60 seconds, not 1. A token whose TTL is barely above the 60s
-        safety margin still gets a full 60s cadence rather than being
-        re-requested on nearly every call (the old 1s floor produced
-        sub-second refresh storms on short-lived tokens).
+        Parity with TypeScript ``refreshCadence`` and Go ``refreshCadence``:
+        a 60s floor applies when the TTL can support it. For TTLs at or below
+        the 60s safety margin the floor is dropped in favour of half the TTL
+        (1s minimum), because clamping to 60s there would SERVE THE BEARER
+        AFTER ITS REAL EXPIRY.
         """
         seconds = expires_in_seconds or 0
         if seconds <= 0:
             return 3000.0
+        if seconds <= 60:
+            return max(1.0, seconds / 2.0)
         return max(60.0, min(seconds - 60, 3000))
 
     def _refresh(self, force: bool = False) -> str:
@@ -459,7 +462,10 @@ class TokenManager:
                     "OAuth Basic-auth traffic (session.verify is falsy or "
                     "absent at request time)")
             # The OAuth leg runs with NO lock held: a hung endpoint must
-            # not freeze the token cache for every other thread.
+            # not freeze the token cache for every other thread. Capture
+            # the TOTAL read budget before the GET so header/connect time
+            # counts against it too (slowloris defence).
+            deadline = time.monotonic() + self._timeout
             try:
                 response = self._session.get(
                     f"{self._base_url}{_OAUTH_PATH}", timeout=self._timeout,
@@ -477,8 +483,11 @@ class TokenManager:
             # transfer via iter_content(MAX+1) so a gzip bomb aborts mid-stream
             # instead of being fully materialised by a pre-read .content. The
             # socket is released in ``finally`` inside read_capped so abort
-            # paths never leak it.
-            body = read_capped(response, "oauth/v1/generate response")
+            # paths never leak it. The monotonic deadline above bounds the
+            # TOTAL read: a trickling slowloris body under the byte cap still
+            # raises TimeoutError before the budget expires.
+            body = read_capped(response, "oauth/v1/generate response",
+                               deadline=deadline)
             if not 200 <= response.status_code <= 299:
                 content_type = response.headers.get("content-type", "")
                 raise MpesaError.from_response(

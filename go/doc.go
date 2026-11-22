@@ -10,9 +10,10 @@
 // business endpoint is POST with a Bearer token; only the OAuth token
 // endpoint is GET with Basic auth. Tokens live about an hour but requesting
 // a new one invalidates the previous, so Client caches the token and
-// proactively refreshes on an expires_in-derived cadence (expires_in minus a
-// 60s safety margin, clamped to [60s, 50min]; an unknown/zero TTL falls back
-// to the legacy 50 minutes) under a single-flight leader that performs the
+// proactively refreshes on an expires_in-derived cadence (expires_in minus
+// a 60s safety margin, clamped to [60s, 50min]; at or below the margin it
+// refreshes at half the TTL so an expired bearer is never served; an
+// unknown/zero TTL falls back to 50 minutes) under a single-flight leader that performs the
 // OAuth round-trip outside the client lock. A refreshed-but-rejected token is
 // retried once after a forced refresh on error 401.003.01.
 //
