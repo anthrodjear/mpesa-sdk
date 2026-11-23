@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           # Exact patch, matching the `go` directive in go/go.mod and the
           # `security` job's govulncheck run below. The build toolchain and the
@@ -187,7 +187,7 @@ jobs:
       # were not merely redundant: the second one silently replaced the first for
       # every subsequent step, which is how the scan ended up running on a
       # different release than the build.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           # Must match the `go` directive in go/go.mod (1.26.11). This job
           # runs GOTOOLCHAIN=local, so a pin older than the directive makes
