@@ -86,6 +86,7 @@ import type {
   QRCodeResponse,
 } from "./types.js";
 import { decodeQRCodeResponse } from "./types.js";
+import { MAX_AMOUNT } from "./coercion.js";
 import { CommandID, TransactionType, QRTrxCode } from "./enums.js";
 
 // ─── Endpoint paths ───────────────────────────────────────────────────────────
@@ -455,14 +456,18 @@ function requireURL(field: string, value: string): void {
 }
 
 /**
- * Require a positive whole number amount (OWASP Input Validation:
- * allowlist positive integers; Daraja amounts are whole shillings —
- * Go/Python + docs/apis/stk-push.md require ints, never decimals).
- * Uses `Number.isInteger` + `Number.isFinite` + `> 0` per TypeScript
- * numeric-guard conventions.
+ * Require a positive whole-KES amount (OWASP Input Validation: allowlist
+ * positive integers; Daraja amounts are whole shillings — Go/Python +
+ * docs/apis/stk-push.md require ints, never decimals).
+ *
+ * `Number.isInteger` is NOT sufficient for money: `Number.isInteger(1e21)`
+ * is `true`, and `2 ** 53` passes while `2 ** 53 + 1 === 2 ** 53` (silent
+ * corruption). Both gates therefore require {@link Number.isSafeInteger}
+ * AND the shared {@link MAX_AMOUNT} absolute bound, so an amount outside
+ * the exactly-representable whole-KES range is refused BEFORE any fetch.
  */
 function requirePositiveInt(field: string, value: number): void {
-  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > MAX_AMOUNT) {
     throw new Error(`mpesa: ${field} must be a positive whole number, got ${value}`);
   }
 }
@@ -472,13 +477,38 @@ function requirePositiveInt(field: string, value: number): void {
  * MAXIMUM is configurable): the historical `requireMinMax(..., 10,
  * 250_000)` hardcoded a ceiling Safaricom raised per-merchant, so only the
  * minimum stays here; the maximum now flows from {@link Config.limits}
- * via {@link MpesaClient._enforceLimits}.
+ * via {@link MpesaClient._enforceLimits}. It still shares the safe-integer
+ * and {@link MAX_AMOUNT} shape gate with {@link requirePositiveInt}, so an
+ * unrepresentable amount can never slip past the minimum check.
  *
- * @throws {Error} When `value` is not a whole number ≥ `min`.
+ * @throws {Error} When `value` is not a safe whole number ≥ `min` and
+ *   ≤ {@link MAX_AMOUNT}.
  */
 function requireMinInt(field: string, value: number, min: number): void {
-  if (!Number.isFinite(value) || !Number.isInteger(value) || value < min) {
+  if (!Number.isSafeInteger(value) || value < min || value > MAX_AMOUNT) {
     throw new Error(`mpesa: ${field} must be a whole number of at least ${min}, got ${value}`);
+  }
+}
+
+/**
+ * Canonical wire form of an outbound Daraja amount: ASCII plain decimal,
+ * optional cents, NO sign and NO exponent. Magnitude is enforced separately
+ * by {@link MAX_AMOUNT} in the amount gates; this guard only checks notation
+ * so JS can never emit `1e+21` (its exponent threshold) on the wire. The
+ * amount gates reject such values first; this check at the JSON boundary is
+ * defense in depth so no future endpoint can serialize one by accident.
+ */
+const PLAIN_DECIMAL_AMOUNT_RE = /^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,2})?$/;
+
+function assertCanonicalAmountPayload(payload: unknown): void {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return;
+  const amount = (payload as Record<string, unknown>)["Amount"];
+  if (amount === undefined || amount === null) return;
+  const text = String(amount);
+  if (!PLAIN_DECIMAL_AMOUNT_RE.test(text)) {
+    throw new Error(
+      `mpesa: Amount must serialize as a plain decimal, got ${text.slice(0, 64)}`,
+    );
   }
 }
 
@@ -1035,6 +1065,12 @@ export class MpesaClient {
     if (this._closed) {
       throw new Error("mpesa: MpesaClient is closed; no further requests are accepted");
     }
+
+    // Wire-format gate: refuse any amount that JSON.stringify would emit in
+    // exponent notation (or with a sign) BEFORE any token fetch. The
+    // endpoint-level amount gates are the primary guard; this is the last
+    // line of defense at the serialization boundary.
+    assertCanonicalAmountPayload(payload);
 
     // Whether a business attempt has been dispatched in THIS call. The
     // daily-ledger rule (see the _post doc comment) refunds an OAuth-leg

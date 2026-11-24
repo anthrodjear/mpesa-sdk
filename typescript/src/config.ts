@@ -105,6 +105,7 @@ function validateField(value: unknown, name: string, check: (v: string) => boole
 import {
   DEFAULT_TRANSACTION_LIMITS,
   LIMIT_SERVICE_KEYS,
+  isValidCeiling,
   resolveTransactionLimits,
   type PartialTransactionLimits,
   type TransactionLimits,
@@ -255,8 +256,9 @@ export class Config {
    * forward proxy); `consumerSecret` must be non-empty ASCII.
    *
    * @param opts.limits - Optional partial per-service limits, merged over
-   *   {@link DEFAULT_TRANSACTION_LIMITS} (any subset is safe; omitted or
-   *   non-positive fields fall back to the defaults / UNLIMITED).
+   *   {@link DEFAULT_TRANSACTION_LIMITS} (any subset is safe; omitted
+   *   fields inherit the default, explicit `0` means UNLIMITED, and
+   *   fractional / unsafe ceilings are rejected).
    * @param opts.trackDaily - Opt into local per-day (Africa/Nairobi)
    *   accumulation. OFF by default — see {@link Config.trackDaily}.
    *
@@ -307,26 +309,45 @@ export class Config {
 
   /**
    * Validate the OPTIONAL raw limits shape (pre-merge): every present
-   * ceiling must be a NUMBER. Type errors are loud here — a typo'd string
-   * is a {@link ConfigError} instead of a silent fallback — while VALUE
-   * normalization (`0`/negative/non-finite → UNLIMITED) belongs to
-   * `resolveTransactionLimits`, which is the single resolution point.
+   * ceiling must be a NUMBER, and any POSITIVE FINITE ceiling must also pass
+   * {@link isValidCeiling} (a whole KES safe integer or `0`). Type and
+   * representability errors are loud here: a typo'd string or a fractional
+   * / unsafe ceiling becomes a {@link ConfigError} instead of a silent
+   * fallback or a ledger that loses precision. An ABSENT field stays absent
+   * so the documented Safaricom default is inherited by
+   * `resolveTransactionLimits`; legacy non-positive / non-finite values keep
+   * normalizing to UNLIMITED there (cross-language parity), so
+   * `undefined`/absent semantics are preserved.
    *
-   * @throws {ConfigError} When a supplied ceiling is not a number.
+   * @throws {ConfigError} When a supplied ceiling is not a number, or is a
+   *   positive finite value that is not a representable whole-KES amount.
    */
   private validateLimits(): void {
     // The raw (pre-merge) argument is re-derived here rather than stored:
     // Config keeps the normalized merge, and this guard only rejects
-    // malformed TYPES before normalization would quietly repair them.
+    // malformed TYPES and unrepresentable VALUES before normalization would
+    // quietly repair them.
     for (const key of LIMIT_SERVICE_KEYS) {
       const svc = this._rawLimits?.[key];
       if (svc === undefined) continue;
       for (const field of ["maxPerTransaction", "maxPerDay"] as const) {
         const value = svc[field];
-        if (value === undefined) continue;
+        if (value === undefined) continue; // absent → Safaricom default
         if (typeof value !== "number") {
           throw new ConfigError(
             `mpesa: limits.${key}.${field} must be a number (0 = unlimited), got ${JSON.stringify(value)}`,
+          );
+        }
+        // Legacy normalization of non-positive / non-finite ceilings to
+        // UNLIMITED belongs to `resolveTransactionLimits` and is pinned by
+        // the cross-language parity matrix — it is preserved here. What MUST
+        // be refused is a POSITIVE FINITE ceiling whose value cannot be
+        // represented exactly (a fraction or an integer beyond 2^53): it
+        // would corrupt the daily ledger's arithmetic.
+        if (Number.isFinite(value) && value > 0 && !isValidCeiling(value)) {
+          throw new ConfigError(
+            `mpesa: limits.${key}.${field} must be a finite positive whole number of KES ` +
+              `(0 = unlimited), got ${value}`,
           );
         }
       }
@@ -345,9 +366,11 @@ export class Config {
    * - `passkey`: any string — empty is allowed (Go/Python parity); the
    *   non-empty requirement is enforced lazily on the STK Push/Query
    *   path, where the passkey is bound into the request Password.
-   * - `limits` (when supplied): every present ceiling must be a NUMBER —
-   *   non-numeric shapes are rejected loudly; `0`/negative/non-finite
-   *   values normalize to UNLIMITED in `resolveTransactionLimits`.
+   * - `limits` (when supplied): every present ceiling must be a NUMBER, and
+   *   positive finite ceilings must be whole-KES safe integers (`0` =
+   *   UNLIMITED). Non-numeric, fractional and unsafe positive values are
+   *   rejected loudly here; absent fields inherit the Safaricom default and
+   *   legacy non-positive / non-finite values still normalize to UNLIMITED.
    */
   validate(): void {
     this.validateLimits();

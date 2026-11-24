@@ -43,7 +43,10 @@ console.log(resp.ResponseCode, resp.CheckoutRequestID, resp.CustomerMessage);
 
 Accepted **≠** paid: `ResponseCode "0"` means Daraja queued the prompt. The
 verdict arrives on your callback URL — settle only via `stkQuery` bound to
-the `CheckoutRequestID` you stored when you fired the push.
+the `CheckoutRequestID` you stored when you fired the push, and require
+`callback.amountMatches(order.amount)` as well (STK Query does not echo an
+amount). `amount()` is display-grade; `amountMatches()` fails closed on
+missing, duplicated-key, non-positive and mismatched amounts.
 
 ## Endpoints
 

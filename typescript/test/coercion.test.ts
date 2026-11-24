@@ -149,3 +149,23 @@ describe("parseIntSafe", () => {
     expect(parseIntSafe(null)).toBe(safeJsonInt(null));
   });
 });
+
+describe("coerceAmount — money is strictly positive", () => {
+  it("rejects negative amounts in every spelling (M5)", () => {
+    expect(coerceAmount("-500000")).toBeNull();
+    expect(coerceAmount(-500_000)).toBeNull();
+    expect(coerceAmount("-0.01")).toBeNull();
+  });
+
+  it("rejects zero in every spelling (M5)", () => {
+    expect(coerceAmount(0)).toBeNull();
+    expect(coerceAmount(-0)).toBeNull();
+    expect(coerceAmount("0")).toBeNull();
+    expect(coerceAmount("0.00")).toBeNull();
+  });
+
+  it("keeps accepting canonical positive amounts", () => {
+    expect(coerceAmount("10.50")).toBe(10.5);
+    expect(coerceAmount(250_000)).toBe(250_000);
+  });
+});

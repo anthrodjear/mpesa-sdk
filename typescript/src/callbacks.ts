@@ -264,6 +264,30 @@ export class StkCallback {
   }
 
   /**
+   * Decision-grade check for settlement: true ONLY when the callback amount
+   * is present, strictly positive, duplicated-key-free, and exactly equal
+   * to the amount stored on YOUR original order (M2).
+   *
+   * `amount()` alone is advisory: it is first-wins, so a duplicated `Amount`
+   * metadata item can shadow the real value, and a forged callback can carry
+   * any plausible number. Refusing duplicates here lets the caller gate
+   * settlement on this helper without reading the raw metadata map. This is
+   * NOT origin authentication — still reconcile via `stkQuery` bound to
+   * your stored CheckoutRequestID before settling.
+   *
+   * @param expected - The whole-KES amount your order recorded when the
+   *   STK Push was created (a safe integer > 0; anything else returns false).
+   * @returns `false` on absent/hostile/non-positive/duplicated/mismatched
+   *   amounts or an unusable `expected`; `true` only on an exact match.
+   */
+  amountMatches(expected: number): boolean {
+    if (!Number.isSafeInteger(expected) || expected <= 0) return false;
+    if (this.duplicateKeys() > 0) return false;
+    const actual = this.amount();
+    return actual !== null && actual === expected;
+  }
+
+  /**
    * @returns `MpesaReceiptNumber` metadata, or null when absent.
    */
   mpesaReceiptNumber(): string | null {
