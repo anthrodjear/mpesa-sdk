@@ -5,6 +5,8 @@ package mpesa
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -119,6 +121,69 @@ func (r STKCallbackResult) DuplicateKeys() int {
 		return r.metaCache.dupes
 	}
 	return buildSTKMetadataCache(r.metadataItems()).dupes
+}
+
+// maxCallbackAmount is the largest whole-KES amount the strict accessor will
+// accept from a callback. It bounds every accepted representation so a single
+// forged token cannot claim an unbounded payment.
+const maxCallbackAmount int64 = 1_000_000_000_000
+
+// callbackAmountStringRE is ^[0-9]{1,12}$: canonical unsigned decimal text,
+// no sign, no whitespace, no exponent, at most 12 digits. Twelve digits keep
+// ParseInt far from ErrRange and cap the value below maxCallbackAmount+1.
+var callbackAmountStringRE = regexp.MustCompile(`^[0-9]{1,12}$`)
+
+// Amount returns the callback's Amount as a positive whole-KES int64, and
+// reports whether that value is safe to use for verification. MetadataMap is
+// deliberately left mixed-type for wire parity; this accessor is the strict
+// view callers should use instead.
+//
+// Accepted: int64 > 0, integral float64 that is exactly representable (via
+// floatToInt64), and digit strings of 1-12 digits. Rejected: bool, nil,
+// json.RawMessage, non-positive/fractional/oversized values, and ANY callback
+// with DuplicateKeys() > 0 — first-wins metadata is ambiguous, so the amount
+// must not be trusted even when the surviving item looks valid.
+//
+// Note: integral exponent-form tokens (e.g. `1e3` → 1000.0) decode as float64
+// in MetadataMap and are therefore accepted by the float64 branch — they are
+// still positive and bounded, so they never power settlement unless the caller
+// compares them to the stored order amount via AmountMatches.
+func (r STKCallbackResult) Amount() (int64, bool) {
+	if r.DuplicateKeys() > 0 {
+		return 0, false
+	}
+	switch v := r.MetadataMap()["Amount"].(type) {
+	case int64:
+		if v > 0 && v <= maxCallbackAmount {
+			return v, true
+		}
+	case float64:
+		// Truncation guard first: floatToInt64 checks RANGE and finiteness,
+		// but int64(f) would silently discard a fractional part.
+		if v <= 0 || v > float64(maxCallbackAmount) || v != math.Trunc(v) {
+			return 0, false
+		}
+		if n, err := floatToInt64(v); err == nil && n > 0 && n <= maxCallbackAmount {
+			return n, true
+		}
+	case string:
+		if !callbackAmountStringRE.MatchString(v) {
+			return 0, false
+		}
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 && n <= maxCallbackAmount {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+// AmountMatches reports whether the callback carries exactly the expected
+// whole-KES amount in an unambiguous, valid shape. It is safe to gate
+// settlement on this method: every rejection path returns false, including a
+// missing Amount, a hostile type, duplicates, and any mismatch.
+func (r STKCallbackResult) AmountMatches(expected int64) bool {
+	v, ok := r.Amount()
+	return ok && v == expected
 }
 
 // ParseSTKCallback decodes a raw callback POST body into its outcome,
