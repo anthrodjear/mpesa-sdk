@@ -41,6 +41,10 @@ ASYNC_RESULT = """{"Result":{
   "ResultParameters":{"ResultParameter":[
     {"Key":"TransactionReceipt","Value":"NLJ7RT61SV"}]}}}"""
 
+#: The amount on YOUR stored order for this checkout_request_id (KES).
+#: In production this comes from your database, never from the callback.
+STORED_ORDER_AMOUNT = 100
+
 
 def main() -> None:
     try:
@@ -65,15 +69,21 @@ def main() -> None:
         print(f"Advisory metadata: amount={result.amount()} receipt={result.mpesa_receipt()}")
         print(f"Class: {result.classify().name} duplicates={result.duplicate_keys()}")
 
-        # 2. SETTLE ONLY BY QUERY: stk_query result_code "0" bound to YOUR
-        #    stored checkout_request_id record. Never settle on a callback.
-        query = client.stk_query(STKQueryRequest(
-            checkout_request_id=result.checkout_request_id,
-        ))
-        if query.result_code == "0":
-            print("✓ Query confirms payment — settle now.")
+        # 2. SETTLE ONLY BY QUERY, and only when the callback amount matches
+        #    the amount stored on YOUR order. The callback is unsigned: a
+        #    matching amount is necessary but still not proof of payment;
+        #    stk_query's ResultCode "0" is the authoritative verdict.
+        if not result.verify_amount(STORED_ORDER_AMOUNT):
+            print("✗ No settlement: callback amount is absent, hostile, "
+                  "duplicated or different from the stored order amount.")
         else:
-            print(f"✗ Not settled ({query.result_code}): {query.result_desc}")
+            query = client.stk_query(STKQueryRequest(
+                checkout_request_id=result.checkout_request_id,
+            ))
+            if query.result_code == "0":
+                print("✓ Query confirms payment — settle now.")
+            else:
+                print(f"✗ Not settled ({query.result_code}): {query.result_desc}")
 
         # 3. Async Result (B2C / TxStatus / Reversal / Balance). Also UNSIGNED.
         #    Bind on originator_conversation_id; settle only on "0".

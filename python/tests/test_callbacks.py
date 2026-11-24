@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mpesa.callbacks import StkCallbackResult
 from mpesa.classification import ResultClass
+from mpesa.results import AsyncResult
 
 SUCCESS_RAW = b"""{
     "Body": {"stkCallback": {
@@ -237,3 +238,85 @@ def test_scalar_and_nondict_items_dropped():
            b'"CallbackMetadata":{"Item":["scalar",42,{"Name":"A","Value":1}]}}}}')
     res = StkCallbackResult.from_json(raw)
     assert list(res.metadata()) == ["A"]
+
+
+# ---- verified settlement gate (M2/M6) ---------------------------------------
+
+def _amount_callback(amount_json):
+    return _meta_result(b'{"Name":"Amount","Value":' + amount_json + b'}')
+
+
+def _amount_async_result(amount_json):
+    raw = (b'{"Result":{"ResultType":0,"ResultCode":0,"ResultDesc":"ok",'
+           b'"OriginatorConversationID":"o","ConversationID":"c",'
+           b'"TransactionID":"t","ResultParameters":{"ResultParameter":['
+           b'{"Key":"TransactionAmount","Value":' + amount_json + b'}]}}}')
+    return AsyncResult.from_json(raw)
+
+
+def test_verify_amount_true_for_matching_stored_amount():
+    res = _amount_callback(b"100")
+    assert res.amount() == Decimal("100.00")
+    assert res.verify_amount(100) is True
+    assert res.verify_amount(Decimal("100.00")) is True
+
+
+def test_verify_amount_false_for_mismatch():
+    assert _amount_callback(b"100").verify_amount(101) is False
+
+
+@pytest.mark.parametrize("amount_json", [
+    b"null", b"true", b'"1.005"', b"0", b"-5", b'"-500000"',
+    b'"1e30"', b'"1_000"', b"1e300",
+])
+def test_verify_amount_false_for_absent_hostile_or_non_positive(amount_json):
+    assert _amount_callback(amount_json).verify_amount(100) is False
+
+
+def test_verify_amount_false_when_metadata_keys_duplicated():
+    res = _meta_result(
+        b'{"Name":"Amount","Value":100},{"Name":"Amount","Value":100}')
+    assert res.duplicate_keys() == 1
+    assert res.amount() == Decimal("100.00")  # amount() deliberately unchanged
+    assert res.verify_amount(100) is False
+
+
+def test_verify_amount_false_when_any_metadata_key_duplicated():
+    res = _meta_result(
+        b'{"Name":"Amount","Value":100},'
+        b'{"Name":"MpesaReceiptNumber","Value":"R1"},'
+        b'{"Name":"MpesaReceiptNumber","Value":"R2"}')
+    assert res.duplicate_keys() == 1
+    assert res.verify_amount(100) is False
+
+
+@pytest.mark.parametrize("expected", [
+    0, -100, Decimal("1.005"), None, True, "abc",
+    pytest.param(10 ** 5000, id="huge-int"),  # id avoids CPython's 4300-digit guard
+])
+def test_verify_amount_false_for_unusable_expected_value(expected):
+    assert _amount_callback(b"100").verify_amount(expected) is False
+
+
+def test_async_verify_amount_true_for_matching_stored_amount():
+    assert _amount_async_result(b"100").verify_amount(100) is True
+    assert _amount_async_result(b'"10.50"').verify_amount(
+        Decimal("10.50")) is True
+
+
+def test_async_verify_amount_false_for_mismatch_absent_non_positive():
+    assert _amount_async_result(b"100").verify_amount(101) is False
+    assert _amount_async_result(b"null").verify_amount(100) is False
+    assert _amount_async_result(b"-5").verify_amount(100) is False
+    assert _amount_async_result(b'"1.005"').verify_amount(100) is False
+
+
+def test_async_verify_amount_false_when_parameter_keys_duplicated():
+    raw = (b'{"Result":{"ResultType":0,"ResultCode":0,"ResultDesc":"ok",'
+           b'"OriginatorConversationID":"o","ConversationID":"c",'
+           b'"TransactionID":"t","ResultParameters":{"ResultParameter":['
+           b'{"Key":"TransactionAmount","Value":100},'
+           b'{"Key":"TransactionAmount","Value":100}]}}}')
+    res = AsyncResult.from_json(raw)
+    assert res.amount() == Decimal("100.00")  # amount() deliberately unchanged
+    assert res.verify_amount(100) is False

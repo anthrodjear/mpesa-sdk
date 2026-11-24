@@ -273,5 +273,29 @@ class AsyncResult:
         this value directly: a binary float cannot hold ``10.10`` and would
         lose the cent. O(1) dict get over :attr:`_parameter_map` (see
         :meth:`transaction_receipt`).
+
+        Zero and negatives also yield None: money is strictly positive.
         """
         return coerce_amount(self._parameter_map.get("TransactionAmount"))
+
+    def verify_amount(self, expected: "int | Decimal") -> bool:
+        """Safe settlement gate mirroring
+        :meth:`callbacks.StkCallbackResult.verify_amount`.
+
+        Async Results are UNSIGNED too: fail closed on absent/hostile or
+        non-positive TransactionAmount, on duplicated parameter keys, and
+        on a mismatch against the amount stored on your own request. Call
+        only after binding ``originator_conversation_id`` to that request,
+        and settle only on the authoritative ResultCode "0".
+        """
+        seen: set[str] = set()
+        if any(p.key in seen or seen.add(p.key) for p in self._parameters):
+            return False
+        amount = self.amount()
+        if amount is None or amount <= 0:
+            return False
+        try:
+            want = coerce_amount(expected)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return want is not None and amount == want

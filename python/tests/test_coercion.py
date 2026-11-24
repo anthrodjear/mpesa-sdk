@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mpesa.coercion import coerce_int, coerce_str
+from mpesa.coercion import coerce_amount, coerce_int, coerce_str
 
 
 @pytest.mark.parametrize(
@@ -121,3 +121,42 @@ def test_coerce_str_deep_nesting_returns_none_not_recursion_error():
     for _ in range(2000):
         blob = [blob]
     assert coerce_str(blob) is None
+
+
+# ---- money hardening (M4/M5): shape gate on EVERY path, positive only -------
+
+def test_coerce_amount_refuses_subcent_decimal():
+    """Decimal used to bypass the ASCII/2dp gate and be rounded with the
+    context default (ROUND_HALF_EVEN): 1.005 silently became 1.00.
+    """
+    assert coerce_amount(Decimal("1.005")) is None
+    assert coerce_amount(Decimal("2.675")) is None
+    assert coerce_amount(Decimal("0.001")) is None
+
+
+@pytest.mark.parametrize("raw,want", [
+    (Decimal("1.00"), Decimal("1.00")),
+    (Decimal("10.50"), Decimal("10.50")),
+    (Decimal("0.01"), Decimal("0.01")),
+    (Decimal("123456789012.34"), Decimal("123456789012.34")),
+])
+def test_coerce_amount_accepts_canonical_two_dp_decimal(raw, want):
+    assert coerce_amount(raw) == want
+
+
+@pytest.mark.parametrize("raw", [
+    0, 0.0, -0.0, "0", "0.00", Decimal("0"), Decimal("-0.00"),
+    -1, -1.0, "-1", "-1.00", "-500000", Decimal("-1"), Decimal("-1.00"),
+])
+def test_coerce_amount_refuses_non_positive(raw):
+    assert coerce_amount(raw) is None, raw
+
+
+@pytest.mark.parametrize("raw,want", [
+    ("10.50", Decimal("10.50")),
+    (10.1, Decimal("10.10")),
+    ("1", Decimal("1.00")),
+    (Decimal("1"), Decimal("1.00")),
+])
+def test_coerce_amount_positive_behaviour_unchanged(raw, want):
+    assert coerce_amount(raw) == want

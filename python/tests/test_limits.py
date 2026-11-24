@@ -926,6 +926,22 @@ def test_d9_rollback_does_not_refund_the_new_nairobi_day():
     assert client.daily_spend == {"b2c": 0}
 
 
+def test_rollback_daily_ignores_non_positive_amounts():
+    """_rollback_daily refuses amounts <= 0: a negative amount would
+    otherwise *increase* the bucket (client.py `max(0, current - amount)`).
+    Unreachable today (callers pass `_amount_int`-validated ints), so this
+    pins the fail-safe behavior for future callers.
+    """
+    limits = TransactionLimits(b2c=ServiceLimits(1_000_000, 10_000))
+    clock = Clock()
+    client, _ = make_client(B2C_OK, limits=limits, track_daily=True,
+                            clock=clock)
+    accrual_day = client._accrue_daily("b2c", 5_000)
+    client._rollback_daily("b2c", -100, accrual_day)
+    client._rollback_daily("b2c", 0, accrual_day)
+    assert client.daily_spend == {"b2c": 5_000}
+
+
 def test_d9_rollback_never_credits_another_days_bucket():
     """The extra-quota scenario: a refund must not wipe the new day's spend.
 
@@ -981,3 +997,31 @@ def test_d9_transport_error_across_nairobi_midnight_keeps_the_reservation():
     # The reservation was charged on 2026-01-01 and the failure landed on
     # 2026-01-02, so the refund must NOT have run.
     assert client.daily_spend.get("b2c", 0) == 5_000
+
+
+def test_rollback_refuses_when_ledger_day_moved_even_after_clock_rewind():
+    """The WALL CLOCK is not authoritative -- the ledger's own day is.
+
+    D1 spends 5k, the ledger rolls to D2 (fresh 1k spend), then an NTP
+    correction moves the wall clock BACK to D1 before the D1 transport
+    failure arrives. A wall-clock-only guard sees D1 == accrual_day and
+    credits 5k into D2's live bucket, handing back quota D2 never used.
+    The ledger is on D2, so the D1 refund must be refused.
+    """
+    limits = TransactionLimits(b2c=ServiceLimits(1_000_000, 10_000))
+    clock = Clock()          # 2026-01-01 12:00 UTC == 15:00 EAT (D1)
+    client, _ = make_client(limits=limits, track_daily=True, clock=clock)
+
+    day_one = client._accrue_daily("b2c", 5_000)
+    assert day_one == "2026-01-01"
+    assert client.daily_spend == {"b2c": 5_000}
+
+    clock.set(datetime(2026, 1, 1, 21, 0, tzinfo=timezone.utc))  # D2 00:00 EAT
+    day_two = client._accrue_daily("b2c", 1_000)
+    assert day_two == "2026-01-02"
+    assert client.daily_spend == {"b2c": 1_000}
+
+    # Backward correction to D1 23:00 EAT: ledger still on D2.
+    clock.set(datetime(2026, 1, 1, 20, 0, tzinfo=timezone.utc))
+    client._rollback_daily("b2c", 5_000, day_one)
+    assert client.daily_spend == {"b2c": 1_000}
