@@ -17,7 +17,9 @@ import { MpesaError } from "../src/errors.js";
 import {
   DEFAULT_TRANSACTION_LIMITS,
   LIMIT_SERVICE_KEYS,
+  checkDailyLimit,
   effectiveCeiling,
+  isValidCeiling,
   nairobiDayKey,
   resolveTransactionLimits,
   type LimitService,
@@ -1012,5 +1014,52 @@ describe("daily limits (trackDaily)", () => {
     await expect(gated.billRegister(billReq(150_001))).rejects.toThrow(/daily limit reached/);
     await gated.billRegister(billReq(100_000));
     expect(businessHits).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Money hardening — representable ceilings + saturating daily comparison
+// ---------------------------------------------------------------------------
+
+describe("isValidCeiling — configured ceilings must be exact amounts", () => {
+  it("accepts absent, zero (unlimited), and positive safe integers", () => {
+    expect(isValidCeiling(undefined)).toBe(true);
+    expect(isValidCeiling(0)).toBe(true);
+    expect(isValidCeiling(250_000)).toBe(true);
+    expect(isValidCeiling(Number.MAX_SAFE_INTEGER)).toBe(true);
+  });
+
+  it("rejects fractions, negatives, non-finite values and 2^53", () => {
+    expect(isValidCeiling(250_000.5)).toBe(false);
+    expect(isValidCeiling(-1)).toBe(false);
+    expect(isValidCeiling(Number.NaN)).toBe(false);
+    expect(isValidCeiling(Number.POSITIVE_INFINITY)).toBe(false);
+    expect(isValidCeiling(2 ** 53)).toBe(false);
+  });
+
+  it("Config rejects a fractional ceiling before any client is built", () => {
+    expect(
+      () =>
+        new Config({
+          consumerKey: "k",
+          consumerSecret: "s",
+          shortcode: "174379",
+          passkey: PASSKEY,
+          limits: { stk: { maxPerTransaction: 250_000.5 } },
+        }),
+    ).toThrow(ConfigError);
+  });
+});
+
+describe("checkDailyLimit — saturating comparison", () => {
+  it("refuses a sub-ULP increment at MAX_SAFE_INTEGER that addition rounds away", () => {
+    const limits = { stk: { maxPerDay: Number.MAX_SAFE_INTEGER } } as TransactionLimits;
+    expect(() => checkDailyLimit("stk", 0.1, limits, Number.MAX_SAFE_INTEGER)).toThrow(MpesaError);
+  });
+
+  it("allows an amount that exactly fills the remaining budget", () => {
+    const limits = { stk: { maxPerDay: 500_000 } } as TransactionLimits;
+    expect(() => checkDailyLimit("stk", 100, limits, 499_900)).not.toThrow();
+    expect(() => checkDailyLimit("stk", 101, limits, 499_900)).toThrow(MpesaError);
   });
 });

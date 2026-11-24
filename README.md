@@ -242,7 +242,9 @@ classifyResultCode("1037") === ResultClass.INCONCLUSIVE // member name; serializ
 
 ### Receiving payment callbacks (STK Push results)
 
-Daraja POSTs the push outcome to your `CallBackURL`. Callbacks are **unsigned** — there is no signature to verify, so rank your controls: settle **only** via a query bound to your stored `CheckoutRequestID` (a forged body parses fine and never survives the round-trip); gate the endpoint with URL tokens (`new_callback_token()` / Go `NewCallbackToken()` / TS `newCallbackToken()`); bind on `CheckoutRequestID` for **dedup only — it authenticates nothing against forgery**; IP allowlists are defense-in-depth. Full threat model: [SECURITY.md](SECURITY.md). Settle-first in each language:
+Daraja POSTs the push outcome to your `CallBackURL`. Callbacks are **unsigned** — there is no signature to verify, so rank your controls: settle **only** via a query bound to your stored `CheckoutRequestID` (a forged body parses fine and never survives the round-trip); gate the endpoint with URL tokens (`new_callback_token()` / Go `NewCallbackToken()` / TS `newCallbackToken()`); bind on `CheckoutRequestID` for **dedup only — it authenticates nothing against forgery**; IP allowlists are defense-in-depth. Full threat model: [SECURITY.md](SECURITY.md).
+
+**Amounts are advisory too.** STK Query does not return an amount, so additionally require the callback's amount to equal the amount **your order stored**: `result.verify_amount(order.amount)` (Python), `res.AmountMatches(orderAmount)` (Go), or `result.amountMatches(order.amount)` (TypeScript). These helpers fail closed on absent, duplicate-key, non-positive, malformed or mismatched amounts. The plain `amount()` / `Amount()` accessors are display-grade, never settlement-grade. Settle-first in each language:
 
 ```python
 resp = client.stk_query(STKQueryRequest(checkout_request_id=crid))
@@ -282,8 +284,9 @@ def stk_callback():
     if result.classify() is ResultClass.SUCCESS:              # callback = hint only…
         resp = client.stk_query(STKQueryRequest(              # …settle via the query round-trip
             checkout_request_id=result.checkout_request_id))
-        if resp.result_code == "0":
-            # NB: receipt/amount come from the advisory body — display-grade, not audit-grade
+        if resp.result_code == "0" and result.verify_amount(order.amount):
+            # Query confirms payment; the amount matches OUR stored order record.
+            # receipt still comes from the advisory body — display-grade only.
             settle(order, receipt=result.mpesa_receipt(), amount=result.amount())
     else:
         mark_pending_reconcile(order)   # failure/indeterminate → stk_query decides, never refund here
@@ -291,7 +294,7 @@ def stk_callback():
     return "", 200                                            # ACK immediately
 ```
 
-(`client`, `settle`, `mark_pending_reconcile` are your functions.) Typed metadata helpers: `amount()`, `mpesa_receipt()`, `phone_number()`, `transaction_date()`, plus `metadata()` for the raw first-wins map — Go exposes `STKCallbackResult.MetadataMap()`, TypeScript `parseSTKCallback(rawBody)` returns a `StkCallback` with `metadata()` (a first-wins `MetadataMap`), `amount()`, `mpesaReceiptNumber()`, `transactionDate()`, `phoneNumber()`, `duplicateKeys()`, and `classify()`; the `MetadataMap` values are also reachable via `.get(key)`. `parseSTKCallback` accepts the full `{"Body":{"stkCallback":{…}}}` envelope OR a bare result object, refuses bodies over 1 MiB (UTF-8 bytes), and raises a typed `MpesaDecodeError` (never a raw `SyntaxError`/`TypeError`) on malformed shapes. `classifyResultCode` mirrors Python's `classify_result_code`. Cap request bodies at your framework level too; `parseSTKCallback` enforces the same 1 MiB cap itself. Callbacks late or missing? Poll synchronously: `stk_query(STKQueryRequest(checkout_request_id=…))` returns the outcome directly (`resp.result_code`, string-normalized) — back off between polls (+30s/+60s/+120s), classify each result, and only settle on terminal codes.
+(`client`, `settle`, `mark_pending_reconcile` are your functions.) Typed metadata helpers: `amount()`, `mpesa_receipt()`, `phone_number()`, `transaction_date()`, the settlement gate `verify_amount(expected)`, plus `metadata()` for the raw first-wins map — Go exposes `STKCallbackResult.MetadataMap()` plus the strict `Amount()` and `AmountMatches(expected)`; TypeScript `parseSTKCallback(rawBody)` returns a `StkCallback` with `metadata()` (a first-wins `MetadataMap`), `amount()`, `amountMatches(expected)`, `mpesaReceiptNumber()`, `transactionDate()`, `phoneNumber()`, `duplicateKeys()`, and `classify()`; the `MetadataMap` values are also reachable via `.get(key)`. Async results expose the equivalent `verify_amount` / `amountMatches` on `AsyncResult` / `ParsedAsyncResult`. All amount accessors reject non-positive and sub-cent values; all verification helpers additionally refuse duplicated metadata keys. `parseSTKCallback` accepts the full `{"Body":{"stkCallback":{…}}}` envelope OR a bare result object, refuses bodies over 1 MiB (UTF-8 bytes), and raises a typed `MpesaDecodeError` (never a raw `SyntaxError`/`TypeError`) on malformed shapes. `classifyResultCode` mirrors Python's `classify_result_code`. Cap request bodies at your framework level too; `parseSTKCallback` enforces the same 1 MiB cap itself. Callbacks late or missing? Poll synchronously: `stk_query(STKQueryRequest(checkout_request_id=…))` returns the outcome directly (`resp.result_code`, string-normalized) — back off between polls (+30s/+60s/+120s), classify each result, and only settle on terminal codes.
 
 TypeScript STK callback example:
 
@@ -303,7 +306,7 @@ const order = repo.byCheckout(result.CheckoutRequestID); // dedup FIRST
 if (order === undefined) return ack();                   // unknown: ACK, ignore
 if (result.classify() === ResultClass.SUCCESS) {         // HINT only —
   const resp = await client.stkQuery({ checkoutRequestID: result.CheckoutRequestID });
-  if (resp.ResultCode === "0") {
+  if (resp.ResultCode === "0" && result.amountMatches(order.amount)) {
     settle(order, result.mpesaReceiptNumber(), result.amount());
   }
 } else {
@@ -614,7 +617,7 @@ longer be satisfied by a push-run result that no PR ever evaluated.
 No. Daraja sends the OAuth TTL as a string; the SDKs coerce it internally (Go `FlexInt64`, Python `expires_in_seconds`, TS documents `expiresIn: string`). Parse leniently if you call OAuth yourself.
 
 **Why is my callback unsigned?**
-Safaricom sends no HMAC on any callback. Protect the endpoint yourself: unguessable URL paths, CheckoutRequestID binding, amount/phone validation, gateway IP allowlisting, immediate `200` ACKs.
+Safaricom sends no HMAC on any callback. Protect the endpoint yourself: unguessable URL paths, CheckoutRequestID binding, gateway IP allowlisting, immediate `200` ACKs — and compare the callback amount to your stored order amount with `verify_amount` / `AmountMatches` / `amountMatches` before settling. The callback body, including its amount, is never authoritative.
 
 **Can I run without callbacks?**
 For synchronous endpoints yes. STK Push can be settled by polling `stk_query` instead. The async APIs require a reachable `ResultURL` — a missed push (503 ⇒ discarded, no redelivery) must be reconciled via Transaction Status queries.

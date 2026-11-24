@@ -1123,6 +1123,24 @@ export class ParsedAsyncResult {
   amount(): number | null {
     return coerceAmount(this._parameters.get("TransactionAmount"));
   }
+
+  /**
+   * Decision-grade check for settlement, mirroring
+   * {@link StkCallback.amountMatches}: true ONLY when `TransactionAmount` is
+   * present, strictly positive, duplicated-key-free, and exactly equal to
+   * the amount stored on YOUR original transaction record (M2).
+   *
+   * @param expected - The whole-KES amount your records expect for this
+   *   conversation (B2C payout, reversal, etc.).
+   * @returns `false` on absent/hostile/non-positive/duplicated/mismatched
+   *   amounts; `true` only on an exact match.
+   */
+  amountMatches(expected: number): boolean {
+    if (!Number.isSafeInteger(expected) || expected <= 0) return false;
+    if (this.duplicateKeys() > 0) return false;
+    const actual = this.amount();
+    return actual !== null && actual === expected;
+  }
 }
 
 /**

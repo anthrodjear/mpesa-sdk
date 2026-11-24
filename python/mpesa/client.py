@@ -425,13 +425,30 @@ class MpesaClient:
         no-op the refund once the day key has moved on). *accrual_day* of
         ``None`` means nothing was reserved, so there is nothing to give
         back.
+
+        The authoritative day is the LEDGER's, not the wall clock's:
+        ``_daily_day`` records the day whose bucket ``_daily_used`` holds.
+        After a rollover that bucket belongs to the NEW day, so refunding
+        an OLD day's reservation into it would hand back quota never
+        consumed -- even if an NTP correction has since moved the wall
+        clock back to the old date. Both the ledger key and the current
+        day must still equal *accrual_day*; both checks run under
+        ``_daily_lock`` alongside the clamped decrement, so a concurrent
+        accrual cannot slip a rollover between them.
         """
         if not self._cfg.track_daily:
             return
         if accrual_day is None:
             return
         with self._daily_lock:
+            if self._daily_day != accrual_day:
+                return
             if _daily_boundary(self._now()) != accrual_day:
+                return
+            if amount <= 0:
+                # Guard: a non-positive refund would *increase* the bucket.
+                # Callers pass `_amount_int`-validated ints, so this is a
+                # fail-safe no-op for any future caller.
                 return
             current = self._daily_used.get(service, 0)
             self._daily_used[service] = max(0, current - amount)

@@ -214,11 +214,13 @@ def test_oversized_and_hostile_money_rejected(raw):
     assert coerce_amount(raw) is None, raw
 
 
-def test_coerce_amount_boundary_values_accepted():
+def test_coerce_amount_boundary_values():
     assert coerce_amount(2 ** 53) == Decimal(2 ** 53)
-    assert coerce_amount(-(2 ** 53)) == Decimal(-(2 ** 53))
+    # Contract change (M5): money is strictly positive; these two used to
+    # be accepted, which let a hostile callback report negative money.
+    assert coerce_amount(-(2 ** 53)) is None
     assert coerce_amount(Decimal("0.01")) == Decimal("0.01")
-    assert coerce_amount("-123456789012.34") == Decimal("-123456789012.34")
+    assert coerce_amount("-123456789012.34") is None
 
 
 def test_settle_style_usage_still_type_checks_and_serialises():

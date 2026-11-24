@@ -27,6 +27,7 @@
 package mpesa
 
 import (
+	"math"
 	"strconv"
 	"sync"
 	"time"
@@ -334,17 +335,23 @@ func (d *dailyLedger) consume(service Service, amount int64, limits TransactionL
 		d.day = today
 		d.used = make(map[Service]int64)
 	}
-	used := d.used[service] + amount
-	if used > max {
+	used := d.used[service]
+	// SATURATING GATE: compare against the REMAINING budget, never `used +
+	// amount > max`. A large amount added to a non-empty bucket wraps past
+	// MinInt64, which made the old check accept the request and store a
+	// negative total — after which the merchant could spend without bound.
+	// `max - used` cannot overflow for a non-negative used <= max, so this
+	// comparison is exact even at math.MaxInt64.
+	if amount > max-used {
 		return "", &LimitError{
 			Service:    string(service),
 			Kind:       "MaxPerDay",
-			Amount:     used,
+			Amount:     saturatingDailyTotal(used, amount),
 			Max:        max,
 			ConfigPath: limitsConfigPath(service, "MaxPerDay"),
 		}
 	}
-	d.used[service] = used
+	d.used[service] = used + amount
 	// Return the ledger's authoritative day, NOT the caller's `today`: on a
 	// backward clock jump the amount was charged against d.day (the code above
 	// deliberately does not rewind the bucket), so rollback must receive that
@@ -387,9 +394,27 @@ func (d *dailyLedger) rollback(service Service, amount int64, accrualDay string)
 	if d.used == nil {
 		return
 	}
-	if v := d.used[service] - amount; v > 0 {
-		d.used[service] = v
-	} else {
-		delete(d.used, service)
+	// Credit only what the bucket ACTUALLY holds. The old `used - amount`
+	// path deleted the whole key on a non-positive result, so an
+	// over-rollback erased the service's bucket identity; clamping makes a
+	// double/oversized refund a no-op past zero instead.
+	used := d.used[service]
+	credit := amount
+	if credit > used {
+		credit = used
 	}
+	if credit <= 0 {
+		return
+	}
+	d.used[service] = used - credit
+}
+
+// saturatingDailyTotal reports used+amount for a rejected consume without
+// wrapping to a negative number in the LimitError. Only the error path uses
+// it: an accepted consume has already been proven not to overflow.
+func saturatingDailyTotal(used, amount int64) int64 {
+	if amount > 0 && used > math.MaxInt64-amount {
+		return math.MaxInt64
+	}
+	return used + amount
 }

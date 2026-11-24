@@ -142,6 +142,28 @@ export function effectiveCeiling(value: number | undefined): number | undefined 
 }
 
 /**
+ * Validate a CONFIGURED ceiling before it reaches the ledger. Accepted:
+ * `undefined` (field absent → the Safaricom default is inherited by the
+ * merge), exactly `0` (UNLIMITED), and any finite POSITIVE SAFE integer of
+ * whole KES. Rejected: fractions, negatives, NaN, infinities and integers
+ * beyond ±2^53 — none of those can be represented exactly, so using one as
+ * a ceiling would make `used + amount` lose precision and refuse or admit
+ * the wrong request.
+ *
+ * This is deliberately about the RAW configured value: normalization of
+ * legacy non-positive/non-finite values into UNLIMITED still belongs to
+ * {@link effectiveCeiling}, which keeps partially-specified limits safe.
+ *
+ * @param value - Raw ceiling from caller config (already type-checked).
+ * @returns `true` when the value is a representable configured ceiling.
+ */
+export function isValidCeiling(value: number | undefined): boolean {
+  if (value === undefined) return true; // absent = Safaricom default
+  if (value === 0) return true; // explicit UNLIMITED
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+/**
  * Provenance marker for already-resolved limits objects.
  *
  * Why it exists (the "no third state" rule): in the RESOLVED shape an
@@ -260,9 +282,9 @@ export function enforcePerTransactionLimit(
  * @param amount - Whole-KES transaction amount about to be spent.
  * @param limits - Effective (already merged) limits.
  * @param usedToday - Whole-KES already accumulated for this service today.
- * @throws {MpesaError} 400 when `usedToday + amount` exceeds the
- *   configured `maxPerDay` ceiling. The message names the service, the
- *   running total, the ceiling, and the override path.
+ * @throws {MpesaError} 400 when `amount` exceeds the REMAINING budget
+ *   (`maxPerDay - usedToday`). The message names the service, the running
+ *   total, the ceiling, and the override path.
  */
 export function checkDailyLimit(
   service: LimitService,
@@ -272,7 +294,12 @@ export function checkDailyLimit(
 ): void {
   const ceiling = effectiveCeiling(limits[service]?.maxPerDay);
   if (ceiling === undefined) return; // unlimited
-  if (!Number.isFinite(amount) || usedToday + amount <= ceiling) return;
+  // SATURATING COMPARISON: compare against the remaining budget instead of
+  // computing `usedToday + amount`. Near 2^53 the sum rounds to the ceiling
+  // (a sub-ULP increment silently disappears) and the overspend is admitted;
+  // `ceiling - usedToday` stays exact for a representable ceiling and makes
+  // any positive remainder breach visible.
+  if (!Number.isFinite(amount) || amount <= ceiling - usedToday) return;
   throw new MpesaError(
     400,
     null,

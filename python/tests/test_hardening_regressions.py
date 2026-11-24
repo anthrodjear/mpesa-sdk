@@ -393,7 +393,7 @@ def test_cjk_oversize_rejected_end_to_end_str_and_bytes():
     (True, None),                          # bool is int subclass: refused
     (False, None),                         # bool is int subclass: refused
     (-(2 ** 53) - 1, None),                # negative precision boundary
-    ("-123456789012.34", Decimal("-123456789012.34")),  # negative money ok
+    ("-123456789012.34", None),            # sign gate: money is positive-only
     ("Infinity", None),                    # non-decimal string
     ("1e30", None),                        # exponent form not in shape
     ("", None),                            # absent

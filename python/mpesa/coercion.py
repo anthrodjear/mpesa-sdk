@@ -19,12 +19,15 @@ Divergences from go/coercion.go (intentional, documented):
   ``coerce_str``'s integral branch): their integer conversion silently
   corrupts precision (e.g. ``1e30`` carries ~19 spurious digits);
   ``float('inf')`` stringifies as ``'inf'`` here.
-* Money is :class:`~decimal.Decimal` quantized to 2dp (see
+* Money is :class:`~decimal.Decimal` in canonical 2dp form (see
   :func:`coerce_amount`): Daraja money on the wire always carries two
   decimal places, so a float would silently re-introduce binary cent loss
   on the way INTO settlement. Every numeric path applies the SAME
   +/-2**53 magnitude cap -- the old float path checked finiteness only,
-  which accepted ``1e300``.
+  which accepted ``1e300``. Sub-cent input is REFUSED, never rounded:
+  rounding (implicitly with the context's ROUND_HALF_EVEN) is silent cent
+  loss, so even a ``Decimal`` must pass the ASCII/2dp shape gate. Money is
+  strictly positive; zero and negatives are absent, not amounts.
 * Returned strings are hard-capped at 4096 chars -- silent truncation
   bounds memory/log amplification from hostile gateway bodies.
 """
@@ -63,9 +66,12 @@ _INT_RE = re.compile(r"[+-]?[0-9]{1,19}", re.ASCII)
 #     path is bounded by _MONEY_MAGNITUDE, so one bound (2**53) governs the
 #     magnitude and the regex only narrows the documented wire shape;
 #   * ASCII gate still rejects "1_000", "0x10", Unicode digits.
-# Single source for callbacks.amount() and results.amount() — previously
-# duplicated verbatim (38 lines) and already at risk of drift.
-_AMOUNT_RE = re.compile(r"[+-]?[0-9]{1,12}(\.[0-9]{1,2})?", re.ASCII)
+# The sign is gone: money is strictly positive, so "-500000" and "-0.00"
+# are absent rather than amounts (zero is refused centrally in
+# _quantize_money, which every path reaches). Single source for
+# callbacks.amount() and results.amount() — previously duplicated verbatim
+# (38 lines) and already at risk of drift.
+_AMOUNT_RE = re.compile(r"[0-9]{1,12}(\.[0-9]{1,2})?", re.ASCII)
 
 
 def safe_json_int(digits: str) -> int | None:
@@ -197,15 +203,22 @@ def coerce_int(raw: Any) -> int | None:
 
 
 def _quantize_money(value: Decimal) -> Decimal | None:
-    """Bound- and finite-check *value*, then quantize to 2 decimal places.
+    """Bound-, finite- and positivity-check *value*; canonicalize to 2dp.
 
-    One helper so the magnitude cap is IDENTICAL on every path: the old
-    float branch checked finiteness only, so ``1e300`` sailed through while
-    the int branch rejected it at 2**53. A sub-cent input (e.g. ``1.005``)
-    is refused rather than rounded: rounding is silent cent loss, and the
-    wire shape is 2dp by contract.
+    One helper so these gates are IDENTICAL on every path: the old float
+    branch checked finiteness only, so ``1e300`` sailed through while the
+    int branch rejected it at 2**53. Money is strictly positive: zero and
+    negatives return ``None`` here, for ints and Decimals as well as for
+    the text-gated paths.
+
+    Sub-cent inputs are refused by the SHAPE gate in
+    :func:`_coerce_amount_text` before this helper is reached -- quantize
+    would otherwise round them with the context's ROUND_HALF_EVEN default,
+    which is silent cent loss (``Decimal("1.005")`` -> ``1.00``). Only
+    already shape-gated Decimals should reach this helper: quantize itself
+    rounds.
     """
-    if not value.is_finite() or abs(value) > _MONEY_MAGNITUDE:
+    if not value.is_finite() or value <= 0 or abs(value) > _MONEY_MAGNITUDE:
         return None
     try:
         return value.quantize(_MONEY_QUANTUM)
@@ -219,20 +232,33 @@ def coerce_amount(value: Any) -> Decimal | None:
     Shared by :meth:`callbacks.StkCallbackResult.amount` and
     :meth:`results.AsyncResult.amount` (previously duplicated verbatim).
     Guards, in order: bool -> None (bool is int subclass); magnitude cap
-    +/-2**53 on EVERY numeric path; non-finite -> None; strings must fully
-    match ``[+-]?digits{1,12}(.digits{1,2})?`` (ASCII gate rejects "1_000",
-    "0x10", Unicode digits, exponent notation "1e30"); other types -> None.
+    +/-2**53 on EVERY numeric path; non-finite -> None; zero and negatives
+    -> None; text (including ``str(Decimal)``) must fully match
+    ``digits{1,12}(.digits{1,2})?`` (ASCII gate rejects signs, "1_000",
+    "0x10", Unicode digits, exponent notation "1e30", and anything finer
+    than 2dp); other types -> None.
+
+    Float, Decimal and str all converge on :func:`_coerce_amount_text` for
+    the shape gate; the int path alone bypasses the textual 12-digit wire
+    shape because it already has its own +/-2**53 bound and historically
+    accepts 16-digit ints. Nothing is ever rounded: a Decimal is routed
+    through ``str(value)`` so the SAME gate as strings applies, rather than
+    quantizing a sub-cent value with the context's ROUND_HALF_EVEN default.
 
     Decimal is the type, not a float, because binary floats cannot hold
     ``10.10``: ``float("10.10") == 10.1`` and a value passed straight into
     ``settle(order, amount=result.amount())`` loses the trailing cent of
-    display. ``Decimal("10.10").quantize(0.01)`` is exact, and
-    ``Decimal`` compares/arithmetic with ``int``/``float`` normally.
+    display. ``Decimal`` compares/arithmetic with ``int``/``float``
+    normally.
 
     Example::
 
         coerce_amount("10.50")   # -> Decimal('10.50')  (10.10 round-trips)
         coerce_amount(10.1)      # -> Decimal('10.10')  (2dp canonical form)
+        coerce_amount(Decimal("1.00"))  # -> Decimal('1.00')
+        coerce_amount(Decimal("1.005")) # -> None  (sub-cent, never rounded)
+        coerce_amount("-500000") # -> None  (non-positive)
+        coerce_amount(0)         # -> None  (non-positive)
         coerce_amount(1e300)     # -> None  (magnitude cap)
         coerce_amount("1.123456")  # -> None  (sub-cent precision refused)
         coerce_amount(True)      # -> None
@@ -240,7 +266,7 @@ def coerce_amount(value: Any) -> Decimal | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, Decimal):
-        return _quantize_money(value)
+        return _coerce_amount_text(str(value))
     if isinstance(value, int):
         try:
             return _quantize_money(Decimal(value))

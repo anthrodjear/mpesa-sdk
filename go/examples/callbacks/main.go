@@ -60,8 +60,22 @@ func main() {
 	fmt.Printf("Metadata (advisory): amount=%v receipt=%v duplicates=%d\n",
 		md["Amount"], md["MpesaReceiptNumber"], res.DuplicateKeys())
 
+	// The callback amount is NEVER authoritative: compare it with the amount
+	// YOUR system stored on the order. AmountMatches returns false for a
+	// missing, duplicate, fractional, non-positive, or hostile value, so it
+	// is safe to use as a settlement gate. Keep MetadataMap for display of
+	// the raw wire value only.
+	const storedOrderAmount int64 = 100 // from your own order record
+	amount, ok := res.Amount()
+	if !ok {
+		fmt.Println("! Callback amount rejected by the strict accessor — do not settle on it")
+	}
+	fmt.Printf("Callback amount (advisory): %d, matches stored order: %t\n",
+		amount, res.AmountMatches(storedOrderAmount))
+
 	// 2. SETTLE ONLY BY QUERY: STKQuery ResultCode "0" bound to YOUR stored
-	//    CheckoutRequestID record. A parsed callback is never proof of payment.
+	//    CheckoutRequestID record, AND a verified amount match. A parsed
+	//    callback is never proof of payment.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	query, err := client.STKQuery(ctx, mpesa.STKQueryRequest{
@@ -70,10 +84,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("STK query failed: %v", err)
 	}
-	if query.Classify() == mpesa.ResultClassSuccess {
-		fmt.Println("✓ Query confirms payment — settle now.")
+	if query.Classify() == mpesa.ResultClassSuccess && res.AmountMatches(storedOrderAmount) {
+		fmt.Println("✓ Query confirms payment and the amount matches the stored order — settle now.")
 	} else {
-		fmt.Printf("✗ Not settled (%s): %s — keep reconciling.\n", query.ResultCode.String(), query.ResultDesc)
+		fmt.Printf("✗ Not settled (%s): %s — keep reconciling (query success alone is not enough).\n",
+			query.ResultCode.String(), query.ResultDesc)
 	}
 
 	// 3. Async Result (B2C / TxStatus / Reversal / Balance): Go has NO SDK

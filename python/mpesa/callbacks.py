@@ -26,7 +26,7 @@ Usage::
     if result.classify() is ResultClass.SUCCESS:           # HINT only --
         resp = client.stk_query(STKQueryRequest(           # settle via the query
             checkout_request_id=result.checkout_request_id))
-        if resp.result_code == "0":
+        if resp.result_code == "0" and result.verify_amount(order.amount):
             settle(order, receipt=result.mpesa_receipt(), amount=result.amount())
     else:
         mark_pending_reconcile(order)   # stk_query decides; never refund on a hit
@@ -182,6 +182,32 @@ class StkCallbackResult:
         :attr:`_metadata_map` -- no per-accessor rebuild.
         """
         return coerce_amount(self._metadata_map.get("Amount"))
+
+    def verify_amount(self, expected: "int | Decimal") -> bool:
+        """Safe settlement gate: does this callback match YOUR stored amount?
+
+        A callback is UNSIGNED and its metadata is ADVISORY, so ``amount()``
+        alone must never authorize settlement. This helper fails closed on
+        every ambiguity: absent/unparseable/non-positive amount, any
+        duplicated metadata key (first-wins in ``amount()`` is a dedup
+        convenience, not proof of a single authoritative value), or a
+        mismatch against *expected* -- the amount stored on your own order.
+
+        ``expected`` must itself be a valid positive money amount; an
+        unusable expected value also fails closed. Call this only AFTER
+        binding ``checkout_request_id`` to a stored order, and still settle
+        only on STK Query's ResultCode "0".
+        """
+        if self.duplicate_keys() > 0:
+            return False
+        amount = self.amount()
+        if amount is None or amount <= 0:
+            return False
+        try:
+            want = coerce_amount(expected)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return want is not None and amount == want
 
     def mpesa_receipt(self) -> str | None:
         """M-PESA receipt string, or None when absent.

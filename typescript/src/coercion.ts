@@ -127,16 +127,29 @@ export function parseIntSafe(value: unknown): number | null {
   return safeJsonInt(value);
 }
 
+/**
+ * Hard ceiling for every money amount, in whole KES. Shared by the OUTBOUND
+ * request gates ({@link requirePositiveInt} / `requireMinInt` in `client.ts`)
+ * and the inbound amount shape below: `AMOUNT_RE`'s 12-integer-digit cap
+ * keeps every coerced wire amount strictly inside this bound, so a wire
+ * amount and a request amount cannot disagree about what is representable.
+ * `2 ** 53` is deliberately NOT the bound —
+ * JS accepts it as an integer but it cannot round-trip (`2**53 + 1 === 2**53`)
+ * and would serialize in exponent notation.
+ */
+export const MAX_AMOUNT = 1_000_000_000_000;
+
 /** Shared amount shape (Python `coercion._AMOUNT_RE` parity — now EXACTLY
- * matched, fraction digits included): optional sign, 1–12 integer digits,
- * at most TWO fraction digits. The 6-fraction-digit class this used to allow
- * was a copy drift: `coerce_amount("1.123456")` is None in Python
+ * matched, fraction digits included): UNSIGNED, 1–12 integer digits, at most
+ * TWO fraction digits. The sign class was removed because money is strictly
+ * positive (M5) — a negative amount is never a payment, and the Go/Python
+ * amount accessors refuse it too. The 6-fraction-digit class this used to
+ * allow was a copy drift: `coerce_amount("1.123456")` is None in Python
  * (pinned by test_hardening_regressions.py: ">2dp: NOT silently rounded"),
  * so accepting 3–6 dp here would let the SAME wire body settle in one
  * engine and be dropped in the other. M-Pesa amounts are whole shillings
- * plus cents; anything finer is not a valid amount.
- *  integer digits, optional fraction of 1–2 digits. ASCII-only. */
-const AMOUNT_RE = /^[+-]?[0-9]{1,12}(\.[0-9]{1,2})?$/;
+ * plus cents; anything finer is not a valid amount. */
+const AMOUNT_RE = /^[0-9]{1,12}(\.[0-9]{1,2})?$/;
 
 /** Hard cap on coerced wire strings (Python `_MAX_STR_LEN` parity). */
 const MAX_WIRE_STR_LEN = 4096;
@@ -151,12 +164,15 @@ const MAX_WIRE_STR_LEN = 4096;
  * shortest round-trip form = Python `repr`) to the same ASCII decimal shape
  * as strings — so `1.123456` and `1e21` are refused instead of silently
  * rounded; strings must fully match that shape (rejects `"1_000"`,
- * `"0x10"`, Unicode digits); every other type → null.
+ * `"0x10"`, Unicode digits); a parsed value must be STRICTLY POSITIVE —
+ * zero and negatives are never money (M5); every other type → null.
  *
  * @example
  * ```ts
  * coerceAmount("10.50");   // 10.5
  * coerceAmount(10.50);     // 10.5
+ * coerceAmount("0");       // null (not positive)
+ * coerceAmount("-500000"); // null (never negative money)
  * coerceAmount(1.123456);  // null (sub-cent precision refused)
  * coerceAmount(1e21);      // null (exponent form refused)
  * coerceAmount(true);      // null
@@ -167,13 +183,14 @@ export function coerceAmount(value: unknown): number | null {
   if (typeof value === "boolean") return null;
   if (typeof value === "number") {
     if (!Number.isFinite(value) || Math.abs(value) > 2 ** 53) return null;
-    return AMOUNT_RE.test(String(value)) ? value : null;
+    if (!AMOUNT_RE.test(String(value))) return null;
+    return value > 0 ? value : null;
   }
   if (typeof value === "string") {
     const text = value.trim();
     if (!AMOUNT_RE.test(text)) return null;
     const parsed = Number.parseFloat(text);
-    return Number.isFinite(parsed) ? parsed : null;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   }
   return null;
 }

@@ -98,7 +98,10 @@ exactly once after a forced refresh on `401.003.01`. Opt out with
 ## What the SDK handles for you
 
 - **Callbacks are unsigned** — settle only via `STKQuery` bound to your stored
-  `CheckoutRequestID`; gate endpoints with `NewCallbackToken()` /
+  `CheckoutRequestID`, and require `res.AmountMatches(storedOrderAmount)` too
+  (STK Query does not echo an amount). `STKCallbackResult.Amount()` is the
+  strict, settlement-grade accessor; `MetadataMap()` keeps the raw mixed-type
+  wire values for display. Gate endpoints with `NewCallbackToken()` /
   `CallbackTokenEqual()`; bind on the ID for dedup, never as authentication.
 - **SSRF-hardened URLs** — `CallBackURL`/`ResultURL`/`QueueTimeOutURL` reject
   loopback, private, link-local, multicast and unusual IPv6 literals,
