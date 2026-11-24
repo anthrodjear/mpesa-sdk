@@ -844,6 +844,27 @@ func (c *Client) leadRefresh(ctx context.Context) (string, uint64, error) {
 // round-trip for all concurrent callers. Used after a 401.003.01, where the
 // cached value cannot be trusted even if fresh by wall clock.
 func (c *Client) leadForcedRefresh(ctx context.Context) (string, error) {
+	return c.leadForcedRefreshWithGen(ctx, 0, false)
+}
+
+// leadForcedRefreshAfterGen is the generation-guarded entry point used by
+// refreshAfterInvalidToken. myGen is the generation of the token the gateway
+// rejected with 401.003.01.
+//
+// The guard MUST live in the same critical section that claims leadership.
+// Doing it outside (in refreshAfterInvalidToken) left a TOCTOU: a caller read
+// a stale gen, a peer committed a new token and cleared `refreshing`, and
+// then the stale caller saw no in-flight refresh and issued a SECOND forced
+// OAuth round-trip — three fetches for two concurrent 401s.
+func (c *Client) leadForcedRefreshAfterGen(ctx context.Context, myGen uint64) (string, error) {
+	return c.leadForcedRefreshWithGen(ctx, myGen, true)
+}
+
+// leadForcedRefreshWithGen implements both forced-refresh entries. When
+// guard is true, a peer commit since myGen (with a still-fresh token) is
+// adopted instead of starting another round-trip. The unguarded form keeps
+// the historical "force unconditionally" semantics for direct callers.
+func (c *Client) leadForcedRefreshWithGen(ctx context.Context, myGen uint64, guard bool) (string, error) {
 	for {
 		c.mu.Lock()
 		// Same refusal as leadRefresh: a closed client issues no further
@@ -854,6 +875,16 @@ func (c *Client) leadForcedRefresh(ctx context.Context) (string, error) {
 		if c.closed {
 			c.mu.Unlock()
 			return "", ErrClientClosed
+		}
+		// Generation guard, under the SAME lock that claims leadership:
+		// a peer may have committed a fresh token between our 401 and this
+		// point. Adopt it rather than invalidating it with another fetch.
+		// A bumped gen whose token is stale by wall clock is NOT adopted —
+		// it must be refreshed (TestRefreshAfterInvalidTokenRejectsStalePeerToken).
+		if guard && c.gen != myGen && c.tokenFresh() {
+			tok := string(c.tokenBytes)
+			c.mu.Unlock()
+			return tok, nil
 		}
 		if c.refreshing {
 			done := c.refreshDone
@@ -1123,18 +1154,12 @@ func (c *Client) forceRefresh(ctx context.Context) (string, error) {
 }
 
 // refreshAfterInvalidToken resolves a 401.003.01 under the generation guard.
-// If our view of the token was current when it failed (gen unchanged), we
-// lead the hard refresh; otherwise a concurrent caller already refreshed and
-// we adopt its token without another OAuth round-trip.
+// If a concurrent caller already refreshed past myGen, we adopt its token;
+// otherwise we lead one hard refresh. Both decisions are made under the same
+// lock in leadForcedRefreshAfterGen, so a peer commit that lands between our
+// 401 and the leadership claim cannot cause a redundant third OAuth fetch.
 func (c *Client) refreshAfterInvalidToken(ctx context.Context, myGen uint64) (string, error) {
-	c.mu.RLock()
-	peerRefreshed, fresh := c.gen != myGen, c.tokenFresh()
-	tok := string(c.tokenBytes)
-	c.mu.RUnlock()
-	if peerRefreshed && fresh {
-		return tok, nil
-	}
-	return c.forceRefresh(ctx)
+	return c.leadForcedRefreshAfterGen(ctx, myGen)
 }
 
 func (c *Client) attempt(ctx context.Context, token, path string, payload any) (status int, contentType string, body []byte, err error) {

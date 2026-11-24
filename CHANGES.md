@@ -24,6 +24,7 @@
 - **Go callback/result URLs are capped at 8192 BYTES** (`requireURL` in go/requests.go) — the divergence row is confirmed accurate: TS still counts UTF-8 bytes (`Buffer.byteLength`), not units (the B1 change was the free-text length counter, not the URL cap).
 - **Go `requirePrintable` on `BillRefNumber` is documented on Bill Query and Bill Delete** (the constraint predates this review — `BillQueryRequest.Validate` requests.go:1419, `BillDeleteRequest.Validate` requests.go:1554; now noted in `docs/apis/bill-manager.md` Query/Delete).
 - **TS `billUpdate` omits whitespace-only `ExpiryDate`/`CallBackURL` from the wire** (Go/Python blank-and-omit parity; the omission itself is pre-existing — the new part is the doc note in `docs/apis/bill-manager.md`, Update section).
+- **Go forced 401.003.01 refresh no longer issues a redundant third OAuth request under concurrency** (`go/client.go`): the generation guard used to read `gen` under RLock in `refreshAfterInvalidToken`, then claim leadership in `leadForcedRefresh` under a separate Lock — a peer could commit and clear `refreshing` in between, making a stale caller fetch again. Both decisions now happen under one lock in `leadForcedRefreshAfterGen`; regression test in `go/token_race_test.go`.
 
 ---
 
