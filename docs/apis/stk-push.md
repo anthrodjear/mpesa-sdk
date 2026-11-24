@@ -91,6 +91,14 @@ Parsing rules:
 - Metadata item names: `Amount` (decimal) · `MpesaReceiptNumber` · `TransactionDate`
   (**numeric-typed** YYYYMMDDHHMMSS) · `PhoneNumber`.
 - On failure `CallbackMetadata` is **absent entirely** — parse defensively.
+- `Amount` is **advisory**. Amounts are strictly positive whole-KES values; zero,
+  negatives, sub-cent precision and exponent-form strings are rejected by the
+  typed accessors. Before settling, compare the callback amount with the value
+  your order stored: Python `result.verify_amount(order.amount)`, Go
+  `res.AmountMatches(orderAmount)`, TypeScript `result.amountMatches(order.amount)`.
+  All three fail closed when metadata keys are duplicated (first-wins parsing is
+  for wire parity, not for settlement decisions). STK Query does not echo an
+  amount, so this comparison is the only amount check available.
 
 Your endpoint must ACK fast:
 
